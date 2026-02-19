@@ -1,0 +1,9 @@
+[
+  {
+    "url": "https://learn.microsoft.com/en-us/azure/architecture/landing-zones/landing-zone-deploy",
+    "single_page": false,
+    "sidebar_selector": "layout-body-menu",
+    "max_depth": 2,
+    "source_category": "azure_landing_zones"
+  }
+]

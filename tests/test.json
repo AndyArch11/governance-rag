@@ -1,0 +1,46 @@
+{
+  "nodes": {
+    "x_v1": {
+      "doc_id": "x",
+      "version": 1,
+      "conflict_score": 0,
+      "risk_clusters": [
+        0,
+        0
+      ],
+      "topic_clusters": [
+        0,
+        0
+      ]
+    }
+  },
+  "edges": [],
+  "clusters": {
+    "risk": [
+      {
+        "id": 0,
+        "type": "risk",
+        "size": 1,
+        "members": [
+          "x_v1"
+        ],
+        "label": "L",
+        "description": "D",
+        "summary": "S"
+      }
+    ],
+    "topic": [
+      {
+        "id": 0,
+        "type": "topic",
+        "size": 1,
+        "members": [
+          "x_v1"
+        ],
+        "label": "L",
+        "description": "D",
+        "summary": "S"
+      }
+    ]
+  }
+}

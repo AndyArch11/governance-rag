@@ -1,0 +1,158 @@
+# Environment
+.env
+.env.local
+.env.*.local
+.venv/
+venv/
+ENV/
+env/
+.Python
+python-env/
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-workspace
+*.sublime-project
+.project
+.pydevproject
+.settings/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.mypy_cache/
+.mypy_last.txt
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+coverage.json
+htmlcov/
+.tox/
+.hypothesis/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Data - Raw (typically large, except example files)
+data_raw/**
+!data_raw/url_seeds.json.example
+
+# Models (usually large)
+models/
+*.h5
+*.pkl
+*.pickle
+*.joblib
+*.model
+*.pth
+*.pt
+
+# Logs
+logs/
+*.log
+*.log.*
+**/logs/
+
+# ChromaDB & Vector stores
+chroma_data/
+*.db
+*.sqlite
+*.sqlite3
+chroma/
+
+# LLM Cache
+*_cache/
+llm_cache/
+embedding_cache/
+
+# RAG-specific
+rag_data/
+output/
+results/
+temp/
+tmp/
+repos/
+
+# Confluence exports (large HTML files)
+data_raw/confluence_exports/
+data_raw/public_docs/
+
+# Root-level database files (should be in rag_data/)
+/cache.db
+/consistency_graph.sqlite
+
+# Consistency graph (regenerate from source)
+consistency_graph.json
+consistency_graph.html
+scripts/consistency_graph/consistency_graph.json
+scripts/consistency_graph/consistency_graph.html
+
+# Build & distribution
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.bak
+*.backup
+.#*
+*~
+tmp/
+temp/
+
+# Project-specific
+htmlcov/
+.coverage
+coverage.json
+code_analysis.json
+run_coverage.py
+
+# Node modules (if using vis.js or other JS libs)
+node_modules/
+package-lock.json
+yarn.lock
+
+# Task runner outputs
+task_output.txt

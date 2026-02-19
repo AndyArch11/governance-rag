@@ -1,0 +1,22 @@
+[
+  {
+    "repo": "first-repo-v1",
+    "project": "myproject",
+    "branch": "master"
+  },
+  {
+    "repo": "second-repo-v1",
+    "project": "myproject",
+    "branch": "master"
+  },
+  {
+    "repo": "third-repo-v1",
+    "project": "myproject",
+    "branch": "main"
+  },
+  {
+    "repo": "some-other-repo",
+    "project": "different-project",
+    "branch": "develop"
+  }
+]
