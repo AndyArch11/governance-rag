@@ -48,9 +48,81 @@ python -m pytest tests -q --maxfail=1
 ```
 
 Notes:
-- `make` commands now prefer `.venv/bin/python` when `.venv` exists.
+- `make` commands prefer `.venv/bin/python` when `.venv` exists.
 - Default project paths are workspace-relative, not tied to `/workspaces/governance-rag`.
 - Supported Python versions are `3.10` to `3.13`.
+
+## 🦙 Ollama Deployment Options (WSL + Dev Container)
+
+This project can run against Ollama in three ways. Recommended setup is **Ollama running in WSL host**, with the dev container connecting to it.
+
+### Option A (Recommended): Ollama in WSL host, app in dev container
+
+Install/start Ollama in WSL:
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+ollama serve
+```
+
+From the dev container, point to the WSL-hosted Ollama:
+
+```bash
+export OLLAMA_HOST=http://host.docker.internal:11434
+curl $OLLAMA_HOST/api/tags
+```
+
+Persist for your project by adding `OLLAMA_HOST=http://host.docker.internal:11434` to `.env`.
+
+### Option B: Ollama inside the dev container
+
+Use this only if you need a fully self-contained container runtime.
+
+```bash
+# Requires root-capable container image/session
+apt-get update && apt-get install -y curl ca-certificates
+curl -fsSL https://ollama.com/install.sh | sh
+ollama serve
+```
+
+Then pull required models:
+
+```bash
+ollama pull mistral
+ollama pull mxbai-embed-large
+```
+
+### Option C: Ollama on Windows host
+
+This can work, but is generally less predictable for Linux-container workloads in WSL.
+
+### Why Option A (WSL host) is preferred
+
+- Better Linux compatibility for this stack (Python + local model tooling).
+- Fewer container lifecycle issues (container rebuilds do not affect Ollama state).
+- Simpler model persistence and reuse across multiple containers/projects.
+- More reliable networking path from dev container (`host.docker.internal`).
+- Typically lower friction than cross-OS Windows↔WSL file/path/process boundaries.
+
+### Quick validation
+
+From the dev container:
+
+```bash
+export OLLAMA_HOST=http://host.docker.internal:11434
+curl $OLLAMA_HOST/api/tags
+python - <<'PY'
+from scripts.ingest.vectors import EMBEDDING_MODEL_NAME
+from langchain_ollama import OllamaEmbeddings
+
+vector = OllamaEmbeddings(model=EMBEDDING_MODEL_NAME).embed_query("connectivity check")
+print(f"Ollama reachable from application path. Embedding length: {len(vector)}")
+PY
+```
+
+This validates Ollama accessibility from the application runtime (Python + LangChain integration), not just CLI argument parsing. If it fails with model-not-found, run `ollama pull mxbai-embed-large`.
+
+For troubleshooting guidance, see [Profile Mode troubleshooting](docs/ingest/PROFILE_MODE.md#troubleshooting).
 
 ### 🔍 Resource Monitoring
 
