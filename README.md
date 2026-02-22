@@ -448,7 +448,7 @@ N.B. Jupyter libraries to view the notebooks with are optional.
 
 ### 1. Clone the repository
 
-This can either be to your `~/` home directory, a container's `/workspace` directory, or any location of your choosing. Clone the repo from the chosen folder location (documentation assumes it will be running from `/workspaces/governance-rag`)
+This can either be to your `~/` home directory, a container's `/workspaces` directory, or any location of your choosing. Clone the repo from the chosen folder location (documentation assumes it will be running from `/workspaces/governance-rag`)
 
 ```bash
 cd /workspaces
