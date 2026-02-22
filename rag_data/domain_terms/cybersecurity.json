@@ -452,6 +452,87 @@
       "weight": 1.8,
       "description": null,
       "source": null
+    },
+    "intrusion detection": {
+      "term": "intrusion detection",
+      "acronym": "IDS",
+      "expansion": null,
+      "category": "monitoring",
+      "weight": 1.8,
+      "description": null,
+      "source": null
+    },
+    "intrusion prevention": {
+      "term": "intrusion prevention",
+      "acronym": "IPS",
+      "expansion": null,
+      "category": "monitoring",
+      "weight": 1.8,
+      "description": null,
+      "source": null
+    },
+    "security operations centre": {
+      "term": "security operations centre",
+      "acronym": "SOC",
+      "expansion": null,
+      "category": "operations",
+      "weight": 1.7,
+      "description": null,
+      "source": null
+    },
+    "vulnerability management": {
+      "term": "vulnerability management",
+      "acronym": null,
+      "expansion": null,
+      "category": "risk",
+      "weight": 1.7,
+      "description": null,
+      "source": null
+    },
+    "zero trust": {
+      "term": "zero trust",
+      "acronym": null,
+      "expansion": null,
+      "category": "architecture",
+      "weight": 1.9,
+      "description": null,
+      "source": null
+    },
+    "extended detection and response": {
+      "term": "extended detection and response",
+      "acronym": "XDR",
+      "expansion": null,
+      "category": "endpoint",
+      "weight": 1.7,
+      "description": null,
+      "source": null
+    },
+    "least privilege": {
+      "term": "least privilege",
+      "acronym": null,
+      "expansion": null,
+      "category": "access",
+      "weight": 1.6,
+      "description": null,
+      "source": null
+    },
+    "threat intelligence": {
+      "term": "threat intelligence",
+      "acronym": null,
+      "expansion": null,
+      "category": "analysis",
+      "weight": 1.7,
+      "description": null,
+      "source": null
+    },
+    "patch management": {
+      "term": "patch management",
+      "acronym": null,
+      "expansion": null,
+      "category": "operations",
+      "weight": 1.5,
+      "description": null,
+      "source": null
     }
   },
   "acronyms": {
@@ -469,8 +550,8 @@
     "jwt": "json web token",
     "mtls": "mutual tls",
     "ssh": "secure shell",
-    "ids": "intrusion detection system",
-    "ips": "intrusion prevention system",
+    "ids": "intrusion detection",
+    "ips": "intrusion prevention",
     "waf": "web application firewall",
     "vpn": "virtual private network",
     "dlp": "data loss prevention",
@@ -486,7 +567,9 @@
     "hipaa": "health insurance portability and accountability",
     "pci-dss": "payment card industry data security standard",
     "nist": "national institute of standards and technology",
-    "apt": "advanced persistent threat"
+    "apt": "advanced persistent threat",
+    "soc": "security operations centre",
+    "xdr": "extended detection and response"
   },
   "categories": {
     "access_control": [
@@ -552,10 +635,14 @@
       "security orchestration automation response",
       "user and entity behavior analytics",
       "endpoint detection and response",
+      "intrusion detection",
+      "intrusion prevention",
       "security information and event management",
       "security orchestration automation response",
       "user and entity behavior analytics",
-      "endpoint detection and response"
+      "endpoint detection and response",
+      "intrusion detection",
+      "intrusion prevention"
     ],
     "assessment": [
       "vulnerability assessment",
@@ -606,8 +693,34 @@
       "phishing",
       "social engineering",
       "advanced persistent threat"
+    ],
+    "operations": [
+      "security operations centre",
+      "patch management",
+      "security operations centre",
+      "patch management"
+    ],
+    "risk": [
+      "vulnerability management",
+      "vulnerability management"
+    ],
+    "architecture": [
+      "zero trust",
+      "zero trust"
+    ],
+    "endpoint": [
+      "extended detection and response",
+      "extended detection and response"
+    ],
+    "access": [
+      "least privilege",
+      "least privilege"
+    ],
+    "analysis": [
+      "threat intelligence",
+      "threat intelligence"
     ]
   },
-  "last_updated": "2026-02-20T03:12:45.531740",
+  "last_updated": "2026-02-22T06:14:07.319782",
   "source_url": "https://www.nist.gov/"
 }
