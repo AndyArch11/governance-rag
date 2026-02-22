@@ -1,0 +1,33 @@
+{
+  "domain": "cloud_infrastructure",
+  "name": "Cloud Infrastructure & Computing",
+  "description": "Cloud platforms, services, and infrastructure terminology",
+  "source_url": "https://aws.amazon.com/",
+  "terms": [
+    {"term": "amazon web services", "acronym": "AWS", "category": "cloud_provider", "weight": 2.0},
+    {"term": "microsoft azure", "acronym": "Azure", "category": "cloud_provider", "weight": 2.0},
+    {"term": "google cloud platform", "acronym": "GCP", "category": "cloud_provider", "weight": 2.0},
+    {"term": "kubernetes", "acronym": "K8S", "category": "orchestration", "weight": 2.0},
+    {"term": "container", "category": "containerization", "weight": 1.8},
+    {"term": "docker", "category": "containerization", "weight": 1.8},
+    {"term": "microservices", "category": "architecture", "weight": 1.8},
+    {"term": "serverless", "category": "architecture", "weight": 1.8},
+    {"term": "function as a service", "acronym": "FaaS", "category": "architecture", "weight": 1.8},
+    {"term": "infrastructure as code", "acronym": "IaC", "category": "infrastructure", "weight": 1.8},
+    {"term": "platform as a service", "acronym": "PaaS", "category": "cloud_service", "weight": 1.5},
+    {"term": "software as a service", "acronym": "SaaS", "category": "cloud_service", "weight": 1.5},
+    {"term": "infrastructure as a service", "acronym": "IaaS", "category": "cloud_service", "weight": 1.5},
+    {"term": "auto-scaling", "category": "infrastructure", "weight": 1.5},
+    {"term": "load balancing", "category": "infrastructure", "weight": 1.5},
+    {"term": "virtual machine", "acronym": "VM", "category": "compute", "weight": 1.5},
+    {"term": "elastic compute cloud", "acronym": "EC2", "category": "compute", "weight": 1.8},
+    {"term": "content delivery network", "acronym": "CDN", "category": "delivery", "weight": 1.5},
+    {"term": "simple storage service", "acronym": "S3", "category": "storage", "weight": 1.8},
+    {"term": "relational database service", "acronym": "RDS", "category": "database", "weight": 1.5},
+    {"term": "dynamodb", "category": "database", "weight": 1.5},
+    {"term": "lambda", "category": "compute", "weight": 1.5},
+    {"term": "cloud formation", "category": "iac", "weight": 1.5},
+    {"term": "terraform", "category": "iac", "weight": 1.5},
+    {"term": "ansible", "category": "iac", "weight": 1.5}
+  ]
+}

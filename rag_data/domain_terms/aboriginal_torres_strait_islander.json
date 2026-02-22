@@ -1,0 +1,292 @@
+{
+  "domain": "aboriginal_torres_strait_islander",
+  "name": "Aboriginal and Torres Strait Islander",
+  "description": "Language, culture, history, policy, and rights terminology for Aboriginal and Torres Strait Islander peoples",
+  "source_url": "https://www.aiatsis.gov.au/",
+  "terms": {
+    "aboriginal": {
+      "term": "aboriginal",
+      "category": "identity",
+      "weight": 2.0,
+      "description": "Indigenous peoples of mainland Australia"
+    },
+    "torres strait islander": {
+      "term": "torres strait islander",
+      "category": "identity",
+      "weight": 2.0,
+      "description": "Indigenous peoples of Torres Strait and Torres Strait Islands"
+    },
+    "aboriginal and torres strait islander": {
+      "term": "aboriginal and torres strait islander",
+      "category": "identity",
+      "weight": 2.0,
+      "description": "Indigenous peoples of mainland Australia and Torres Strait Islands"
+    },
+    "first nations": {
+      "term": "first nations",
+      "category": "identity",
+      "weight": 2.0,
+      "description": "Original inhabitants and continuing cultures of Australia"
+    },
+    "indigenous": {
+      "term": "indigenous",
+      "category": "identity",
+      "weight": 1.8,
+      "description": "Original inhabitant status"
+    },
+    "country": {
+      "term": "country",
+      "category": "cultural_concept",
+      "weight": 2.0,
+      "description": "Sacred ancestral land and associated cultural responsibility"
+    },
+    "dreamtime": {
+      "term": "dreamtime",
+      "category": "spirituality",
+      "weight": 2.0,
+      "description": "Aboriginal creation period and ongoing spiritual reality"
+    },
+    "dreaming": {
+      "term": "dreaming",
+      "category": "spirituality",
+      "weight": 2.0,
+      "description": "Aboriginal spiritual and cultural foundation"
+    },
+    "songlines": {
+      "term": "songlines",
+      "category": "cultural_heritage",
+      "weight": 1.8,
+      "description": "Traditional travel and knowledge routes across country"
+    },
+    "totems": {
+      "term": "totems",
+      "category": "spirituality",
+      "weight": 1.8,
+      "description": "Spiritual symbol and connection to country"
+    },
+    "didgeridoo": {
+      "term": "didgeridoo",
+      "category": "cultural_heritage",
+      "weight": 1.5,
+      "description": "Ancient Aboriginal musical instrument"
+    },
+    "boomerang": {
+      "term": "boomerang",
+      "category": "cultural_heritage",
+      "weight": 1.5,
+      "description": "Traditional throwing weapon and hunting tool"
+    },
+    "corroboree": {
+      "term": "corroboree",
+      "category": "cultural_practice",
+      "weight": 1.8,
+      "description": "Aboriginal festive gathering and ceremonial performance"
+    },
+    "kinship": {
+      "term": "kinship",
+      "category": "social_structure",
+      "weight": 2.0,
+      "description": "Complex system of family relationships and obligations"
+    },
+    "clan": {
+      "term": "clan",
+      "category": "social_structure",
+      "weight": 1.8,
+      "description": "Kinship group sharing ancestry and country"
+    },
+    "language preservation": {
+      "term": "language preservation",
+      "category": "language",
+      "weight": 2.0,
+      "description": "Conservation and revitalization of Aboriginal languages"
+    },
+    "native title": {
+      "term": "native title",
+      "category": "legal_rights",
+      "weight": 2.5,
+      "description": "Legal recognition of Aboriginal land rights"
+    },
+    "land rights": {
+      "term": "land rights",
+      "category": "legal_rights",
+      "weight": 2.5,
+      "description": "Aboriginal and Torres Strait Islander ownership and stewardship"
+    },
+    "mabo decision": {
+      "term": "mabo decision",
+      "category": "legal_landmark",
+      "weight": 2.0,
+      "description": "Landmark 1992 High Court decision recognizing native title"
+    },
+    "stolen generation": {
+      "term": "stolen generation",
+      "category": "history",
+      "weight": 2.5,
+      "description": "Aboriginal and Torres Strait Islander children forcibly removed from families"
+    },
+    "reconciliation": {
+      "term": "reconciliation",
+      "category": "policy",
+      "weight": 2.0,
+      "description": "Process of healing relationships between Indigenous and non-Indigenous Australians"
+    },
+    "self-determination": {
+      "term": "self-determination",
+      "category": "legal_rights",
+      "weight": 2.0,
+      "description": "Right to determine own governance and policy"
+    },
+    "closing the gap": {
+      "term": "closing the gap",
+      "category": "policy",
+      "weight": 2.0,
+      "description": "Commitment to eliminate Indigenous disadvantage"
+    },
+    "uluru statement": {
+      "term": "uluru statement",
+      "category": "policy_document",
+      "weight": 2.0,
+      "description": "Call for constitutional reform and Indigenous self-determination"
+    },
+    "voice": {
+      "term": "voice",
+      "category": "governance",
+      "weight": 2.0,
+      "description": "Proposed Indigenous advisory body for parliamentary consultation"
+    },
+    "treaty": {
+      "term": "treaty",
+      "category": "legal_framework",
+      "weight": 2.0,
+      "description": "Formal agreement between Indigenous peoples and government"
+    },
+    "co-management": {
+      "term": "co-management",
+      "category": "governance",
+      "weight": 1.8,
+      "description": "Shared management of land and resources"
+    },
+    "cultural center": {
+      "term": "cultural center",
+      "category": "institution",
+      "weight": 1.8,
+      "description": "Community hub for cultural preservation and education"
+    },
+    "dot painting": {
+      "term": "dot painting",
+      "category": "art",
+      "weight": 1.5,
+      "description": "Traditional Aboriginal art form using dots and symbols"
+    },
+    "aboriginal art": {
+      "term": "aboriginal art",
+      "category": "art",
+      "weight": 1.8,
+      "description": "Visual artistic traditions and contemporary expressions"
+    },
+    "aboriginal health": {
+      "term": "aboriginal health",
+      "category": "healthcare",
+      "weight": 2.0,
+      "description": "Healthcare addressing Indigenous health disparities"
+    },
+    "bush tucker": {
+      "term": "bush tucker",
+      "category": "food_culture",
+      "weight": 1.5,
+      "description": "Traditional food from natural environment"
+    },
+    "aboriginal education": {
+      "term": "aboriginal education",
+      "category": "education",
+      "weight": 1.8,
+      "description": "Education incorporating Indigenous knowledge and perspectives"
+    },
+    "cultural protocol": {
+      "term": "cultural protocol",
+      "category": "ethics",
+      "weight": 1.8,
+      "description": "Respectful guidelines for engaging with Indigenous culture"
+    },
+    "aboriginal business": {
+      "term": "aboriginal business",
+      "category": "economics",
+      "weight": 1.5,
+      "description": "Enterprises owned or controlled by Aboriginal peoples"
+    },
+    "elder": {
+      "term": "elder",
+      "category": "social_structure",
+      "weight": 2.0,
+      "description": "Respected person holding cultural knowledge and authority"
+    },
+    "custodian": {
+      "term": "custodian",
+      "category": "cultural_responsibility",
+      "weight": 2.0,
+      "description": "Designated keeper of cultural knowledge and country"
+    },
+    "connection to country": {
+      "term": "connection to country",
+      "category": "cultural_concept",
+      "weight": 2.0,
+      "description": "Spiritual, emotional, and practical relationship to land"
+    },
+    "cultural competency": {
+      "term": "cultural competency",
+      "category": "ethics",
+      "weight": 1.8,
+      "description": "Ability to work effectively with Indigenous cultures"
+    },
+    "aboriginal representation": {
+      "term": "aboriginal representation",
+      "category": "governance",
+      "weight": 1.8,
+      "description": "Indigenous participation in decision-making"
+    },
+    "aboriginal affairs": {
+      "term": "aboriginal affairs",
+      "category": "administration",
+      "weight": 1.5,
+      "description": "Government department managing Indigenous policies"
+    },
+    "aiatsis": {
+      "term": "aiatsis",
+      "acronym": "AIATSIS",
+      "expansion": "Australian Institute of Aboriginal and Torres Strait Islander Studies",
+      "category": "institution",
+      "weight": 2.0,
+      "description": "Peak institution for Indigenous research and culture"
+    },
+    "reconciliation australia": {
+      "term": "reconciliation australia",
+      "category": "organization",
+      "weight": 1.8,
+      "description": "National body leading reconciliation efforts"
+    },
+    "torres strait": {
+      "term": "torres strait",
+      "category": "geography",
+      "weight": 1.8,
+      "description": "Body of water between Australia and Papua New Guinea"
+    },
+    "uluru": {
+      "term": "uluru",
+      "category": "landmark",
+      "weight": 1.5,
+      "description": "Sacred rock formation in Northern Territory (Ayers Rock)"
+    },
+    "aboriginal rights": {
+      "term": "aboriginal rights",
+      "category": "legal_rights",
+      "weight": 2.0,
+      "description": "Legal protections and entitlements for Indigenous peoples"
+    },
+    "indigenous sovereignty": {
+      "term": "indigenous sovereignty",
+      "category": "legal_rights",
+      "weight": 2.0,
+      "description": "Recognition of Indigenous autonomy and self-governance"
+    }
+  }
+}

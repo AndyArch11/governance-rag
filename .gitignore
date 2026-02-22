@@ -99,7 +99,10 @@ llm_cache/
 embedding_cache/
 
 # RAG-specific
-rag_data/
+# Keep domain term data versioned; ignore other generated RAG artefacts
+rag_data/*
+!rag_data/domain_terms/
+!rag_data/domain_terms/**
 output/
 results/
 temp/

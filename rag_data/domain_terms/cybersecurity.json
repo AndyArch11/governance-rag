@@ -1,0 +1,613 @@
+{
+  "domain": "cybersecurity",
+  "name": "Cybersecurity & Information Security",
+  "description": "Common cybersecurity acronyms, controls, frameworks, and specialized terms",
+  "terms": {
+    "authentication": {
+      "term": "authentication",
+      "acronym": "AUTH",
+      "expansion": null,
+      "category": "access_control",
+      "weight": 2.0,
+      "description": null,
+      "source": null
+    },
+    "authorization": {
+      "term": "authorization",
+      "acronym": "AUTHZ",
+      "expansion": null,
+      "category": "access_control",
+      "weight": 2.0,
+      "description": null,
+      "source": null
+    },
+    "multi-factor authentication": {
+      "term": "multi-factor authentication",
+      "acronym": "MFA",
+      "expansion": null,
+      "category": "access_control",
+      "weight": 2.5,
+      "description": null,
+      "source": null
+    },
+    "single sign-on": {
+      "term": "single sign-on",
+      "acronym": "SSO",
+      "expansion": null,
+      "category": "access_control",
+      "weight": 1.8,
+      "description": null,
+      "source": null
+    },
+    "role-based access control": {
+      "term": "role-based access control",
+      "acronym": "RBAC",
+      "expansion": null,
+      "category": "access_control",
+      "weight": 2.0,
+      "description": null,
+      "source": null
+    },
+    "attribute-based access control": {
+      "term": "attribute-based access control",
+      "acronym": "ABAC",
+      "expansion": null,
+      "category": "access_control",
+      "weight": 2.0,
+      "description": null,
+      "source": null
+    },
+    "identity and access management": {
+      "term": "identity and access management",
+      "acronym": "IAM",
+      "expansion": null,
+      "category": "access_control",
+      "weight": 2.5,
+      "description": null,
+      "source": null
+    },
+    "privileged access management": {
+      "term": "privileged access management",
+      "acronym": "PAM",
+      "expansion": null,
+      "category": "access_control",
+      "weight": 2.0,
+      "description": null,
+      "source": null
+    },
+    "encryption": {
+      "term": "encryption",
+      "acronym": null,
+      "expansion": null,
+      "category": "cryptography",
+      "weight": 2.0,
+      "description": null,
+      "source": null
+    },
+    "public key infrastructure": {
+      "term": "public key infrastructure",
+      "acronym": "PKI",
+      "expansion": null,
+      "category": "cryptography",
+      "weight": 2.0,
+      "description": null,
+      "source": null
+    },
+    "transport layer security": {
+      "term": "transport layer security",
+      "acronym": "TLS",
+      "expansion": null,
+      "category": "cryptography",
+      "weight": 2.0,
+      "description": null,
+      "source": null
+    },
+    "secure sockets layer": {
+      "term": "secure sockets layer",
+      "acronym": "SSL",
+      "expansion": null,
+      "category": "cryptography",
+      "weight": 1.8,
+      "description": null,
+      "source": null
+    },
+    "json web token": {
+      "term": "json web token",
+      "acronym": "JWT",
+      "expansion": null,
+      "category": "cryptography",
+      "weight": 1.8,
+      "description": null,
+      "source": null
+    },
+    "mutual tls": {
+      "term": "mutual TLS",
+      "acronym": "MTLS",
+      "expansion": null,
+      "category": "cryptography",
+      "weight": 1.8,
+      "description": null,
+      "source": null
+    },
+    "secure shell": {
+      "term": "secure shell",
+      "acronym": "SSH",
+      "expansion": null,
+      "category": "cryptography",
+      "weight": 1.8,
+      "description": null,
+      "source": null
+    },
+    "firewall": {
+      "term": "firewall",
+      "acronym": null,
+      "expansion": null,
+      "category": "network_security",
+      "weight": 2.0,
+      "description": null,
+      "source": null
+    },
+    "intrusion detection system": {
+      "term": "intrusion detection system",
+      "acronym": "IDS",
+      "expansion": null,
+      "category": "network_security",
+      "weight": 1.8,
+      "description": null,
+      "source": null
+    },
+    "intrusion prevention system": {
+      "term": "intrusion prevention system",
+      "acronym": "IPS",
+      "expansion": null,
+      "category": "network_security",
+      "weight": 1.8,
+      "description": null,
+      "source": null
+    },
+    "web application firewall": {
+      "term": "web application firewall",
+      "acronym": "WAF",
+      "expansion": null,
+      "category": "network_security",
+      "weight": 1.8,
+      "description": null,
+      "source": null
+    },
+    "virtual private network": {
+      "term": "virtual private network",
+      "acronym": "VPN",
+      "expansion": null,
+      "category": "network_security",
+      "weight": 1.8,
+      "description": null,
+      "source": null
+    },
+    "zero trust architecture": {
+      "term": "zero trust architecture",
+      "acronym": null,
+      "expansion": null,
+      "category": "network_security",
+      "weight": 2.0,
+      "description": null,
+      "source": null
+    },
+    "data loss prevention": {
+      "term": "data loss prevention",
+      "acronym": "DLP",
+      "expansion": null,
+      "category": "data_protection",
+      "weight": 2.0,
+      "description": null,
+      "source": null
+    },
+    "cloud access security broker": {
+      "term": "cloud access security broker",
+      "acronym": "CASB",
+      "expansion": null,
+      "category": "data_protection",
+      "weight": 1.8,
+      "description": null,
+      "source": null
+    },
+    "information rights management": {
+      "term": "information rights management",
+      "acronym": "IRM",
+      "expansion": null,
+      "category": "data_protection",
+      "weight": 1.8,
+      "description": null,
+      "source": null
+    },
+    "data classification": {
+      "term": "data classification",
+      "acronym": null,
+      "expansion": null,
+      "category": "data_protection",
+      "weight": 1.5,
+      "description": null,
+      "source": null
+    },
+    "security information and event management": {
+      "term": "security information and event management",
+      "acronym": "SIEM",
+      "expansion": null,
+      "category": "monitoring",
+      "weight": 2.0,
+      "description": null,
+      "source": null
+    },
+    "security orchestration automation response": {
+      "term": "security orchestration automation response",
+      "acronym": "SOAR",
+      "expansion": null,
+      "category": "monitoring",
+      "weight": 1.8,
+      "description": null,
+      "source": null
+    },
+    "user and entity behavior analytics": {
+      "term": "user and entity behavior analytics",
+      "acronym": "UEBA",
+      "expansion": null,
+      "category": "monitoring",
+      "weight": 1.8,
+      "description": null,
+      "source": null
+    },
+    "endpoint detection and response": {
+      "term": "endpoint detection and response",
+      "acronym": "EDR",
+      "expansion": null,
+      "category": "monitoring",
+      "weight": 1.8,
+      "description": null,
+      "source": null
+    },
+    "vulnerability assessment": {
+      "term": "vulnerability assessment",
+      "acronym": null,
+      "expansion": null,
+      "category": "assessment",
+      "weight": 1.8,
+      "description": null,
+      "source": null
+    },
+    "penetration testing": {
+      "term": "penetration testing",
+      "acronym": null,
+      "expansion": null,
+      "category": "assessment",
+      "weight": 1.8,
+      "description": null,
+      "source": null
+    },
+    "risk assessment": {
+      "term": "risk assessment",
+      "acronym": null,
+      "expansion": null,
+      "category": "assessment",
+      "weight": 1.5,
+      "description": null,
+      "source": null
+    },
+    "threat modeling": {
+      "term": "threat modeling",
+      "acronym": null,
+      "expansion": null,
+      "category": "assessment",
+      "weight": 1.8,
+      "description": null,
+      "source": null
+    },
+    "incident response": {
+      "term": "incident response",
+      "acronym": null,
+      "expansion": null,
+      "category": "incident_management",
+      "weight": 2.0,
+      "description": null,
+      "source": null
+    },
+    "disaster recovery": {
+      "term": "disaster recovery",
+      "acronym": "DR",
+      "expansion": null,
+      "category": "incident_management",
+      "weight": 1.8,
+      "description": null,
+      "source": null
+    },
+    "business continuity": {
+      "term": "business continuity",
+      "acronym": "BC",
+      "expansion": null,
+      "category": "incident_management",
+      "weight": 1.8,
+      "description": null,
+      "source": null
+    },
+    "compliance": {
+      "term": "compliance",
+      "acronym": null,
+      "expansion": null,
+      "category": "governance",
+      "weight": 1.5,
+      "description": null,
+      "source": null
+    },
+    "general data protection regulation": {
+      "term": "general data protection regulation",
+      "acronym": "GDPR",
+      "expansion": null,
+      "category": "governance",
+      "weight": 2.0,
+      "description": null,
+      "source": null
+    },
+    "health insurance portability and accountability": {
+      "term": "health insurance portability and accountability",
+      "acronym": "HIPAA",
+      "expansion": null,
+      "category": "governance",
+      "weight": 2.0,
+      "description": null,
+      "source": null
+    },
+    "payment card industry data security standard": {
+      "term": "payment card industry data security standard",
+      "acronym": "PCI-DSS",
+      "expansion": null,
+      "category": "governance",
+      "weight": 2.0,
+      "description": null,
+      "source": null
+    },
+    "national institute of standards and technology": {
+      "term": "national institute of standards and technology",
+      "acronym": "NIST",
+      "expansion": null,
+      "category": "governance",
+      "weight": 1.8,
+      "description": null,
+      "source": null
+    },
+    "iso 27001": {
+      "term": "ISO 27001",
+      "acronym": null,
+      "expansion": null,
+      "category": "governance",
+      "weight": 1.8,
+      "description": null,
+      "source": null
+    },
+    "soc 2": {
+      "term": "SOC 2",
+      "acronym": null,
+      "expansion": null,
+      "category": "governance",
+      "weight": 1.8,
+      "description": null,
+      "source": null
+    },
+    "vulnerability": {
+      "term": "vulnerability",
+      "acronym": null,
+      "expansion": null,
+      "category": "threats",
+      "weight": 1.5,
+      "description": null,
+      "source": null
+    },
+    "zero-day": {
+      "term": "zero-day",
+      "acronym": null,
+      "expansion": null,
+      "category": "threats",
+      "weight": 1.8,
+      "description": null,
+      "source": null
+    },
+    "ransomware": {
+      "term": "ransomware",
+      "acronym": null,
+      "expansion": null,
+      "category": "threats",
+      "weight": 1.8,
+      "description": null,
+      "source": null
+    },
+    "malware": {
+      "term": "malware",
+      "acronym": null,
+      "expansion": null,
+      "category": "threats",
+      "weight": 1.5,
+      "description": null,
+      "source": null
+    },
+    "phishing": {
+      "term": "phishing",
+      "acronym": null,
+      "expansion": null,
+      "category": "threats",
+      "weight": 1.5,
+      "description": null,
+      "source": null
+    },
+    "social engineering": {
+      "term": "social engineering",
+      "acronym": null,
+      "expansion": null,
+      "category": "threats",
+      "weight": 1.5,
+      "description": null,
+      "source": null
+    },
+    "advanced persistent threat": {
+      "term": "advanced persistent threat",
+      "acronym": "APT",
+      "expansion": null,
+      "category": "threats",
+      "weight": 1.8,
+      "description": null,
+      "source": null
+    }
+  },
+  "acronyms": {
+    "auth": "authentication",
+    "authz": "authorization",
+    "mfa": "multi-factor authentication",
+    "sso": "single sign-on",
+    "rbac": "role-based access control",
+    "abac": "attribute-based access control",
+    "iam": "identity and access management",
+    "pam": "privileged access management",
+    "pki": "public key infrastructure",
+    "tls": "transport layer security",
+    "ssl": "secure sockets layer",
+    "jwt": "json web token",
+    "mtls": "mutual tls",
+    "ssh": "secure shell",
+    "ids": "intrusion detection system",
+    "ips": "intrusion prevention system",
+    "waf": "web application firewall",
+    "vpn": "virtual private network",
+    "dlp": "data loss prevention",
+    "casb": "cloud access security broker",
+    "irm": "information rights management",
+    "siem": "security information and event management",
+    "soar": "security orchestration automation response",
+    "ueba": "user and entity behavior analytics",
+    "edr": "endpoint detection and response",
+    "dr": "disaster recovery",
+    "bc": "business continuity",
+    "gdpr": "general data protection regulation",
+    "hipaa": "health insurance portability and accountability",
+    "pci-dss": "payment card industry data security standard",
+    "nist": "national institute of standards and technology",
+    "apt": "advanced persistent threat"
+  },
+  "categories": {
+    "access_control": [
+      "authentication",
+      "authorization",
+      "multi-factor authentication",
+      "single sign-on",
+      "role-based access control",
+      "attribute-based access control",
+      "identity and access management",
+      "privileged access management",
+      "authentication",
+      "authorization",
+      "multi-factor authentication",
+      "single sign-on",
+      "role-based access control",
+      "attribute-based access control",
+      "identity and access management",
+      "privileged access management"
+    ],
+    "cryptography": [
+      "encryption",
+      "public key infrastructure",
+      "transport layer security",
+      "secure sockets layer",
+      "json web token",
+      "mutual tls",
+      "secure shell",
+      "encryption",
+      "public key infrastructure",
+      "transport layer security",
+      "secure sockets layer",
+      "json web token",
+      "mutual tls",
+      "secure shell"
+    ],
+    "network_security": [
+      "firewall",
+      "intrusion detection system",
+      "intrusion prevention system",
+      "web application firewall",
+      "virtual private network",
+      "zero trust architecture",
+      "firewall",
+      "intrusion detection system",
+      "intrusion prevention system",
+      "web application firewall",
+      "virtual private network",
+      "zero trust architecture"
+    ],
+    "data_protection": [
+      "data loss prevention",
+      "cloud access security broker",
+      "information rights management",
+      "data classification",
+      "data loss prevention",
+      "cloud access security broker",
+      "information rights management",
+      "data classification"
+    ],
+    "monitoring": [
+      "security information and event management",
+      "security orchestration automation response",
+      "user and entity behavior analytics",
+      "endpoint detection and response",
+      "security information and event management",
+      "security orchestration automation response",
+      "user and entity behavior analytics",
+      "endpoint detection and response"
+    ],
+    "assessment": [
+      "vulnerability assessment",
+      "penetration testing",
+      "risk assessment",
+      "threat modeling",
+      "vulnerability assessment",
+      "penetration testing",
+      "risk assessment",
+      "threat modeling"
+    ],
+    "incident_management": [
+      "incident response",
+      "disaster recovery",
+      "business continuity",
+      "incident response",
+      "disaster recovery",
+      "business continuity"
+    ],
+    "governance": [
+      "compliance",
+      "general data protection regulation",
+      "health insurance portability and accountability",
+      "payment card industry data security standard",
+      "national institute of standards and technology",
+      "iso 27001",
+      "soc 2",
+      "compliance",
+      "general data protection regulation",
+      "health insurance portability and accountability",
+      "payment card industry data security standard",
+      "national institute of standards and technology",
+      "iso 27001",
+      "soc 2"
+    ],
+    "threats": [
+      "vulnerability",
+      "zero-day",
+      "ransomware",
+      "malware",
+      "phishing",
+      "social engineering",
+      "advanced persistent threat",
+      "vulnerability",
+      "zero-day",
+      "ransomware",
+      "malware",
+      "phishing",
+      "social engineering",
+      "advanced persistent threat"
+    ]
+  },
+  "last_updated": "2026-02-20T03:12:45.531740",
+  "source_url": "https://www.nist.gov/"
+}
