@@ -448,11 +448,12 @@ N.B. Jupyter libraries to view the notebooks with are optional.
 
 ### 1. Clone the repository
 
-N.B. Solution assumes that application is running from the root of the home directory.
+This can either be to your `~/` home directory, a container's `/workspace` directory, or any location of your choosing. Clone the repo from the chosen folder location (documentation assumes it will be running from `/workspaces/governance-rag`)
 
 ```bash
-git clone [https://github.com/AndyArch11/governance-rag](https://github.com/AndyArch11/governance-rag)
-cd ~/rag-project
+cd /workspaces
+git clone https://github.com/AndyArch11/governance-rag
+cd governance-rag
 ```
 
 ### 2. Create and activate the virtual environment
