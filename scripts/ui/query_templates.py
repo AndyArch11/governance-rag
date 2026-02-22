@@ -28,8 +28,7 @@ class QueryTemplateManager:
     def _init_db(self):
         """Initialise database schema."""
         with closing(sqlite3.connect(str(self.db_path))) as conn:
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS query_templates (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL UNIQUE,
@@ -46,20 +45,15 @@ class QueryTemplateManager:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
-            """
-            )
+            """)
 
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_template_category ON query_templates(category)
-            """
-            )
+            """)
 
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_template_tags ON query_templates(tags)
-            """
-            )
+            """)
 
             # Insert default templates
             self._insert_default_templates(conn)
@@ -334,12 +328,10 @@ class QueryTemplateManager:
         """
         with closing(sqlite3.connect(str(self.db_path))) as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                """
+            cursor.execute("""
                 SELECT DISTINCT category FROM query_templates
                 ORDER BY category
-            """
-            )
+            """)
             return [row[0] for row in cursor.fetchall()]
 
     def search_templates(self, query: str) -> List[Dict[str, Any]]:

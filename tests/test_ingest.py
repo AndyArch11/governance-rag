@@ -532,9 +532,7 @@ class TestSourceCategoryExtraction:
         file_path = "/data/data_raw/downloads/Governance/policy.html"
         file_path_obj = Path(file_path)
         parent_name = file_path_obj.parent.name
-        source_category = (
-            parent_name if parent_name not in ["", "downloads", "data_raw"] else None
-        )
+        source_category = parent_name if parent_name not in ["", "downloads", "data_raw"] else None
 
         assert source_category == "Governance"
 
@@ -545,9 +543,7 @@ class TestSourceCategoryExtraction:
         file_path = "/data/data_raw/downloads/Patterns/architecture.html"
         file_path_obj = Path(file_path)
         parent_name = file_path_obj.parent.name
-        source_category = (
-            parent_name if parent_name not in ["", "downloads", "data_raw"] else None
-        )
+        source_category = parent_name if parent_name not in ["", "downloads", "data_raw"] else None
 
         assert source_category == "Patterns"
 
@@ -558,9 +554,7 @@ class TestSourceCategoryExtraction:
         file_path = "/data/data_raw/downloads/policy.html"
         file_path_obj = Path(file_path)
         parent_name = file_path_obj.parent.name
-        source_category = (
-            parent_name if parent_name not in ["", "downloads", "data_raw"] else None
-        )
+        source_category = parent_name if parent_name not in ["", "downloads", "data_raw"] else None
 
         assert source_category is None
 
@@ -686,10 +680,10 @@ class TestParseArgs:
         """Test that --skip-bm25 overrides config in main()."""
         from scripts.ingest.ingest import main
         from scripts.ingest.ingest_config import IngestConfig
-        
+
         config = IngestConfig()
         original_enabled = config.bm25_indexing_enabled
-        
+
         try:
             # Mock parse_args to return our test args
             class TestArgs:
@@ -706,24 +700,22 @@ class TestParseArgs:
                 log_unsupported_files = False
                 purge_logs = False
                 bm25_indexing = True  # Enabled
-                skip_bm25 = True      # But skip overrides it
-            
+                skip_bm25 = True  # But skip overrides it
+
             def mock_parse_args(cfg):
                 return TestArgs()
-            
+
             monkeypatch.setattr("sys.argv", ["ingest.py"])
             monkeypatch.setattr("scripts.ingest.ingest.parse_args", mock_parse_args)
-            
+
             # Mock get_ingest_config
             def mock_get_config():
                 return config
-            
+
             monkeypatch.setattr(
-                "scripts.ingest.ingest.get_ingest_config",
-                mock_get_config,
-                raising=False
+                "scripts.ingest.ingest.get_ingest_config", mock_get_config, raising=False
             )
-            
+
             # This would require mocking more dependencies, so we'll test
             # the logic directly instead
             args = TestArgs()
@@ -731,7 +723,7 @@ class TestParseArgs:
                 config.bm25_indexing_enabled = False
             elif args.bm25_indexing:
                 config.bm25_indexing_enabled = True
-            
+
             assert config.bm25_indexing_enabled is False
         finally:
             config.bm25_indexing_enabled = original_enabled
@@ -739,21 +731,22 @@ class TestParseArgs:
     def test_main_bm25_cli_precedence_enable(self, monkeypatch):
         """Test that --bm25-indexing enables it in main()."""
         from scripts.ingest.ingest_config import IngestConfig
-        
+
         config = IngestConfig()
         original_enabled = config.bm25_indexing_enabled
-        
+
         try:
+
             class TestArgs:
                 bm25_indexing = True
                 skip_bm25 = False
-            
+
             args = TestArgs()
             if args.skip_bm25:
                 config.bm25_indexing_enabled = False
             elif args.bm25_indexing:
                 config.bm25_indexing_enabled = True
-            
+
             assert config.bm25_indexing_enabled is True
         finally:
             config.bm25_indexing_enabled = original_enabled
@@ -1166,7 +1159,7 @@ class TestShouldSkipUnsupported:
         txt_file.write_text("readme content")
 
         assert _should_skip_unsupported(str(pdf_file)) is False  # PDF should be supported
-        assert _should_skip_unsupported(str(txt_file)) is True   # TXT should be skipped
+        assert _should_skip_unsupported(str(txt_file)) is True  # TXT should be skipped
 
     def test_should_skip_binary_html_files(self, tmp_path):
         """Test that binary HTML files are skipped."""

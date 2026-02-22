@@ -125,7 +125,9 @@ class TestDownloadReferencePDF:
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.headers = {"content-type": "text/html"}
-        mock_response.iter_content = Mock(return_value=[])  # Not reached, but required for context manager
+        mock_response.iter_content = Mock(
+            return_value=[]
+        )  # Not reached, but required for context manager
         mock_response.__enter__ = Mock(return_value=mock_response)
         mock_response.__exit__ = Mock(return_value=False)
         mock_get.return_value = mock_response
@@ -174,12 +176,12 @@ class TestDownloadReferencePDF:
             assert result.success
             assert result.error is None
             assert result.path is not None
-            
+
             # Verify file exists
             path = Path(result.path)
             assert path.exists()
             assert path.suffix == ".pdf"
-            
+
             # Verify content matches
             assert path.read_bytes() == pdf_content
 
@@ -201,15 +203,15 @@ class TestDownloadReferencePDF:
             result1 = download_reference_pdf("http://example.com/paper1.pdf", tmpdir)
             assert result1.success
             path1 = Path(result1.path)
-            
+
             # Second download (same content, different URL)
             result2 = download_reference_pdf("http://example.com/paper2.pdf", tmpdir)
             assert result2.success
             path2 = Path(result2.path)
-            
+
             # Should point to same file (same SHA256)
             assert path1 == path2
-            
+
             # Only one file should exist
             pdf_files = list(Path(tmpdir).glob("*.pdf"))
             assert len(pdf_files) == 1
@@ -304,7 +306,7 @@ class TestDownloadWebContent:
     def test_redirect_page_rejected(self, mock_get: Mock) -> None:
         """HTML redirect pages are rejected."""
         redirect_html = '<html><head><meta http-equiv="refresh" content="0;url=http://example.com"></head></html>'
-        
+
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.text = redirect_html
@@ -346,12 +348,12 @@ class TestDownloadWebContent:
             assert result.success
             assert result.error is None
             assert result.path is not None
-            
+
             # Verify file exists
             path = Path(result.path)
             assert path.exists()
             assert path.suffix == ".html"
-            
+
             # Verify content matches
             assert path.read_text(encoding="utf-8") == html_content
 
@@ -370,15 +372,15 @@ class TestDownloadWebContent:
             result1 = download_web_content("http://example.com/page1.html", tmpdir)
             assert result1.success
             path1 = Path(result1.path)
-            
+
             # Second download (same content, different URL)
             result2 = download_web_content("http://example.com/page2.html", tmpdir)
             assert result2.success
             path2 = Path(result2.path)
-            
+
             # Should point to same file (same SHA256)
             assert path1 == path2
-            
+
             # Only one file should exist
             html_files = list(Path(tmpdir).glob("*.html"))
             assert len(html_files) == 1
@@ -414,7 +416,7 @@ class TestDownloadWebContent:
         with tempfile.TemporaryDirectory() as tmpdir:
             result = download_web_content("http://example.com/unicode.html", tmpdir)
             assert result.success
-            
+
             # Verify unicode content preserved
             path = Path(result.path)
             assert path.read_text(encoding="utf-8") == unicode_html
@@ -433,7 +435,7 @@ class TestDownloadWebContent:
             # Should succeed with default 10MB limit
             result1 = download_web_content("http://example.com/medium.html", tmpdir, max_size_mb=10)
             assert result1.success
-            
+
             # Should fail with 0.1MB limit
             result2 = download_web_content("http://example.com/medium.html", tmpdir, max_size_mb=0)
             assert not result2.success

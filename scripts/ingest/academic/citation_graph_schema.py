@@ -27,19 +27,16 @@ def ensure_schema(conn: sqlite3.Connection, drop_existing: bool = False) -> None
         cursor.execute("DROP TABLE IF EXISTS metadata")
 
     # Metadata table - graph-level information
-    cursor.execute(
-        """
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS metadata (
             key TEXT PRIMARY KEY,
             value TEXT,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-    """
-    )
+    """)
 
     # Nodes table - documents and references
-    cursor.execute(
-        """
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS nodes (
             node_id TEXT PRIMARY KEY,
             node_type TEXT NOT NULL,
@@ -57,8 +54,7 @@ def ensure_schema(conn: sqlite3.Connection, drop_existing: bool = False) -> None
             confidence REAL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-    """
-    )
+    """)
 
     # Add missing columns for older databases
     cursor.execute("PRAGMA table_info(nodes)")
@@ -67,8 +63,7 @@ def ensure_schema(conn: sqlite3.Connection, drop_existing: bool = False) -> None
         cursor.execute("ALTER TABLE nodes ADD COLUMN quality_score REAL DEFAULT 0.0")
 
     # Edges table - citation relationships
-    cursor.execute(
-        """
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS edges (
             source TEXT NOT NULL,
             target TEXT NOT NULL,
@@ -78,8 +73,7 @@ def ensure_schema(conn: sqlite3.Connection, drop_existing: bool = False) -> None
             FOREIGN KEY (source) REFERENCES nodes(node_id),
             FOREIGN KEY (target) REFERENCES nodes(node_id)
         )
-    """
-    )
+    """)
 
     # Indexes for common queries
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(node_type)")

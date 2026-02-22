@@ -56,6 +56,7 @@ def test_query_analytics():
     except Exception as e:
         print(f"✗ Query analytics failed: {e}")
         import traceback
+
         traceback.print_exc()
         return False
 
@@ -94,6 +95,7 @@ def test_smart_caching():
     except Exception as e:
         print(f"✗ Smart caching failed: {e}")
         import traceback
+
         traceback.print_exc()
         return False
 
@@ -101,15 +103,16 @@ def test_smart_caching():
 def test_graph_analytics():
     print("\n=== Testing Graph Analytics ===")
     try:
+        import networkx as nx
+
         from scripts.consistency_graph.advanced_analytics import (
             compute_advanced_analytics,
-            compute_pagerank_influence,
             compute_betweenness_centrality,
-            detect_communities_louvain,
             compute_network_topology_metrics,
+            compute_pagerank_influence,
+            detect_communities_louvain,
             get_node_influence_rank,
         )
-        import networkx as nx
 
         G = nx.karate_club_graph()
         print(f"✓ Test graph loaded: {len(G.nodes())} nodes, {len(G.edges())} edges")
@@ -130,13 +133,9 @@ def test_graph_analytics():
 
         analytics = compute_advanced_analytics(G)
         print("✓ Comprehensive analytics computed")
-        print(
-            f"  - Influence scores: {len(analytics['influence_scores']['pagerank'])} nodes"
-        )
+        print(f"  - Influence scores: {len(analytics['influence_scores']['pagerank'])} nodes")
         print(f"  - Communities (Louvain): {len(analytics['communities']['louvain'])}")
-        print(
-            f"  - Communities (LP): {len(analytics['communities']['label_propagation'])}"
-        )
+        print(f"  - Communities (LP): {len(analytics['communities']['label_propagation'])}")
         print(
             f"  - Top influencers: {len(analytics.get('top_influencers', {}).get('by_pagerank', []))} listed"
         )
@@ -151,6 +150,7 @@ def test_graph_analytics():
     except Exception as e:
         print(f"✗ Graph analytics failed: {e}")
         import traceback
+
         traceback.print_exc()
         return False
 
@@ -196,9 +196,7 @@ def test_explainability():
         print(f"  - Ranking explanation: {explain['ranking_explanation']}")
         print(f"  - Retrieval methods: {explain['retrieval_method']}")
         print(f"  - Similarity scores: {explain['similarity_scores']}")
-        print(
-            f"  - Source categories: {explain['metadata_insights']['source_categories']}"
-        )
+        print(f"  - Source categories: {explain['metadata_insights']['source_categories']}")
 
         assert explain["confidence_level"] in ["high", "medium", "low", "unknown"]
         assert 0.0 <= explain["avg_similarity"] <= 1.0
@@ -210,6 +208,7 @@ def test_explainability():
     except Exception as e:
         print(f"✗ Explainability failed: {e}")
         import traceback
+
         traceback.print_exc()
         return False
 

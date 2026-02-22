@@ -707,8 +707,7 @@ def validate_chunk_semantics(
 
     context_type = doc_type or "technical governance document"
 
-    prompt = textwrap.dedent(
-        f"""
+    prompt = textwrap.dedent(f"""
     You are validating chunks from a {context_type}.
 
     Determine if the following text chunk is:
@@ -725,8 +724,7 @@ def validate_chunk_semantics(
 
     CHUNK:
     \"\"\"{text}\"\"\"
-    """
-    )
+    """)
 
     validator_llm = get_LLM_validator()  # reuse LLM validator in preprocess module
 
@@ -787,8 +785,7 @@ def repair_chunk_with_llm(
 
     context_type = doc_type or "technical governance document"
 
-    prompt = textwrap.dedent(
-        f"""
+    prompt = textwrap.dedent(f"""
     You are repairing a text chunk from a {context_type}.
 
     RULES:
@@ -804,8 +801,7 @@ def repair_chunk_with_llm(
 
     ORIGINAL CHUNK:
     \"\"\"{text}\"\"\"
-    """
-    )
+    """)
 
     validator_llm = get_LLM_validator()  # reuse LLM validator in preprocess module
 

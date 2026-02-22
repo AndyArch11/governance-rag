@@ -39,8 +39,8 @@ import chardet
 import chromadb
 import psutil
 
-from scripts.ingest.chunk import chunk_text, create_parent_child_chunks
 from scripts.ingest.bm25_indexing import index_chunks_in_bm25
+from scripts.ingest.chunk import chunk_text, create_parent_child_chunks
 from scripts.ingest.embedding_cache import EmbeddingCache
 from scripts.ingest.git.bitbucket_git_connector import BitbucketGitConnector
 from scripts.ingest.git.code_parser import CodeParser
@@ -55,7 +55,7 @@ from scripts.ingest.vectors import (
     store_chunks_in_chroma,
     store_parent_chunks,
 )
-from scripts.utils.db_factory import get_vector_client, get_default_vector_path
+from scripts.utils.db_factory import get_default_vector_path, get_vector_client
 from scripts.utils.logger import create_module_logger
 
 get_logger, audit = create_module_logger("ingest")
@@ -2188,7 +2188,7 @@ def main():
             print(f"Repositories failed:   {total_repos_failed}")
 
         # Update BM25 corpus statistics (IDF values) after all documents indexed
-            # TODO: move import to top of file
+        # TODO: move import to top of file
         if config.bm25_indexing_enabled and not getattr(args, "dry_run", False):
             try:
                 logger.info("Computing BM25 corpus statistics (IDF values)...")

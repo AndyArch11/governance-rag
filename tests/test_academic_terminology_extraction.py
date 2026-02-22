@@ -50,9 +50,7 @@ class TestDomainTerminologyExtractor:
 
     def test_extractor_initialisation(self):
         """Test creating extractor."""
-        extractor = DomainTerminologyExtractor(
-            min_term_freq=2, max_terms=100, ngram_range=(1, 3)
-        )
+        extractor = DomainTerminologyExtractor(min_term_freq=2, max_terms=100, ngram_range=(1, 3))
         assert extractor.min_term_freq == 2
         assert extractor.max_terms == 100
         assert extractor.ngram_range == (1, 3)
@@ -81,8 +79,7 @@ class TestDomainTerminologyExtractor:
         """Test extracting trigrams (three-word phrases)."""
         extractor = DomainTerminologyExtractor(min_term_freq=1, ngram_range=(3, 3))
         text = (
-            "deep neural networks are powerful. "
-            "convolutional neural networks excel at vision."
+            "deep neural networks are powerful. " "convolutional neural networks excel at vision."
         )
         terms = extractor.extract_terms(text)
         # Should have three-word phrases
@@ -101,9 +98,7 @@ class TestDomainTerminologyExtractor:
         text = "the and or machine learning but neural networks"
         terms = extractor.extract_terms(text)
         # Should not contain common stop words
-        assert not any(
-            term.lower() in ["the", "and", "or", "but"] for term in terms.keys()
-        )
+        assert not any(term.lower() in ["the", "and", "or", "but"] for term in terms.keys())
 
     def test_frequency_filtering(self):
         """Test minimum frequency filtering."""
@@ -153,11 +148,9 @@ class TestDomainTerminologyExtractor:
         extractor = DomainTerminologyExtractor(min_term_freq=1)
         text = "machine learning machine learning neural networks"
         terms = extractor.extract_terms(text)
-        
+
         # machine learning appears twice, should have higher TF-IDF
-        ml_terms = [
-            (term, score) for term, score in terms.items() if "machine" in term
-        ]
+        ml_terms = [(term, score) for term, score in terms.items() if "machine" in term]
         assert len(ml_terms) > 0
         # TF-IDF should be > 0
         for term, score in ml_terms:
@@ -168,7 +161,7 @@ class TestDomainTerminologyExtractor:
         extractor = DomainTerminologyExtractor(min_term_freq=1)
         text = "machine learning neural networks deep learning"
         terms = extractor.extract_terms(text, doc_id="test_doc")
-        
+
         # BM25 scores should be calculated
         for term, score in terms.items():
             assert hasattr(score, "bm25_score")
@@ -179,7 +172,7 @@ class TestDomainTerminologyExtractor:
         extractor = DomainTerminologyExtractor(min_term_freq=1)
         text = "machine learning is powerful for artificial intelligence tasks"
         terms = extractor.extract_terms(text, doc_id="test_doc")
-        
+
         for term, score in terms.items():
             # Domain relevance should be 0-1 range
             assert 0 <= score.domain_relevance <= 1.0
@@ -192,7 +185,7 @@ class TestDomainTerminologyExtractor:
             "recurrent networks feed forward networks"
         )
         terms = extractor.extract_terms(text)
-        
+
         # Terms with common words should be related
         for term, score in terms.items():
             if "networks" in term:
@@ -205,7 +198,7 @@ class TestDomainTerminologyExtractor:
         extractor = DomainTerminologyExtractor(min_term_freq=1)
         text = "machine learning algorithms"
         terms = extractor.extract_terms(text, doc_id="my_doc_001")
-        
+
         # Should create terms with BM25 index
         assert len(terms) > 0
         assert extractor.bm25.index.num_docs > 0
@@ -213,15 +206,15 @@ class TestDomainTerminologyExtractor:
     def test_vocabulary_accumulation(self):
         """Test that vocabulary accumulates across extractions."""
         extractor = DomainTerminologyExtractor(min_term_freq=1, max_terms=100)
-        
+
         text1 = "machine learning neural networks"
         terms1 = extractor.extract_terms(text1, doc_id="doc_001")
         vocab_after_1 = len(extractor.vocabulary)
-        
+
         text2 = "deep learning reinforcement learning"
         terms2 = extractor.extract_terms(text2, doc_id="doc_002")
         vocab_after_2 = len(extractor.vocabulary)
-        
+
         # Vocabulary should grow
         assert vocab_after_2 >= vocab_after_1
 
@@ -230,7 +223,7 @@ class TestDomainTerminologyExtractor:
         extractor = DomainTerminologyExtractor(min_term_freq=1)
         text = "machine learning neural networks"
         extractor.extract_terms(text, doc_id="doc_001")
-        
+
         vocab = extractor.get_vocabulary()
         assert isinstance(vocab, dict)
         assert len(vocab) > 0
@@ -264,7 +257,7 @@ class TestDomainTerminologyStore:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "terms.db"
             store = DomainTerminologyStore(db_path)
-            
+
             terms = {
                 "machine learning": TermScore(
                     term="machine learning",
@@ -281,7 +274,7 @@ class TestDomainTerminologyStore:
                     bm25_score=0.28,
                 ),
             }
-            
+
             inserted = store.insert_terms(terms, domain="ai", doc_id="doc_001")
             assert inserted >= 0
 
@@ -290,7 +283,7 @@ class TestDomainTerminologyStore:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "terms.db"
             store = DomainTerminologyStore(db_path)
-            
+
             terms = {
                 "machine learning": TermScore(
                     term="machine learning",
@@ -305,10 +298,10 @@ class TestDomainTerminologyStore:
                     domain_relevance=0.85,
                 ),
             }
-            
+
             store.insert_terms(terms, domain="ai", doc_id="doc_001")
             ai_terms = store.get_terms_by_domain("ai", limit=10)
-            
+
             # Should retrieve terms for the domain
             assert isinstance(ai_terms, list)
 
@@ -317,7 +310,7 @@ class TestDomainTerminologyStore:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "terms.db"
             store = DomainTerminologyStore(db_path)
-            
+
             terms = {
                 "neural networks": TermScore(
                     term="neural networks",
@@ -326,10 +319,10 @@ class TestDomainTerminologyStore:
                     related_terms=["deep networks", "network architecture"],
                 ),
             }
-            
+
             store.insert_terms(terms, domain="ai", doc_id="doc_001")
             relationships = store.get_term_relationships("neural networks")
-            
+
             assert isinstance(relationships, list)
 
     def test_store_and_retrieve_roundtrip(self):
@@ -337,7 +330,7 @@ class TestDomainTerminologyStore:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "terms.db"
             store = DomainTerminologyStore(db_path)
-            
+
             terms = {
                 "machine learning": TermScore(
                     term="machine learning",
@@ -347,10 +340,10 @@ class TestDomainTerminologyStore:
                     term_type="concept",
                 ),
             }
-            
+
             store.insert_terms(terms, domain="ai", doc_id="doc_001")
             retrieved = store.get_terms_by_domain("ai", limit=10)
-            
+
             # Should retrieve the inserted term
             assert any(t["term"] == "machine learning" for t in retrieved)
 
@@ -359,7 +352,7 @@ class TestDomainTerminologyStore:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "terms.db"
             store = DomainTerminologyStore(db_path)
-            
+
             ai_terms = {
                 "machine learning": TermScore(
                     term="machine learning",
@@ -368,7 +361,7 @@ class TestDomainTerminologyStore:
                     domain_relevance=0.72,
                 ),
             }
-            
+
             leadership_terms = {
                 "organisational change": TermScore(
                     term="organisational change",
@@ -377,13 +370,13 @@ class TestDomainTerminologyStore:
                     domain_relevance=0.68,
                 ),
             }
-            
+
             store.insert_terms(ai_terms, domain="ai", doc_id="doc_001")
             store.insert_terms(leadership_terms, domain="leadership", doc_id="doc_002")
-            
+
             ai_retrieved = store.get_terms_by_domain("ai", limit=10)
             leadership_retrieved = store.get_terms_by_domain("leadership", limit=10)
-            
+
             assert len(ai_retrieved) > 0
             assert len(leadership_retrieved) > 0
 
@@ -392,7 +385,7 @@ class TestDomainTerminologyStore:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "terms.db"
             store = DomainTerminologyStore(db_path)
-            
+
             terms1 = {
                 "machine learning": TermScore(
                     term="machine learning",
@@ -409,15 +402,13 @@ class TestDomainTerminologyStore:
                     domain_relevance=0.60,
                 ),
             }
-            
+
             store.insert_terms(terms1, domain="ai", doc_id="doc_001")
             store.insert_terms(terms2, domain="ai", doc_id="doc_002")
-            
+
             retrieved = store.get_terms_by_domain("ai", limit=10)
-            ml_term = next(
-                (t for t in retrieved if t["term"] == "machine learning"), None
-            )
-            
+            ml_term = next((t for t in retrieved if t["term"] == "machine learning"), None)
+
             # Frequency should accumulate (5 + 3 = 8 or merged)
             if ml_term:
                 assert ml_term["frequency"] >= 3
@@ -431,7 +422,7 @@ class TestBM25Integration:
         extractor = DomainTerminologyExtractor(min_term_freq=1)
         text = "machine learning neural networks deep learning"
         extractor.extract_terms(text, doc_id="test_doc")
-        
+
         # BM25 index should be populated
         assert extractor.bm25.index.num_docs > 0
         assert len(extractor.bm25.index.inverted_index) > 0
@@ -441,7 +432,7 @@ class TestBM25Integration:
         extractor = DomainTerminologyExtractor(min_term_freq=1)
         text = "machine learning is powerful. neural networks are deep."
         terms = extractor.extract_terms(text, doc_id="test_doc")
-        
+
         # All terms should have BM25 scores
         for term, score in terms.items():
             assert score.bm25_score >= 0
@@ -451,20 +442,20 @@ class TestBM25Integration:
         extractor = DomainTerminologyExtractor(min_term_freq=1)
         text = "machine learning"
         extractor.extract_terms(text, doc_id="test_doc")
-        
+
         # Scores should be cached
         assert len(extractor.bm25_scores) > 0
 
     def test_bm25_multi_document_index(self):
         """Test BM25 indexing across multiple documents."""
         extractor = DomainTerminologyExtractor(min_term_freq=1)
-        
+
         text1 = "machine learning algorithms"
         extractor.extract_terms(text1, doc_id="doc_001")
-        
+
         text2 = "neural networks deep learning"
         extractor.extract_terms(text2, doc_id="doc_002")
-        
+
         # Index should contain both documents
         assert extractor.bm25.index.num_docs == 2
 
@@ -473,13 +464,13 @@ class TestBM25Integration:
         extractor = DomainTerminologyExtractor(min_term_freq=1)
         text = "machine learning neural networks"
         terms = extractor.extract_terms(text, doc_id="test_doc")
-        
+
         # Search should find indexed document
         if len(extractor.bm25.index.inverted_index) > 0:
             # Get a term to search for
             sample_term = list(terms.keys())[0]
             results = extractor.bm25.search(sample_term, top_k=1)
-            
+
             # Should find the document
             assert len(results) > 0 or extractor.bm25.index.num_docs == 0
 
@@ -491,7 +482,7 @@ class TestIntegrationExtractionAndStorage:
         """Test complete workflow: extract, store, retrieve."""
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "terms.db"
-            
+
             # Extract
             extractor = DomainTerminologyExtractor(min_term_freq=1, max_terms=20)
             text = (
@@ -500,14 +491,14 @@ class TestIntegrationExtractionAndStorage:
                 "recurrent networks for sequences."
             )
             terms = extractor.extract_terms(text, doc_id="doc_001")
-            
+
             # Store
             store = DomainTerminologyStore(db_path)
             inserted = store.insert_terms(terms, domain="ai", doc_id="doc_001")
-            
+
             # Retrieve
             retrieved = store.get_terms_by_domain("ai", limit=10)
-            
+
             assert len(retrieved) > 0
             assert inserted >= 0
 
@@ -515,25 +506,26 @@ class TestIntegrationExtractionAndStorage:
         """Test aggregating terminology from multiple documents."""
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "terms.db"
-            
+
             extractor = DomainTerminologyExtractor(min_term_freq=1)
             store = DomainTerminologyStore(db_path)
-            
+
             # Document 1
             text1 = "machine learning algorithms supervised learning"
             terms1 = extractor.extract_terms(text1, doc_id="doc_001")
             store.insert_terms(terms1, domain="ai", doc_id="doc_001")
-            
+
             # Document 2
             text2 = "neural networks unsupervised learning clustering"
             terms2 = extractor.extract_terms(text2, doc_id="doc_002")
             store.insert_terms(terms2, domain="ai", doc_id="doc_002")
-            
+
             # Retrieve aggregated
             retrieved = store.get_terms_by_domain("ai", limit=20)
-            
+
             # Should have terms from both documents
             assert len(retrieved) > 0
+
 
 class TestDomainRelevanceCalculation:
     """Test domain_relevance scoring calculation (60% TF-IDF + 40% BM25)."""
@@ -541,28 +533,29 @@ class TestDomainRelevanceCalculation:
     def test_domain_relevance_range(self):
         """Test that domain_relevance stays within 0-1 range."""
         extractor = DomainTerminologyExtractor(min_term_freq=1)
-        
+
         # Create a text with varied term frequencies
         text = (
             "machine machine machine learning learning network network network network "
             "neural deep deep deep deep deep deep deep deep deep deep deep "
             "algorithm technique implementation approach"
         )
-        
+
         terms = extractor.extract_terms(text, doc_id="test_doc")
-        
+
         # All relevance scores should be in [0, 1]
         for term, score in terms.items():
-            assert 0.0 <= score.domain_relevance <= 1.0, \
-                f"Term '{term}' has relevance {score.domain_relevance} outside [0, 1]"
+            assert (
+                0.0 <= score.domain_relevance <= 1.0
+            ), f"Term '{term}' has relevance {score.domain_relevance} outside [0, 1]"
 
     def test_domain_relevance_weighted_average(self):
         """Test that domain_relevance correctly applies 60% TF-IDF + 40% BM25."""
         extractor = DomainTerminologyExtractor(min_term_freq=1)
-        
+
         text = "machine learning machine learning machine learning"
         terms = extractor.extract_terms(text, doc_id="test_doc")
-        
+
         for term, score in terms.items():
             # Verify that domain_relevance is a valid weighted average
             # domain_relevance = (tf_idf * 0.6) + (normalised_bm25 * 0.4)
@@ -570,7 +563,7 @@ class TestDomainRelevanceCalculation:
             # So weighted average should be in [0, 1]
             assert score.domain_relevance >= 0.0
             assert score.domain_relevance <= 1.0
-            
+
             # If TF-IDF and BM25 are both available, verify the calculation
             if score.tf_idf > 0 or score.bm25_score > 0:
                 # Score should be influenced by both components
@@ -579,16 +572,16 @@ class TestDomainRelevanceCalculation:
     def test_higher_tf_idf_increases_relevance(self):
         """Test that higher TF-IDF leads to higher domain_relevance."""
         extractor = DomainTerminologyExtractor(min_term_freq=1)
-        
+
         # Create two documents with different term frequencies
         # Document 1: rare term
         text1 = "machine learning rare_term"
         terms1 = extractor.extract_terms(text1, doc_id="doc1")
-        
+
         # Document 2: common term
         text2 = "machine machine machine learning learning learning"
         terms2 = extractor.extract_terms(text2, doc_id="doc2")
-        
+
         # Both should have valid scores
         assert len(terms1) > 0
         assert len(terms2) > 0
@@ -596,36 +589,38 @@ class TestDomainRelevanceCalculation:
     def test_domain_relevance_no_negative_values(self):
         """Test that domain_relevance never produces negative values."""
         extractor = DomainTerminologyExtractor(min_term_freq=1)
-        
+
         # Test with minimal text
         text = "single word"
         terms = extractor.extract_terms(text, doc_id="test_doc")
-        
+
         for term, score in terms.items():
-            assert score.domain_relevance >= 0.0, \
-                f"Term '{term}' has negative relevance {score.domain_relevance}"
+            assert (
+                score.domain_relevance >= 0.0
+            ), f"Term '{term}' has negative relevance {score.domain_relevance}"
 
     def test_domain_relevance_consistency(self):
         """Test that same text produces same relevance scores."""
         extractor1 = DomainTerminologyExtractor(min_term_freq=1)
         extractor2 = DomainTerminologyExtractor(min_term_freq=1)
-        
+
         text = "machine learning neural networks deep learning algorithms"
-        
+
         terms1 = extractor1.extract_terms(text, doc_id="doc1")
         terms2 = extractor2.extract_terms(text, doc_id="doc1")  # Same doc_id for consistent BM25
-        
+
         # Should produce similar scores
         for term in terms1.keys():
             if term in terms2:
                 # Scores might differ slightly due to BM25 computation, but should be close
-                assert abs(terms1[term].domain_relevance - terms2[term].domain_relevance) < 0.01, \
-                    f"Inconsistent scores for '{term}': {terms1[term].domain_relevance} vs {terms2[term].domain_relevance}"
+                assert (
+                    abs(terms1[term].domain_relevance - terms2[term].domain_relevance) < 0.01
+                ), f"Inconsistent scores for '{term}': {terms1[term].domain_relevance} vs {terms2[term].domain_relevance}"
 
     def test_domain_relevance_no_artificial_capping(self):
         """Test that domain_relevance doesn't have artificial 1.0 cap."""
         extractor = DomainTerminologyExtractor(min_term_freq=1)
-        
+
         # Create text with varied term frequencies
         text = (
             "very very very very very frequently occurring term "
@@ -633,85 +628,90 @@ class TestDomainRelevanceCalculation:
             "but less frequent term "
             "rare rare"
         )
-        
+
         terms = extractor.extract_terms(text, doc_id="test_doc")
-        
+
         # Should have variation in scores, not all 1.0
         relevance_scores = [score.domain_relevance for score in terms.values()]
-        
+
         # Calculate statistics
         min_score = min(relevance_scores) if relevance_scores else 0
         max_score = max(relevance_scores) if relevance_scores else 0
         unique_scores = len(set(round(s, 3) for s in relevance_scores))  # Round to 3 decimals
-        
+
         # Should have variation (not all same value)
         if len(relevance_scores) > 2:
-            assert unique_scores > 1, \
-                f"All relevance scores are identical: {set(relevance_scores)}"
-        
+            assert unique_scores > 1, f"All relevance scores are identical: {set(relevance_scores)}"
+
         # Should not all be 1.0
         count_ones = sum(1 for s in relevance_scores if abs(s - 1.0) < 0.001)
-        assert count_ones < len(relevance_scores), \
-            f"All {len(relevance_scores)} scores are 1.0 (artificial capping)"
+        assert count_ones < len(
+            relevance_scores
+        ), f"All {len(relevance_scores)} scores are 1.0 (artificial capping)"
 
     def test_domain_relevance_weighted_by_tf_idf_60_percent(self):
         """Test that TF-IDF component has proper 60% weight."""
         extractor = DomainTerminologyExtractor(min_term_freq=1)
-        
+
         text = "machine learning"
         terms = extractor.extract_terms(text, doc_id="test_doc")
-        
+
         for term, score in terms.items():
             # TF-IDF should be the dominant factor (60% weight)
             # If TF-IDF is high, domain_relevance should be relatively high
             if score.tf_idf > 0.5:
                 # With 60% weight on high TF-IDF, relevance should be decent
-                assert score.domain_relevance > 0.3, \
-                    f"Term '{term}' with tf_idf={score.tf_idf} has low relevance {score.domain_relevance}"
+                assert (
+                    score.domain_relevance > 0.3
+                ), f"Term '{term}' with tf_idf={score.tf_idf} has low relevance {score.domain_relevance}"
 
     def test_domain_relevance_bm25_impact_40_percent(self):
         """Test that BM25 component has proper 40% weight."""
         extractor = DomainTerminologyExtractor(min_term_freq=1)
-        
+
         text = "machine learning concepts"
         terms = extractor.extract_terms(text, doc_id="test_doc")
-        
+
         for term, score in terms.items():
             # BM25 should contribute but not dominate (40% weight)
             # Even if BM25 is high, TF-IDF should be the primary factor
             if score.bm25_score > 0:
                 # Should have contribution from BM25
-                assert score.domain_relevance > 0, \
-                    f"Term '{term}' with bm25={score.bm25_score} has zero relevance"
+                assert (
+                    score.domain_relevance > 0
+                ), f"Term '{term}' with bm25={score.bm25_score} has zero relevance"
 
     def test_domain_relevance_edge_case_zero_bm25(self):
         """Test domain_relevance calculation when BM25 score is zero."""
         extractor = DomainTerminologyExtractor(min_term_freq=1)
-        
+
         text = "machine learning"
         terms = extractor.extract_terms(text, doc_id="test_doc")
-        
+
         for term, score in terms.items():
             # Even with zero BM25, TF-IDF (60% weight) should produce a score
             if score.bm25_score == 0:
                 # Should still have relevance from TF-IDF
-                assert score.domain_relevance == score.tf_idf * 0.6, \
-                    f"Score doesn't match TF-IDF weighted calculation: {score.domain_relevance} vs {score.tf_idf * 0.6}"
+                assert (
+                    score.domain_relevance == score.tf_idf * 0.6
+                ), f"Score doesn't match TF-IDF weighted calculation: {score.domain_relevance} vs {score.tf_idf * 0.6}"
 
     def test_domain_relevance_formula_verification(self):
         """Verify the domain_relevance formula: (tf_idf * 0.6) + (normalised_bm25 * 0.4)."""
         extractor = DomainTerminologyExtractor(min_term_freq=1)
-        
+
         text = "algorithm algorithm algorithm method network network system"
         terms = extractor.extract_terms(text, doc_id="test_doc")
-        
+
         for term, score in terms.items():
             # Calculate expected value
             # Normalised BM25 should be between 0 and 1
             if score.bm25_score > 0:
                 # We need to estimate normalised_bm25
                 # For verification, just check that the formula produces a valid result
-                calculated = (score.tf_idf * 0.6) + (min(1.0, score.bm25_score / max(0.1, 1.0)) * 0.4)
+                calculated = (score.tf_idf * 0.6) + (
+                    min(1.0, score.bm25_score / max(0.1, 1.0)) * 0.4
+                )
                 # Should be close to actual (might differ slightly due to BM25 normalisation)
                 assert isinstance(score.domain_relevance, float)
                 assert 0.0 <= score.domain_relevance <= 1.0

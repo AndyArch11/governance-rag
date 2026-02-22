@@ -667,8 +667,7 @@ class DomainTerminologyStore:
         cursor = conn.cursor()
 
         # Terminology table
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS domain_terms (
                 term_id TEXT PRIMARY KEY,
                 term TEXT NOT NULL UNIQUE,
@@ -681,12 +680,10 @@ class DomainTerminologyStore:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        """
-        )
+        """)
 
         # Term relationships table
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS term_relationships (
                 source_term TEXT NOT NULL,
                 target_term TEXT NOT NULL,
@@ -695,8 +692,7 @@ class DomainTerminologyStore:
                 FOREIGN KEY (source_term) REFERENCES domain_terms(term),
                 FOREIGN KEY (target_term) REFERENCES domain_terms(term)
             )
-        """
-        )
+        """)
 
         # Indexes
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_terms_domain ON domain_terms(domain)")

@@ -2,15 +2,15 @@ import networkx as nx
 import pytest
 
 from scripts.consistency_graph.advanced_analytics import (
-    compute_pagerank_influence,
+    compute_advanced_analytics,
     compute_betweenness_centrality,
     compute_eigenvector_centrality,
-    detect_communities_louvain,
-    detect_communities_label_propagation,
-    compute_relationship_strength,
     compute_network_topology_metrics,
     compute_node_clustering_coefficients,
-    compute_advanced_analytics,
+    compute_pagerank_influence,
+    compute_relationship_strength,
+    detect_communities_label_propagation,
+    detect_communities_louvain,
     get_node_influence_rank,
 )
 
@@ -59,7 +59,7 @@ def test_communities_louvain_two_cliques():
     # Expect at least 2 communities
     assert len(comms) >= 2
     # Nodes from first triangle mostly together
-    assert any({0, 1, 2}.issubset(c) or len({0,1,2} & c) >= 2 for c in comms)
+    assert any({0, 1, 2}.issubset(c) or len({0, 1, 2} & c) >= 2 for c in comms)
 
 
 def test_communities_label_propagation_returns_groups():
@@ -76,7 +76,7 @@ def test_relationship_strength_triangle():
     G.add_edges_from([("A", "B"), ("B", "C"), ("A", "C")])
     rel = compute_relationship_strength(G)
     # Expect metrics per edge
-    for edge in [("A","B"), ("B","C"), ("A","C")]:
+    for edge in [("A", "B"), ("B", "C"), ("A", "C")]:
         assert edge in rel or (edge[1], edge[0]) in rel
     # For existing edges, NetworkX jaccard/resource_allocation return only for non-edges.
     # Our implementation defaults missing coefficients to 0.0; combined_strength == weight.
@@ -106,7 +106,7 @@ def test_network_topology_metrics_path4():
 
 def test_node_clustering_coefficients_triangle():
     G = nx.Graph()
-    G.add_edges_from([(1,2), (2,3), (1,3)])
+    G.add_edges_from([(1, 2), (2, 3), (1, 3)])
     coeffs = compute_node_clustering_coefficients(G)
     assert coeffs[1] == coeffs[2] == coeffs[3] == 1.0
 

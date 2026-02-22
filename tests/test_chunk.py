@@ -193,9 +193,7 @@ def example():
     return "hello"
 ```
 
-And more text. """ + (
-            "Additional content. " * 100
-        )
+And more text. """ + ("Additional content. " * 100)
 
         chunks = chunk_text(text)
 
@@ -292,9 +290,7 @@ Never trust, always verify - all access requests are authenticated and authorise
 - Uptime: <b>99.99%</b>
 - Cost: $100/month
 
-""" + (
-            "Additional configuration details. " * 80
-        )
+""" + ("Additional configuration details. " * 80)
 
         chunks = chunk_text(text)
 
@@ -310,9 +306,7 @@ Never trust, always verify - all access requests are authenticated and authorise
         text = """<h1>Title</h1>    
 <p>This is a paragraph with <strong>bold</strong> text and <a href="#">a link</a>.</p>
 <div>Some div content here.</div>
-""" + (
-            "<p>More HTML content.</p> " * 100
-        )
+""" + ("<p>More HTML content.</p> " * 100)
 
         chunks = chunk_text(text)
 
@@ -335,16 +329,16 @@ class TestParentChildChunks:
     def test_parent_child_chunks_imported(self):
         """Test that create_parent_child_chunks is available."""
         from scripts.ingest.chunk import create_parent_child_chunks
-        
+
         assert callable(create_parent_child_chunks)
 
     def test_create_parent_child_basic(self):
         """Test basic parent-child chunk creation."""
         from scripts.ingest.chunk import create_parent_child_chunks
-        
+
         text = "This is content. " * 100
         child_chunks, parent_chunks = create_parent_child_chunks(text)
-        
+
         assert len(child_chunks) > 0
         assert len(parent_chunks) > 0
         assert len(child_chunks) >= len(parent_chunks)
@@ -352,27 +346,27 @@ class TestParentChildChunks:
     def test_parent_child_with_doc_type(self):
         """Test parent-child chunking respects doc_type."""
         from scripts.ingest.chunk import create_parent_child_chunks
-        
+
         text = "Policy content. " * 100
         child_chunks, parent_chunks = create_parent_child_chunks(
             text, doc_type="policy", parent_size=800, child_size=300
         )
-        
+
         assert len(child_chunks) > 0
         assert len(parent_chunks) > 0
 
     def test_parent_child_maintains_relationships(self):
         """Test that parent-child relationships are maintained."""
         from scripts.ingest.chunk import create_parent_child_chunks
-        
+
         text = "Section A. " * 50 + "Section B. " * 50
         child_chunks, parent_chunks = create_parent_child_chunks(text)
-        
+
         # Each child should reference a parent
         for child in child_chunks:
             assert "parent_id" in child
             assert child["parent_id"].startswith("parent_")
-        
+
         # Each parent should reference children
         for parent in parent_chunks:
             assert "child_ids" in parent
@@ -382,12 +376,12 @@ class TestParentChildChunks:
     def test_parent_larger_than_child(self):
         """Test that parent chunks are larger than child chunks."""
         from scripts.ingest.chunk import create_parent_child_chunks
-        
+
         text = "Content " * 200
         child_chunks, parent_chunks = create_parent_child_chunks(
             text, parent_size=1200, child_size=400
         )
-        
+
         if len(parent_chunks) > 0 and len(child_chunks) > 0:
             # Average parent should be larger than average child
             avg_parent_len = sum(len(p["text"]) for p in parent_chunks) / len(parent_chunks)

@@ -35,8 +35,8 @@ from scripts.ingest.pdfparser import (
     extract_text_from_pdf,
 )
 from scripts.ingest.vectors import (
-    store_chunks_in_chroma,
     store_child_chunks,
+    store_chunks_in_chroma,
     store_parent_chunks,
 )
 from scripts.ingest.word_frequency import WordFrequencyExtractor
@@ -707,7 +707,6 @@ def stage_chunk_and_store(
                     logger.error(f"Failed to store child chunks for {doc_id}: {child_err}")
                     raise
 
-
             # Then store parent chunks (metadata/context only; non-fatal)
             try:
                 store_parent_chunks(
@@ -756,8 +755,9 @@ def stage_chunk_and_store(
 
 def main() -> int:
     import time
+
     start_time = time.perf_counter()
-    
+
     args = parse_args()
 
     # Apply CLI overrides centrally
@@ -914,8 +914,9 @@ def main() -> int:
     for doc_idx, doc_path in enumerate(documents, 1):
         try:
             import time
+
             doc_start_time = time.perf_counter()
-            
+
             msg = f"[{doc_idx}/{len(documents)}] Processing: {doc_path.name}"
             print(msg)
             logger.info(msg)
@@ -954,7 +955,7 @@ def main() -> int:
                 "artifact_path": str(doc_path),
             }
             preprocess_time = time.perf_counter() - preprocess_start
-            
+
             # Store thesis document chunks
             ingest_start = time.perf_counter()
             if stage_chunk_and_store(
@@ -1089,7 +1090,7 @@ def main() -> int:
             }
 
             add_references_to_graph(graph, doc_id, resolved, doc_metadata=doc_metadata)
-            
+
             # Record per-document timing
             doc_duration = time.perf_counter() - doc_start_time
             logger.info(f"Completed {doc_path.name} in {doc_duration:.2f}s")
@@ -1237,7 +1238,7 @@ def main() -> int:
             from scripts.utils.db_factory import get_cache_client
 
             cache_db = get_cache_client(enable_cache=True)
-            
+
             # Update corpus stats (IDF values) now that all chunks are indexed
             total_docs = cache_db.get_bm25_corpus_size()
             if total_docs > 0:
@@ -1277,18 +1278,19 @@ def main() -> int:
             )
 
     print()
-    
+
     # Stop resource monitoring and export stats
     resource_monitor.stop()
     resource_monitor.print_summary()
     stats_file = resource_monitor.export_json()
     logger.info(f"Resource statistics exported to {stats_file}")
-    
+
     # Calculate and log total duration
     import time
+
     total_duration = time.perf_counter() - start_time
     print(f"Total time: {total_duration:.2f}s\n")
-    
+
     logger.info(f"Academic ingestion complete in {total_duration:.2f}s")
     logger.info(f"Domain terminology: {len(vocabulary)} unique terms extracted")
     audit(

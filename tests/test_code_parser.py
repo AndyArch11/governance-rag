@@ -30,8 +30,7 @@ class TestJavaParser:
     def test_java_imports_and_exports(self, parser, temp_dir):
         """Test extraction of imports and class exports."""
         java_file = temp_dir / "PaymentService.java"
-        java_file.write_text(
-            """
+        java_file.write_text("""
 package com.example.payment;
 
 import com.example.auth.AuthService;
@@ -46,8 +45,7 @@ public class PaymentService {
         // Process payment
     }
 }
-"""
-        )
+""")
 
         result = parser.parse_file(str(java_file))
 
@@ -60,8 +58,7 @@ public class PaymentService {
     def test_java_rest_endpoints(self, parser, temp_dir):
         """Test extraction of REST endpoints."""
         java_file = temp_dir / "OrderController.java"
-        java_file.write_text(
-            """
+        java_file.write_text("""
 package com.example.order;
 
 import org.springframework.web.bind.annotation.*;
@@ -80,8 +77,7 @@ public class OrderController {
         return null;
     }
 }
-"""
-        )
+""")
 
         result = parser.parse_file(str(java_file))
 
@@ -92,8 +88,7 @@ public class OrderController {
     def test_java_message_queue(self, parser, temp_dir):
         """Test extraction of message queue references."""
         java_file = temp_dir / "OrderListener.java"
-        java_file.write_text(
-            """
+        java_file.write_text("""
 package com.example.order;
 
 import org.springframework.jms.annotation.JmsListener;
@@ -110,8 +105,7 @@ public class OrderListener {
         // Handle payment
     }
 }
-"""
-        )
+""")
 
         result = parser.parse_file(str(java_file))
 
@@ -125,15 +119,13 @@ class TestGroovyParser:
     def test_groovy_gradle_parsing(self, parser, temp_dir):
         """Test parsing of Groovy gradle file."""
         gradle_file = temp_dir / "build.gradle"
-        gradle_file.write_text(
-            """
+        gradle_file.write_text("""
 dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-web:2.7.0'
     implementation 'com.example:payment-client:1.2.3'
     api 'org.apache.kafka:kafka-clients:3.0.0'
 }
-"""
-        )
+""")
 
         result = parser.parse_file(str(gradle_file))
 
@@ -150,8 +142,7 @@ class TestMavenParser:
     def test_maven_pom_dependencies(self, parser, temp_dir):
         """Test extraction of Maven dependencies."""
         pom_file = temp_dir / "pom.xml"
-        pom_file.write_text(
-            """
+        pom_file.write_text("""
 <project xmlns="http://maven.apache.org/POM/4.0.0">
     <name>Payment Service</name>
     <dependencies>
@@ -167,8 +158,7 @@ class TestMavenParser:
         </dependency>
     </dependencies>
 </project>
-"""
-        )
+""")
 
         result = parser.parse_file(str(pom_file))
 
@@ -186,8 +176,7 @@ class TestMuleParser:
     def test_mule_xml_flows(self, parser, temp_dir):
         """Test extraction of Mule flows and connectors."""
         mule_file = temp_dir / "order-mule.xml"
-        mule_file.write_text(
-            """
+        mule_file.write_text("""
 <mule xmlns="http://www.mulesoft.org/schema/mule/core">
     <flow name="processOrder">
         <http:listener path="/orders" config-ref="HTTP_Listener_config"/>
@@ -200,8 +189,7 @@ class TestMuleParser:
         <logger message="Validating order"/>
     </flow>
 </mule>
-"""
-        )
+""")
 
         result = parser.parse_file(str(mule_file))
 
@@ -219,8 +207,7 @@ class TestResultConversion:
     def test_parse_result_to_dict(self, parser, temp_dir):
         """Test converting ParseResult to dictionary."""
         java_file = temp_dir / "Service.java"
-        java_file.write_text(
-            """
+        java_file.write_text("""
 package com.example;
 
 import org.springframework.stereotype.Service;
@@ -228,8 +215,7 @@ import org.springframework.stereotype.Service;
 @Service
 public class MyService {
 }
-"""
-        )
+""")
 
         result = parser.parse_file(str(java_file))
         result_dict = result.to_dict()

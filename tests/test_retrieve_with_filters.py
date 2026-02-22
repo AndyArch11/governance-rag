@@ -23,17 +23,28 @@ class MockCollection:
     """Mock ChromaDB collection for testing."""
 
     def __init__(self, chunks: List[str] | None = None, metadata: List[Dict] | None = None):
-        self.chunks = chunks if chunks is not None else ["chunk1", "chunk2", "chunk3", "chunk4", "chunk5"]
-        self.metadata = metadata if metadata is not None else [
-            {"chunk_id": f"id_{i}", "distance": 0.1 * i, "source_category": "code", "language": "java"}
-            for i in range(len(self.chunks))
-        ]
+        self.chunks = (
+            chunks if chunks is not None else ["chunk1", "chunk2", "chunk3", "chunk4", "chunk5"]
+        )
+        self.metadata = (
+            metadata
+            if metadata is not None
+            else [
+                {
+                    "chunk_id": f"id_{i}",
+                    "distance": 0.1 * i,
+                    "source_category": "code",
+                    "language": "java",
+                }
+                for i in range(len(self.chunks))
+            ]
+        )
         self.query_calls = []
 
     def query(self, query_embeddings, n_results, where=None, include=None):
         """Mock query method."""
         self.query_calls.append({"where": where, "n_results": n_results})
-        
+
         # Return empty results if collection is empty
         if not self.chunks:
             return {
@@ -41,7 +52,7 @@ class MockCollection:
                 "metadatas": [[]],
                 "distances": [[]],
             }
-        
+
         return {
             "documents": [self.chunks[:n_results]],
             "metadatas": [self.metadata[:n_results]],
@@ -57,7 +68,7 @@ class MockCollection:
                 "documents": [],
                 "metadatas": [],
             }
-        
+
         if ids:
             # Return specific chunks by ID
             result_chunks = []
@@ -76,35 +87,38 @@ class MockCollection:
             }
         # Return all matching chunks
         return {
-            "ids": [m.get("chunk_id", f"id_{i}") for i, m in enumerate(self.metadata[:limit or len(self.metadata)])],
-            "documents": self.chunks[:limit or len(self.chunks)],
-            "metadatas": self.metadata[:limit or len(self.metadata)],
+            "ids": [
+                m.get("chunk_id", f"id_{i}")
+                for i, m in enumerate(self.metadata[: limit or len(self.metadata)])
+            ],
+            "documents": self.chunks[: limit or len(self.chunks)],
+            "metadatas": self.metadata[: limit or len(self.metadata)],
         }
 
 
 def get_where_value(where_clause, key):
     """Extract value from where clause supporting both direct and $and formats.
-    
+
     Args:
         where_clause: ChromaDB where clause (dict)
         key: Key to extract (e.g., "language", "source_category")
-    
+
     Returns:
         Value if found, None otherwise
     """
     if where_clause is None:
         return None
-    
+
     # Direct key access
     if key in where_clause:
         return where_clause[key]
-    
+
     # $and format: {'$and': [{'embedding_model': '...'}, {'language': 'java'}, ...]}
     if "$and" in where_clause:
         for condition in where_clause["$and"]:
             if isinstance(condition, dict) and key in condition:
                 return condition[key]
-    
+
     return None
 
 
@@ -221,7 +235,9 @@ class TestGraphEnhancedRetrieval:
         mock.expand_with_neighbours.return_value = ["id_0", "id_1", "id_2", "id_5", "id_6"]
         return mock
 
-    def test_graph_expansion_adds_chunks(self, mock_collection, mock_embedding, mock_graph_retriever):
+    def test_graph_expansion_adds_chunks(
+        self, mock_collection, mock_embedding, mock_graph_retriever
+    ):
         """Test that graph expansion adds related chunks."""
         from scripts.rag.retrieve import retrieve_with_filters
 
@@ -578,11 +594,11 @@ class TestValidation:
         from scripts.rag.retrieve import retrieve_with_filters
 
         empty_collection = MockCollection(chunks=[], metadata=[])
-        
+
         # Verify collection is actually empty
         assert empty_collection.chunks == []
         assert empty_collection.metadata == []
-        
+
         # Test query returns empty
         test_query = empty_collection.query([0.1] * 1024, 5)
         assert test_query["documents"] == [[]]

@@ -7,15 +7,15 @@ from pathlib import Path
 
 import pytest
 
+from scripts.ingest.academic.citation_graph_schema import ensure_schema
+from scripts.ingest.academic.citation_graph_writer import CitationGraphWriter
 from scripts.ingest.academic.graph import (
     CitationGraph,
     CitationNode,
     clean_book_review_title,
-    extract_title_from_citation,
     extract_authors_from_citation,
+    extract_title_from_citation,
 )
-from scripts.ingest.academic.citation_graph_schema import ensure_schema
-from scripts.ingest.academic.citation_graph_writer import CitationGraphWriter
 
 
 class TestCitationNode:
@@ -390,7 +390,11 @@ class TestCitationGraphSQLite:
             # Check database exists
             assert db_path.exists()
             # JSON export path may be different - just verify data was written
-            data_json = json.loads(db_path.parent.glob("*.json").__next__().read_text()) if list(db_path.parent.glob("*.json")) else None
+            data_json = (
+                json.loads(db_path.parent.glob("*.json").__next__().read_text())
+                if list(db_path.parent.glob("*.json"))
+                else None
+            )
             if data_json:
                 assert "nodes" in data_json or True  # Either JSON or DB is fine
 

@@ -1,11 +1,12 @@
 """Tests for academic ingestion stage 3 (metadata resolution)."""
 
 from unittest.mock import Mock, patch
+
+from scripts.ingest.academic.cache import ReferenceCache
+from scripts.ingest.academic.config import AcademicIngestConfig
 from scripts.ingest.academic.providers import resolve_reference
 from scripts.ingest.academic.providers.base import Reference, ReferenceStatus
 from scripts.ingest.ingest_academic import stage_resolve_metadata
-from scripts.ingest.academic.cache import ReferenceCache
-from scripts.ingest.academic.config import AcademicIngestConfig
 
 
 class DummyLogger:
@@ -16,10 +17,10 @@ class DummyLogger:
 
     def info(self, msg):
         self.infos.append(msg)
-    
+
     def warning(self, msg):
         self.warnings.append(msg)
-    
+
     def error(self, msg, exc_info=False):
         self.errors.append(msg)
 
@@ -34,20 +35,22 @@ def test_resolve_reference_returns_reference_object():
         resolved=True,
         title="Test Paper",
         year=2020,
-        status=ReferenceStatus.RESOLVED
+        status=ReferenceStatus.RESOLVED,
     )
-    
+
     # Mock the default chain's resolve method
-    with patch('scripts.ingest.academic.providers.create_default_chain') as mock_chain:
+    with patch("scripts.ingest.academic.providers.create_default_chain") as mock_chain:
         # Create a mock ResolutionResult (use Mock to avoid dataclass instantiation)
         mock_result = Mock()
         mock_result.reference = mock_ref
         mock_result.confidence = 0.95
         mock_chain.return_value.resolve.return_value = mock_result
-        
-        resolved_ref, confidence = resolve_reference("Smith, J. (2020). Test Paper. doi:10.1000/182")
+
+        resolved_ref, confidence = resolve_reference(
+            "Smith, J. (2020). Test Paper. doi:10.1000/182"
+        )
         assert resolved_ref is not None
-        assert hasattr(resolved_ref, 'doi')
+        assert hasattr(resolved_ref, "doi")
         assert resolved_ref.doi == "10.1000/182"
         assert isinstance(confidence, float)
         assert 0.0 <= confidence <= 1.0
@@ -62,12 +65,12 @@ def test_stage_resolve_metadata_returns_list():
     citations = ["Example citation 1", "Example citation 2"]
 
     resolved = stage_resolve_metadata(citations, cache, config, logger)
-    
+
     assert isinstance(resolved, list)
     assert len(resolved) == 2
     for ref in resolved:
         assert isinstance(ref, dict)
-        assert 'citation' in ref
+        assert "citation" in ref
 
 
 def test_stage_resolve_metadata_dry_run_skips_resolution():
@@ -79,10 +82,10 @@ def test_stage_resolve_metadata_dry_run_skips_resolution():
     citations = ["Example citation"]
 
     resolved = stage_resolve_metadata(citations, cache, config, logger)
-    
+
     # In dry-run mode, should create unresolved references quickly
     assert len(resolved) == 1
-    assert resolved[0]['citation'] == "Example citation"
+    assert resolved[0]["citation"] == "Example citation"
 
 
 def test_stage_resolve_metadata_cache_integration():
@@ -91,15 +94,15 @@ def test_stage_resolve_metadata_cache_integration():
     logger = DummyLogger()
     config = AcademicIngestConfig()
     config.dry_run = True
-    
+
     # Run resolution twice with same citations
     citations = ["Test citation 1", "Test citation 2"]
     first_run = stage_resolve_metadata(citations, cache, config, logger)
     second_run = stage_resolve_metadata(citations, cache, config, logger)
-    
+
     # Both runs should produce same number of results
     assert len(first_run) == len(second_run) == 2
-    
+
     # Results should have citation text
-    assert all('citation' in ref for ref in first_run)
-    assert all('citation' in ref for ref in second_run)
+    assert all("citation" in ref for ref in first_run)
+    assert all("citation" in ref for ref in second_run)

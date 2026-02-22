@@ -4,16 +4,17 @@ Tests persona configuration, filtering logic, reranking scores,
 and edge cases for academic query personalisation.
 """
 
-import pytest
 from datetime import datetime
 
+import pytest
+
 from scripts.search.persona_retrieval import (
-    PersonaConfig,
-    get_persona_config,
-    apply_persona_reranking,
-    SUPERVISOR_CONFIG,
     ASSESSOR_CONFIG,
     RESEARCHER_CONFIG,
+    SUPERVISOR_CONFIG,
+    PersonaConfig,
+    apply_persona_reranking,
+    get_persona_config,
 )
 
 
@@ -88,9 +89,19 @@ class TestApplyPersonaReranking:
         """Supervisor filters to academic/report/preprint only."""
         chunks = ["chunk1", "chunk2", "chunk3", "chunk4"]
         metadata = [
-            {"reference_type": "academic", "quality_score": 0.8, "citation_count": 15, "distance": 0.1},
+            {
+                "reference_type": "academic",
+                "quality_score": 0.8,
+                "citation_count": 15,
+                "distance": 0.1,
+            },
             {"reference_type": "blog", "quality_score": 0.8, "citation_count": 15, "distance": 0.1},
-            {"reference_type": "preprint", "quality_score": 0.8, "citation_count": 15, "distance": 0.15},
+            {
+                "reference_type": "preprint",
+                "quality_score": 0.8,
+                "citation_count": 15,
+                "distance": 0.15,
+            },
             {"reference_type": "news", "quality_score": 0.8, "citation_count": 15, "distance": 0.1},
         ]
         result_chunks, result_meta = apply_persona_reranking(
@@ -105,13 +116,26 @@ class TestApplyPersonaReranking:
         """Assessor filters to academic/report only."""
         chunks = ["chunk1", "chunk2", "chunk3"]
         metadata = [
-            {"reference_type": "academic", "quality_score": 0.8, "citation_count": 10, "distance": 0.1},
-            {"reference_type": "report", "quality_score": 0.8, "citation_count": 10, "distance": 0.1},
-            {"reference_type": "preprint", "quality_score": 0.8, "citation_count": 10, "distance": 0.1},
+            {
+                "reference_type": "academic",
+                "quality_score": 0.8,
+                "citation_count": 10,
+                "distance": 0.1,
+            },
+            {
+                "reference_type": "report",
+                "quality_score": 0.8,
+                "citation_count": 10,
+                "distance": 0.1,
+            },
+            {
+                "reference_type": "preprint",
+                "quality_score": 0.8,
+                "citation_count": 10,
+                "distance": 0.1,
+            },
         ]
-        result_chunks, result_meta = apply_persona_reranking(
-            chunks, metadata, "assessor", top_k=10
-        )
+        result_chunks, result_meta = apply_persona_reranking(chunks, metadata, "assessor", top_k=10)
         # Should only have academic and report
         assert len(result_chunks) == 2
         types = {m["reference_type"] for m in result_meta}
@@ -121,14 +145,27 @@ class TestApplyPersonaReranking:
         """Filter by minimum quality score threshold."""
         chunks = ["chunk1", "chunk2", "chunk3"]
         metadata = [
-            {"reference_type": "academic", "quality_score": 0.8, "citation_count": 10, "distance": 0.1},
-            {"reference_type": "academic", "quality_score": 0.5, "citation_count": 10, "distance": 0.1},
-            {"reference_type": "academic", "quality_score": 0.3, "citation_count": 10, "distance": 0.1},
+            {
+                "reference_type": "academic",
+                "quality_score": 0.8,
+                "citation_count": 10,
+                "distance": 0.1,
+            },
+            {
+                "reference_type": "academic",
+                "quality_score": 0.5,
+                "citation_count": 10,
+                "distance": 0.1,
+            },
+            {
+                "reference_type": "academic",
+                "quality_score": 0.3,
+                "citation_count": 10,
+                "distance": 0.1,
+            },
         ]
         # Assessor requires min_quality >= 0.7
-        result_chunks, result_meta = apply_persona_reranking(
-            chunks, metadata, "assessor", top_k=10
-        )
+        result_chunks, result_meta = apply_persona_reranking(chunks, metadata, "assessor", top_k=10)
         assert len(result_chunks) == 1
         assert result_meta[0]["quality_score"] == 0.8
 
@@ -136,9 +173,24 @@ class TestApplyPersonaReranking:
         """Filter by minimum citation count threshold."""
         chunks = ["chunk1", "chunk2", "chunk3"]
         metadata = [
-            {"reference_type": "academic", "quality_score": 0.8, "citation_count": 50, "distance": 0.1},
-            {"reference_type": "academic", "quality_score": 0.8, "citation_count": 5, "distance": 0.1},
-            {"reference_type": "academic", "quality_score": 0.8, "citation_count": 0, "distance": 0.1},
+            {
+                "reference_type": "academic",
+                "quality_score": 0.8,
+                "citation_count": 50,
+                "distance": 0.1,
+            },
+            {
+                "reference_type": "academic",
+                "quality_score": 0.8,
+                "citation_count": 5,
+                "distance": 0.1,
+            },
+            {
+                "reference_type": "academic",
+                "quality_score": 0.8,
+                "citation_count": 0,
+                "distance": 0.1,
+            },
         ]
         # Supervisor requires min_citation >= 10
         result_chunks, result_meta = apply_persona_reranking(
@@ -173,9 +225,7 @@ class TestApplyPersonaReranking:
                 "distance": 0.1,
             },
         ]
-        result_chunks, result_meta = apply_persona_reranking(
-            chunks, metadata, "assessor", top_k=10
-        )
+        result_chunks, result_meta = apply_persona_reranking(chunks, metadata, "assessor", top_k=10)
         # Assessor require_verifiable=True and include_stale_links=False
         assert len(result_chunks) == 1
         assert result_meta[0]["link_status"] == "available"

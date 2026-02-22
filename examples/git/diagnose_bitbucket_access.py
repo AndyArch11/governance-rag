@@ -5,32 +5,38 @@ Diagnostic script to check Bitbucket Cloud access and identify workspace names.
 
 import os
 import sys
+
 import requests
-from requests.auth import HTTPBasicAuth
 from dotenv import load_dotenv
+from requests.auth import HTTPBasicAuth
+
 
 def main():
     # Load environment variables
     load_dotenv()
-    
+
     # Get credentials
-    username = os.getenv("BITBUCKET_API_USERNAME") or os.getenv("BITBUCKET_USERNAME") or input("BitBucket account email (for API): ")
+    username = (
+        os.getenv("BITBUCKET_API_USERNAME")
+        or os.getenv("BITBUCKET_USERNAME")
+        or input("BitBucket account email (for API): ")
+    )
     password = os.getenv("BITBUCKET_PASSWORD") or input("BitBucket app password: ")
     host = os.getenv("BITBUCKET_HOST", "https://api.bitbucket.org/2.0")
-    
+
     if not username or not password:
         print("[ERROR] Username and password are required")
         sys.exit(1)
-    
+
     auth = HTTPBasicAuth(username, password)
-    
+
     print(f"\n{'='*80}")
     print("BitBucket Cloud Access Diagnostic")
     print(f"{'='*80}")
     print(f"\nUsing API username: {username}")
     print(f"Note: For Bitbucket Cloud API, use your account EMAIL, not Bitbucket username")
     print()
-    
+
     # Test 1: Check authentication
     print("[1/4] Testing authentication...")
     try:
@@ -45,14 +51,14 @@ def main():
         print(f"  ✗ Authentication failed: {e}")
         print("\n[ERROR] Cannot authenticate. Check your credentials.")
         sys.exit(1)
-    
+
     # Test 2: List workspaces
     print("\n[2/4] Listing workspaces you have access to...")
     try:
         resp = requests.get(f"{host}/workspaces", auth=auth, params={"pagelen": 100})
         resp.raise_for_status()
         workspaces = resp.json().get("values", [])
-        
+
         if workspaces:
             print(f"  ✓ Found {len(workspaces)} workspace(s):")
             for ws in workspaces:
@@ -61,7 +67,7 @@ def main():
             print("  ! No workspaces found")
     except Exception as e:
         print(f"  ✗ Failed to list workspaces: {e}")
-    
+
     # Test 3: List repositories (user has access to)
     print("\n[3/4] Listing repositories you have access to...")
     try:
@@ -72,7 +78,7 @@ def main():
         )
         resp.raise_for_status()
         repos = resp.json().get("values", [])
-        
+
         if repos:
             print(f"  ✓ Found {len(repos)} repository/repositories (showing first 10):")
             workspaces_found = set()
@@ -82,7 +88,7 @@ def main():
                 workspace = full_name.split("/")[0] if "/" in full_name else "unknown"
                 workspaces_found.add(workspace)
                 print(f"    - {full_name}")
-            
+
             print(f"\n  Workspaces with repositories:")
             for ws in sorted(workspaces_found):
                 print(f"    - {ws}")
@@ -90,7 +96,7 @@ def main():
             print("  ! No repositories found")
     except Exception as e:
         print(f"  ✗ Failed to list repositories: {e}")
-    
+
     # Test 4: Try specific workspace (if provided)
     workspace = input("\n[4/4] Enter workspace name to test (or press Enter to skip): ").strip()
     if workspace:
@@ -117,7 +123,7 @@ def main():
                 print(f"  ✗ Error: {e}")
         except Exception as e:
             print(f"  ✗ Failed: {e}")
-    
+
     print(f"\n{'='*80}")
     print("RECOMMENDATIONS:")
     print(f"{'='*80}")
@@ -135,11 +141,12 @@ def main():
     print("   to listing repositories you have explicit access to")
     print("\nExample command:")
     if workspaces:
-        ws_example = workspaces[0]['slug']
+        ws_example = workspaces[0]["slug"]
         print(f"  python scripts/ingest/ingest_bitbucket.py \\")
         print(f"    --username myuser --api-username {username} \\")
         print(f"    --project {ws_example} --repo-pattern <pattern> --is-cloud")
     print()
+
 
 if __name__ == "__main__":
     main()

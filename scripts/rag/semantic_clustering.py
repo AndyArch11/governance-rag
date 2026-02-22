@@ -115,8 +115,7 @@ class SemanticClusterer:
         cursor = conn.cursor()
 
         # Create embeddings table
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS semantic_embeddings (
                 cache_key TEXT PRIMARY KEY,
                 model TEXT NOT NULL,
@@ -126,16 +125,13 @@ class SemanticClusterer:
                 accessed_at TEXT NOT NULL,
                 access_count INTEGER DEFAULT 1
             )
-        """
-        )
+        """)
 
         # Create index on model and term for faster lookups
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_model_term 
             ON semantic_embeddings(model, term)
-        """
-        )
+        """)
 
         conn.commit()
         conn.close()

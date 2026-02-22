@@ -40,15 +40,15 @@ def query_module(monkeypatch):
 
     monkeypatch.setattr(query, "logger", dummy_logger)
     monkeypatch.setattr(query, "audit", lambda evt, data: audit_events.append((evt, data)))
-    
+
     # Patch RAGConfig to disable resource monitoring in tests
     original_ragconfig = query.RAGConfig
-    
+
     class TestRAGConfig(original_ragconfig):
         def __init__(self):
             super().__init__()
             self.enable_resource_monitoring = False
-    
+
     monkeypatch.setattr(query, "RAGConfig", TestRAGConfig)
 
     return query, dummy_logger, audit_events

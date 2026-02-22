@@ -3,8 +3,10 @@
 Tests the common index_chunks_in_bm25() function used across all three ingest modules.
 """
 
+from unittest.mock import MagicMock, Mock, call, patch
+
 import pytest
-from unittest.mock import Mock, MagicMock, patch, call
+
 from scripts.ingest.bm25_indexing import index_chunks_in_bm25
 
 
@@ -167,11 +169,10 @@ class TestIndexChunksInBm25:
         chunks = ["test chunk"]
         doc_id = "test_doc"
 
-        with patch(
-            "scripts.ingest.bm25_indexing.get_cache_client"
-        ) as mock_get_cache, patch(
-            "scripts.ingest.bm25_indexing.BM25Search"
-        ) as mock_bm25:
+        with (
+            patch("scripts.ingest.bm25_indexing.get_cache_client") as mock_get_cache,
+            patch("scripts.ingest.bm25_indexing.BM25Search") as mock_bm25,
+        ):
             mock_cache_db = Mock()
             mock_get_cache.return_value = mock_cache_db
 

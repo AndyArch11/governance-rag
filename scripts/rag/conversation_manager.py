@@ -29,8 +29,7 @@ class ConversationManager:
     def _init_db(self):
         """Initialise database schema."""
         with closing(sqlite3.connect(str(self.db_path))) as conn:
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS conversations (
                     id TEXT PRIMARY KEY,
                     title TEXT,
@@ -42,11 +41,9 @@ class ConversationManager:
                     cached_results INTEGER DEFAULT 0,
                     tags TEXT
                 )
-            """
-            )
+            """)
 
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS conversation_turns (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     conversation_id TEXT NOT NULL,
@@ -60,20 +57,15 @@ class ConversationManager:
                     cache_hit BOOLEAN DEFAULT 0,
                     FOREIGN KEY (conversation_id) REFERENCES conversations(id)
                 )
-            """
-            )
+            """)
 
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_conversation_id ON conversation_turns(conversation_id)
-            """
-            )
+            """)
 
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_created_at ON conversations(created_at)
-            """
-            )
+            """)
 
             conn.commit()
 

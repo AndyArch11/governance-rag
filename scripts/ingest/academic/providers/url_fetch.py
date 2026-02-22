@@ -7,7 +7,7 @@ when all other providers have failed.
 WARNING: This is a best-effort provider with lower reliability.
 Should only be used as absolute last resort.
 
-TODO: Use newspaper3k or similar library for more robust HTML parsing and metadata extraction   
+TODO: Use newspaper3k or similar library for more robust HTML parsing and metadata extraction
 """
 
 import logging

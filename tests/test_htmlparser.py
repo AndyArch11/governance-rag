@@ -437,8 +437,9 @@ class TestTableExtraction:
 
     def test_extract_simple_table(self, tmp_path):
         """Test extraction of a simple table."""
-        from scripts.ingest.htmlparser import _convert_table_to_text, _extract_table_metadata
         from bs4 import BeautifulSoup
+
+        from scripts.ingest.htmlparser import _convert_table_to_text, _extract_table_metadata
 
         html = """
         <table>
@@ -447,31 +448,32 @@ class TestTableExtraction:
             <tr><td>Bob</td><td>25</td></tr>
         </table>
         """
-        soup = BeautifulSoup(html, 'html.parser')
-        table = soup.find('table')
+        soup = BeautifulSoup(html, "html.parser")
+        table = soup.find("table")
 
         # Test metadata extraction
         metadata = _extract_table_metadata(table)
-        assert metadata['rows'] == 3
-        assert metadata['cols'] == 2
-        assert metadata['has_headers'] is True
-        assert metadata['header_rows'] == 1
+        assert metadata["rows"] == 3
+        assert metadata["cols"] == 2
+        assert metadata["has_headers"] is True
+        assert metadata["header_rows"] == 1
 
         # Test text conversion
         text = _convert_table_to_text(table, 0)
-        assert '[TABLE 0]' in text
-        assert '[/TABLE 0]' in text
-        assert 'Name' in text
-        assert 'Age' in text
-        assert 'Alice' in text
-        assert 'Bob' in text
+        assert "[TABLE 0]" in text
+        assert "[/TABLE 0]" in text
+        assert "Name" in text
+        assert "Age" in text
+        assert "Alice" in text
+        assert "Bob" in text
         # Should have separator line
-        assert '|---|---|' in text
+        assert "|---|---|" in text
 
     def test_extract_table_without_headers(self, tmp_path):
         """Test extraction of table with no header row."""
-        from scripts.ingest.htmlparser import _convert_table_to_text, _extract_table_metadata
         from bs4 import BeautifulSoup
+
+        from scripts.ingest.htmlparser import _convert_table_to_text, _extract_table_metadata
 
         html = """
         <table>
@@ -479,20 +481,20 @@ class TestTableExtraction:
             <tr><td>A2</td><td>B2</td><td>C2</td></tr>
         </table>
         """
-        soup = BeautifulSoup(html, 'html.parser')
-        table = soup.find('table')
+        soup = BeautifulSoup(html, "html.parser")
+        table = soup.find("table")
 
         metadata = _extract_table_metadata(table)
-        assert metadata['rows'] == 2
-        assert metadata['cols'] == 3
-        assert metadata['has_headers'] is False
-        assert metadata['header_rows'] == 0
+        assert metadata["rows"] == 2
+        assert metadata["cols"] == 3
+        assert metadata["has_headers"] is False
+        assert metadata["header_rows"] == 0
 
         text = _convert_table_to_text(table, 0)
         # Should NOT have separator line for headerless table
-        assert '|---|' not in text
-        assert 'A1' in text
-        assert 'B2' in text
+        assert "|---|" not in text
+        assert "A1" in text
+        assert "B2" in text
 
 
 class TestTableMergedCells:
@@ -500,8 +502,9 @@ class TestTableMergedCells:
 
     def test_table_with_colspan(self, tmp_path):
         """Test extraction of table with colspan."""
-        from scripts.ingest.htmlparser import _convert_table_to_text, _extract_table_metadata
         from bs4 import BeautifulSoup
+
+        from scripts.ingest.htmlparser import _convert_table_to_text, _extract_table_metadata
 
         html = """
         <table>
@@ -516,24 +519,25 @@ class TestTableMergedCells:
             </tr>
         </table>
         """
-        soup = BeautifulSoup(html, 'html.parser')
-        table = soup.find('table')
+        soup = BeautifulSoup(html, "html.parser")
+        table = soup.find("table")
 
         # Metadata should account for colspan
         metadata = _extract_table_metadata(table)
-        assert metadata['cols'] == 3, "Column count should account for colspan"
-        assert metadata['header_rows'] == 1
+        assert metadata["cols"] == 3, "Column count should account for colspan"
+        assert metadata["header_rows"] == 1
 
         # Text should repeat merged cell content
         text = _convert_table_to_text(table, 0)
         # Merged header should appear twice
-        assert text.count('Merged Header') == 2
-        assert 'Col 3' in text
+        assert text.count("Merged Header") == 2
+        assert "Col 3" in text
 
     def test_table_with_rowspan(self, tmp_path):
         """Test extraction of table with rowspan (basic handling)."""
-        from scripts.ingest.htmlparser import _convert_table_to_text
         from bs4 import BeautifulSoup
+
+        from scripts.ingest.htmlparser import _convert_table_to_text
 
         html = """
         <table>
@@ -550,19 +554,20 @@ class TestTableMergedCells:
             </tr>
         </table>
         """
-        soup = BeautifulSoup(html, 'html.parser')
-        table = soup.find('table')
+        soup = BeautifulSoup(html, "html.parser")
+        table = soup.find("table")
 
         text = _convert_table_to_text(table, 0)
         # Should at least capture the content (even if rowspan handling is simplified)
-        assert 'Alice' in text
-        assert 'Age: 30' in text
-        assert 'City: NYC' in text
+        assert "Alice" in text
+        assert "Age: 30" in text
+        assert "City: NYC" in text
 
     def test_table_with_multiple_colspan(self, tmp_path):
         """Test table with multiple merged cells in same row."""
-        from scripts.ingest.htmlparser import _convert_table_to_text, _extract_table_metadata
         from bs4 import BeautifulSoup
+
+        from scripts.ingest.htmlparser import _convert_table_to_text, _extract_table_metadata
 
         html = """
         <table>
@@ -584,17 +589,17 @@ class TestTableMergedCells:
             </tr>
         </table>
         """
-        soup = BeautifulSoup(html, 'html.parser')
-        table = soup.find('table')
+        soup = BeautifulSoup(html, "html.parser")
+        table = soup.find("table")
 
         metadata = _extract_table_metadata(table)
-        assert metadata['cols'] == 4
-        assert metadata['header_rows'] == 2
+        assert metadata["cols"] == 4
+        assert metadata["header_rows"] == 2
 
         text = _convert_table_to_text(table, 0)
         # Each merged header should appear twice
-        assert text.count('Section A') == 2
-        assert text.count('Section B') == 2
+        assert text.count("Section A") == 2
+        assert text.count("Section B") == 2
 
 
 class TestTableNestedTables:
@@ -602,8 +607,9 @@ class TestTableNestedTables:
 
     def test_nested_table_not_extracted_separately(self, tmp_path):
         """Test that nested tables are not processed as separate top-level tables."""
-        from scripts.ingest.htmlparser import _extract_tables_from_html
         from bs4 import BeautifulSoup
+
+        from scripts.ingest.htmlparser import _extract_tables_from_html
 
         html = """
         <html><body>
@@ -619,18 +625,19 @@ class TestTableNestedTables:
             </table>
         </body></html>
         """
-        soup = BeautifulSoup(html, 'html.parser')
+        soup = BeautifulSoup(html, "html.parser")
 
         tables_text, metadata = _extract_tables_from_html(soup)
 
         # Should only extract 1 top-level table (not the nested one)
         assert len(metadata) == 1
-        assert metadata[0]['index'] == 0
+        assert metadata[0]["index"] == 0
 
     def test_nested_table_content_preserved(self, tmp_path):
         """Test that content from nested tables is preserved inline."""
-        from scripts.ingest.htmlparser import _convert_table_to_text
         from bs4 import BeautifulSoup
+
+        from scripts.ingest.htmlparser import _convert_table_to_text
 
         html = """
         <table>
@@ -645,18 +652,18 @@ class TestTableNestedTables:
             </tr>
         </table>
         """
-        soup = BeautifulSoup(html, 'html.parser')
-        table = soup.find('table')
+        soup = BeautifulSoup(html, "html.parser")
+        table = soup.find("table")
 
         text = _convert_table_to_text(table, 0)
 
         # Nested table content should be preserved as flattened text
-        assert 'Region A' in text
-        assert '200K' in text
-        assert 'Region B' in text
-        assert '300K' in text
+        assert "Region A" in text
+        assert "200K" in text
+        assert "Region B" in text
+        assert "300K" in text
         # Should be marked as nested
-        assert '[nested:' in text
+        assert "[nested:" in text
 
     def test_multiple_nested_tables(self, tmp_path):
         """Test handling of multiple nested tables."""
@@ -686,11 +693,11 @@ class TestTableNestedTables:
         text = extract_text_from_html(str(html_file))
 
         # Should have 2 top-level [TABLE N] markers
-        assert text.count('[TABLE ') == 2
+        assert text.count("[TABLE ") == 2
         # Nested content should be preserved
-        assert 'Nested 1A' in text
-        assert 'Nested 2A' in text
-        assert 'Standalone table' in text
+        assert "Nested 1A" in text
+        assert "Nested 2A" in text
+        assert "Standalone table" in text
 
 
 class TestTableMultipleHeaderRows:
@@ -698,8 +705,9 @@ class TestTableMultipleHeaderRows:
 
     def test_two_header_rows(self, tmp_path):
         """Test table with two consecutive header rows."""
-        from scripts.ingest.htmlparser import _convert_table_to_text, _extract_table_metadata
         from bs4 import BeautifulSoup
+
+        from scripts.ingest.htmlparser import _convert_table_to_text, _extract_table_metadata
 
         html = """
         <table>
@@ -721,29 +729,30 @@ class TestTableMultipleHeaderRows:
             </tr>
         </table>
         """
-        soup = BeautifulSoup(html, 'html.parser')
-        table = soup.find('table')
+        soup = BeautifulSoup(html, "html.parser")
+        table = soup.find("table")
 
         metadata = _extract_table_metadata(table)
-        assert metadata['header_rows'] == 2, "Should detect 2 header rows"
-        assert metadata['rows'] == 3
-        assert metadata['cols'] == 4
+        assert metadata["header_rows"] == 2, "Should detect 2 header rows"
+        assert metadata["rows"] == 3
+        assert metadata["cols"] == 4
 
         text = _convert_table_to_text(table, 0)
-        lines = text.split('\n')
+        lines = text.split("\n")
 
         # Should have both header rows before separator
-        assert 'Performance' in lines[1]
-        assert 'CPU' in lines[2]
+        assert "Performance" in lines[1]
+        assert "CPU" in lines[2]
         # Separator should be on line 3 (after [TABLE 0] and 2 header rows)
-        assert lines[3].startswith('|---')
+        assert lines[3].startswith("|---")
         # Data row should come after separator
-        assert '80%' in lines[4]
+        assert "80%" in lines[4]
 
     def test_three_header_rows(self, tmp_path):
         """Test table with three consecutive header rows."""
-        from scripts.ingest.htmlparser import _convert_table_to_text, _extract_table_metadata
         from bs4 import BeautifulSoup
+
+        from scripts.ingest.htmlparser import _convert_table_to_text, _extract_table_metadata
 
         html = """
         <table>
@@ -753,26 +762,27 @@ class TestTableMultipleHeaderRows:
             <tr><td>$100K</td><td>$20K</td><td>$150K</td><td>$30K</td></tr>
         </table>
         """
-        soup = BeautifulSoup(html, 'html.parser')
-        table = soup.find('table')
+        soup = BeautifulSoup(html, "html.parser")
+        table = soup.find("table")
 
         metadata = _extract_table_metadata(table)
-        assert metadata['header_rows'] == 3
+        assert metadata["header_rows"] == 3
 
         text = _convert_table_to_text(table, 0)
-        lines = text.split('\n')
+        lines = text.split("\n")
 
         # All 3 headers before separator
-        assert 'Annual Report 2025' in text
-        assert 'Q1-Q2' in text
-        assert 'Rev' in text
+        assert "Annual Report 2025" in text
+        assert "Q1-Q2" in text
+        assert "Rev" in text
         # Separator after 3rd header
-        assert lines[4].startswith('|---')
+        assert lines[4].startswith("|---")
 
     def test_mixed_th_and_td_rows(self, tmp_path):
         """Test that only consecutive TH rows from start are treated as headers."""
-        from scripts.ingest.htmlparser import _extract_table_metadata
         from bs4 import BeautifulSoup
+
+        from scripts.ingest.htmlparser import _extract_table_metadata
 
         html = """
         <table>
@@ -782,12 +792,12 @@ class TestTableMultipleHeaderRows:
             <tr><th>Not a header (comes after TD)</th></tr>
         </table>
         """
-        soup = BeautifulSoup(html, 'html.parser')
-        table = soup.find('table')
+        soup = BeautifulSoup(html, "html.parser")
+        table = soup.find("table")
 
         metadata = _extract_table_metadata(table)
         # Only first 2 consecutive TH rows should count
-        assert metadata['header_rows'] == 2
+        assert metadata["header_rows"] == 2
 
 
 class TestTableEdgeCases:
@@ -795,21 +805,23 @@ class TestTableEdgeCases:
 
     def test_empty_table(self, tmp_path):
         """Test handling of empty table."""
-        from scripts.ingest.htmlparser import _extract_table_metadata
         from bs4 import BeautifulSoup
 
+        from scripts.ingest.htmlparser import _extract_table_metadata
+
         html = "<table></table>"
-        soup = BeautifulSoup(html, 'html.parser')
-        table = soup.find('table')
+        soup = BeautifulSoup(html, "html.parser")
+        table = soup.find("table")
 
         metadata = _extract_table_metadata(table)
-        assert metadata['rows'] == 0
-        assert metadata['cols'] == 0
+        assert metadata["rows"] == 0
+        assert metadata["cols"] == 0
 
     def test_single_row_table_not_skipped(self, tmp_path):
         """Test that single-row tables are extracted (not skipped)."""
-        from scripts.ingest.htmlparser import _extract_tables_from_html
         from bs4 import BeautifulSoup
+
+        from scripts.ingest.htmlparser import _extract_tables_from_html
 
         html = """
         <html><body>
@@ -818,19 +830,20 @@ class TestTableEdgeCases:
             </table>
         </body></html>
         """
-        soup = BeautifulSoup(html, 'html.parser')
+        soup = BeautifulSoup(html, "html.parser")
 
         tables_text, metadata = _extract_tables_from_html(soup)
 
         # Single-row table should NOT be skipped
         assert len(metadata) == 1
-        assert metadata[0]['rows'] == 1
-        assert metadata[0]['cols'] == 3
+        assert metadata[0]["rows"] == 1
+        assert metadata[0]["cols"] == 3
 
     def test_single_column_table_not_skipped(self, tmp_path):
         """Test that single-column tables are extracted."""
-        from scripts.ingest.htmlparser import _extract_tables_from_html
         from bs4 import BeautifulSoup
+
+        from scripts.ingest.htmlparser import _extract_tables_from_html
 
         html = """
         <html><body>
@@ -841,19 +854,20 @@ class TestTableEdgeCases:
             </table>
         </body></html>
         """
-        soup = BeautifulSoup(html, 'html.parser')
+        soup = BeautifulSoup(html, "html.parser")
 
         tables_text, metadata = _extract_tables_from_html(soup)
 
         # Single-column table should NOT be skipped
         assert len(metadata) == 1
-        assert metadata[0]['cols'] == 1
-        assert metadata[0]['rows'] == 3
+        assert metadata[0]["cols"] == 1
+        assert metadata[0]["rows"] == 3
 
     def test_table_with_tbody(self, tmp_path):
         """Test table with tbody/thead structure."""
-        from scripts.ingest.htmlparser import _extract_table_metadata
         from bs4 import BeautifulSoup
+
+        from scripts.ingest.htmlparser import _extract_table_metadata
 
         html = """
         <table>
@@ -866,13 +880,13 @@ class TestTableEdgeCases:
             </tbody>
         </table>
         """
-        soup = BeautifulSoup(html, 'html.parser')
-        table = soup.find('table')
+        soup = BeautifulSoup(html, "html.parser")
+        table = soup.find("table")
 
         metadata = _extract_table_metadata(table)
-        assert metadata['rows'] == 3
-        assert metadata['cols'] == 2
-        assert metadata['has_headers'] is True
+        assert metadata["rows"] == 3
+        assert metadata["cols"] == 2
+        assert metadata["has_headers"] is True
 
 
 class TestTableFullIntegration:
@@ -913,16 +927,16 @@ class TestTableFullIntegration:
         text = extract_text_from_html(str(html_file))
 
         # Should have [TABLE 0] markers
-        assert '[TABLE 0]' in text
-        assert '[/TABLE 0]' in text
+        assert "[TABLE 0]" in text
+        assert "[/TABLE 0]" in text
 
         # Content should be present
-        assert 'Q1 2025' in text
-        assert 'Revenue' in text
-        assert '$95K' in text
+        assert "Q1 2025" in text
+        assert "Revenue" in text
+        assert "$95K" in text
 
         # Should have separator line (after header rows)
-        assert '|---' in text
+        assert "|---" in text
 
     def test_multiple_tables_extraction(self, tmp_path):
         """Test extraction of multiple tables from single document."""
@@ -951,12 +965,12 @@ class TestTableFullIntegration:
         text = extract_text_from_html(str(html_file))
 
         # Should have 2 table markers
-        assert text.count('[TABLE ') == 2
-        assert '[TABLE 0]' in text
-        assert '[TABLE 1]' in text
-        assert '[/TABLE 0]' in text
-        assert '[/TABLE 1]' in text
+        assert text.count("[TABLE ") == 2
+        assert "[TABLE 0]" in text
+        assert "[TABLE 1]" in text
+        assert "[/TABLE 0]" in text
+        assert "[/TABLE 1]" in text
 
         # Content from both tables
-        assert 'Alice' in text
-        assert 'Widget' in text
+        assert "Alice" in text
+        assert "Widget" in text

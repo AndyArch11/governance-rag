@@ -251,16 +251,31 @@ class DomainTermManager:
             DomainTerm("firewall", category="network", weight=1.6),
             DomainTerm("intrusion detection", acronym="IDS", category="monitoring", weight=1.8),
             DomainTerm("intrusion prevention", acronym="IPS", category="monitoring", weight=1.8),
-            DomainTerm("multi-factor authentication", acronym="MFA", category="identity", weight=2.0),
+            DomainTerm(
+                "multi-factor authentication", acronym="MFA", category="identity", weight=2.0
+            ),
             DomainTerm("public key infrastructure", acronym="PKI", category="crypto", weight=1.7),
-            DomainTerm("security information and event management", acronym="SIEM", category="monitoring", weight=1.8),
-            DomainTerm("security operations centre", acronym="SOC", category="operations", weight=1.7),
+            DomainTerm(
+                "security information and event management",
+                acronym="SIEM",
+                category="monitoring",
+                weight=1.8,
+            ),
+            DomainTerm(
+                "security operations centre", acronym="SOC", category="operations", weight=1.7
+            ),
             DomainTerm("vulnerability management", category="risk", weight=1.7),
             DomainTerm("zero trust", category="architecture", weight=1.9),
             DomainTerm("data loss prevention", acronym="DLP", category="protection", weight=1.7),
-            DomainTerm("endpoint detection and response", acronym="EDR", category="endpoint", weight=1.8),
-            DomainTerm("extended detection and response", acronym="XDR", category="endpoint", weight=1.7),
-            DomainTerm("identity and access management", acronym="IAM", category="identity", weight=1.9),
+            DomainTerm(
+                "endpoint detection and response", acronym="EDR", category="endpoint", weight=1.8
+            ),
+            DomainTerm(
+                "extended detection and response", acronym="XDR", category="endpoint", weight=1.7
+            ),
+            DomainTerm(
+                "identity and access management", acronym="IAM", category="identity", weight=1.9
+            ),
             DomainTerm("least privilege", category="access", weight=1.6),
             DomainTerm("threat intelligence", category="analysis", weight=1.7),
             DomainTerm("penetration testing", category="assurance", weight=1.6),
@@ -294,11 +309,20 @@ class DomainTermManager:
         DomainType.HEALTHCARE: [
             DomainTerm("electronic health record", acronym="EHR", category="clinical", weight=1.8),
             DomainTerm("patient safety", category="quality", weight=1.6),
-            DomainTerm("health insurance portability and accountability act", acronym="HIPAA", category="compliance", weight=2.0),
+            DomainTerm(
+                "health insurance portability and accountability act",
+                acronym="HIPAA",
+                category="compliance",
+                weight=2.0,
+            ),
             DomainTerm("electronic medical record", acronym="EMR", category="clinical", weight=1.7),
             DomainTerm("clinical decision support", acronym="CDS", category="clinical", weight=1.6),
-            DomainTerm("protected health information", acronym="PHI", category="privacy", weight=1.9),
-            DomainTerm("medical record number", acronym="MRN", category="administration", weight=1.5),
+            DomainTerm(
+                "protected health information", acronym="PHI", category="privacy", weight=1.9
+            ),
+            DomainTerm(
+                "medical record number", acronym="MRN", category="administration", weight=1.5
+            ),
             DomainTerm("adverse event", category="safety", weight=1.5),
             DomainTerm("continuity of care", category="care", weight=1.5),
             DomainTerm("telehealth", category="care", weight=1.4),
@@ -306,7 +330,9 @@ class DomainTermManager:
         DomainType.LEGAL: [
             DomainTerm("due diligence", category="compliance", weight=1.7),
             DomainTerm("contractual obligation", category="contract", weight=1.6),
-            DomainTerm("general data protection regulation", acronym="GDPR", category="privacy", weight=2.0),
+            DomainTerm(
+                "general data protection regulation", acronym="GDPR", category="privacy", weight=2.0
+            ),
             DomainTerm("privacy act", category="privacy", weight=1.7),
             DomainTerm("intellectual property", acronym="IP", category="rights", weight=1.6),
             DomainTerm("service level agreement", acronym="SLA", category="contract", weight=1.6),
@@ -407,7 +433,9 @@ class DomainTermManager:
 
             self._merge_seed_terms_for_domain(domain, vocabulary)
 
-    def _merge_seed_terms_for_domain(self, domain: DomainType, vocabulary: DomainVocabulary) -> None:
+    def _merge_seed_terms_for_domain(
+        self, domain: DomainType, vocabulary: DomainVocabulary
+    ) -> None:
         """Merge baseline seed terms for a single domain into a vocabulary."""
         seed_terms = self.BUILTIN_SEED_TERMS.get(domain, [])
         existing_terms = set(vocabulary.terms.keys())

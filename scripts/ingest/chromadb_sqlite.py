@@ -70,8 +70,7 @@ class ChromaSQLiteCollection:
         cursor = conn.cursor()
 
         # Chunks table (for code fragments and document chunks)
-        cursor.execute(
-            f"""
+        cursor.execute(f"""
             CREATE TABLE IF NOT EXISTS {self.collection_name}_chunks (
                 id TEXT PRIMARY KEY,
                 document TEXT,
@@ -81,16 +80,13 @@ class ChromaSQLiteCollection:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        """
-        )
+        """)
 
         # Create indexes for common queries
-        cursor.execute(
-            f"""
+        cursor.execute(f"""
             CREATE INDEX IF NOT EXISTS idx_{self.collection_name}_metadata
             ON {self.collection_name}_chunks (id)
-        """
-        )
+        """)
 
         conn.commit()
 
@@ -473,9 +469,7 @@ class ChromaSQLiteClient:
     """SQLite-based ChromaDB client with compatible API."""
 
     def __init__(self, db_path: str = None):
-        """Initialise SQLite ChromaDB client.
-
-        """
+        """Initialise SQLite ChromaDB client."""
         if db_path is None:
             project_root = Path(__file__).resolve().parents[2]
             db_path = str(project_root / "rag_data" / "chromadb.db")

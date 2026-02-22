@@ -142,20 +142,17 @@ class CacheDB:
 
         with self._get_cursor() as cursor:
             # Embedding cache: text hash -> vector embedding
-            cursor.execute(
-                """
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS embedding_cache (
                     text_hash TEXT PRIMARY KEY,
                     embedding TEXT NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     hits INTEGER DEFAULT 0
                 )
-            """
-            )
+            """)
 
             # LLM cache: content hash -> LLM response
-            cursor.execute(
-                """
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS llm_cache (
                     content_hash TEXT PRIMARY KEY,
                     prompt TEXT NOT NULL,
@@ -164,12 +161,10 @@ class CacheDB:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     hits INTEGER DEFAULT 0
                 )
-            """
-            )
+            """)
 
             # Graph cache: graph hash -> graph data with settings
-            cursor.execute(
-                """
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS graph_cache (
                     graph_hash TEXT PRIMARY KEY,
                     graph_data TEXT NOT NULL,
@@ -179,12 +174,10 @@ class CacheDB:
                     last_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     hits INTEGER DEFAULT 0
                 )
-            """
-            )
+            """)
 
             # Settings mapping: settings hash -> instance mapping
-            cursor.execute(
-                """
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS graph_settings_map (
                     settings_hash TEXT PRIMARY KEY,
                     graph_hash TEXT NOT NULL,
@@ -193,12 +186,10 @@ class CacheDB:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (graph_hash) REFERENCES graph_cache(graph_hash)
                 )
-            """
-            )
+            """)
 
             # Document cache: doc hash -> document metadata
-            cursor.execute(
-                """
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS document_cache (
                     doc_hash TEXT PRIMARY KEY,
                     document_id TEXT NOT NULL,
@@ -207,12 +198,10 @@ class CacheDB:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
-            """
-            )
+            """)
 
             # BM25 index cache: term statistics and document frequencies
-            cursor.execute(
-                """
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bm25_index (
                     term TEXT NOT NULL,
                     doc_id TEXT NOT NULL,
@@ -221,36 +210,30 @@ class CacheDB:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (term, doc_id)
                 )
-            """
-            )
+            """)
 
             # BM25 corpus statistics (global IDF values)
-            cursor.execute(
-                """
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bm25_corpus_stats (
                     term TEXT PRIMARY KEY,
                     document_frequency INTEGER NOT NULL,
                     idf REAL NOT NULL,
                     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
-            """
-            )
+            """)
 
             # BM25 document metadata
-            cursor.execute(
-                """
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bm25_doc_metadata (
                     doc_id TEXT PRIMARY KEY,
                     doc_length INTEGER NOT NULL,
                     original_text TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
-            """
-            )
+            """)
 
             # Query analytics: Track query performance and retrieval quality
-            cursor.execute(
-                """
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS query_analytics (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     query_text TEXT NOT NULL,
@@ -269,12 +252,10 @@ class CacheDB:
                     metadata TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
-            """
-            )
+            """)
 
             # Cache access patterns: Track for smart prefetching
-            cursor.execute(
-                """
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS cache_access_patterns (
                     cache_type TEXT NOT NULL,
                     cache_key TEXT NOT NULL,
@@ -284,22 +265,19 @@ class CacheDB:
                     prefetch_score REAL DEFAULT 0.0,
                     PRIMARY KEY (cache_type, cache_key)
                 )
-            """
-            )
+            """)
 
             # Word frequency: Global word frequency across all ingested documents (for word clouds)
             # TODO: Consider sharding by first letter and limiting to top N words for performance (cleanup after ingestion?)
             # TODO: Add doc_id list for each word to track which documents contain it (for more advanced analytics)
-            cursor.execute(
-                """
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS word_frequency (
                     word TEXT PRIMARY KEY,
                     frequency INTEGER NOT NULL DEFAULT 1,
                     doc_count INTEGER NOT NULL DEFAULT 1,
                     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
-            """
-            )
+            """)
 
             # Create indexes for faster lookups
             cursor.execute(
@@ -666,12 +644,10 @@ class CacheDB:
             return {"enabled": False}
 
         with self._get_cursor() as cursor:
-            cursor.execute(
-                """
+            cursor.execute("""
                 SELECT COUNT(*) as count, SUM(chunks_count) as total_chunks
                 FROM document_cache
-            """
-            )
+            """)
             row = cursor.fetchone()
             return {
                 "documents": row["count"] or 0,
@@ -809,8 +785,7 @@ class CacheDB:
             return {}
 
         with self._get_cursor() as cursor:
-            cursor.execute(
-                """
+            cursor.execute("""
                 SELECT 
                     COUNT(*) as total_queries,
                     AVG(retrieval_time_ms) as avg_retrieval_ms,
@@ -821,8 +796,7 @@ class CacheDB:
                     SUM(CASE WHEN cache_hit = 1 THEN 1 ELSE 0 END) as cache_hits,
                     SUM(CASE WHEN is_code_query = 1 THEN 1 ELSE 0 END) as code_queries
                 FROM query_analytics
-            """
-            )
+            """)
             result = cursor.fetchone()
 
             if not result or result["total_queries"] == 0:
@@ -1088,13 +1062,11 @@ class CacheDB:
 
         with self._get_cursor() as cursor:
             # Get document frequency for each term
-            cursor.execute(
-                """
+            cursor.execute("""
                 SELECT term, COUNT(DISTINCT doc_id) as df
                 FROM bm25_index
                 GROUP BY term
-            """
-            )
+            """)
 
             import math
 

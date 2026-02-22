@@ -10,33 +10,30 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from scripts.ingest.academic.models import (
-    # Enums
-    DocumentStatus,
-    ReferenceStatus,
-    EdgeType,
-    OAStatus,
-    LinkStatus,
-    # Core Models
+from scripts.ingest.academic.models import (  # Enums; Core Models; Factory Functions
     AcademicDocument,
-    Reference,
-    CitationEdge,
-    RawCitation,
-    ParsedCitation,
-    NormalisedCitation,
-    DomainTerm,
     BatchIngestResult,
-    RevalidationResult,
+    CitationEdge,
+    DocumentStatus,
+    DomainTerm,
+    EdgeType,
+    LinkStatus,
+    NormalisedCitation,
+    OAStatus,
+    ParsedCitation,
     PersonaContext,
-    # Factory Functions
+    RawCitation,
+    Reference,
+    ReferenceStatus,
+    RevalidationResult,
     create_document,
     create_reference,
 )
 
-
 # ============================================================================
 # Document Fixtures
 # ============================================================================
+
 
 @pytest.fixture
 def valid_document_data() -> Dict[str, Any]:
@@ -90,7 +87,7 @@ def document_with_sections() -> AcademicDocument:
             "methods": "Methods text",
             "results": "Results text",
             "conclusion": "Conclusion text",
-        }
+        },
     )
 
 
@@ -113,6 +110,7 @@ def document_ingested() -> AcademicDocument:
 # ============================================================================
 # Reference Fixtures
 # ============================================================================
+
 
 @pytest.fixture
 def valid_reference_data() -> Dict[str, Any]:
@@ -239,6 +237,7 @@ def cited_reference(valid_reference) -> Reference:
 # Citation Edge Fixtures
 # ============================================================================
 
+
 @pytest.fixture
 def direct_citation_edge() -> CitationEdge:
     """Direct citation edge."""
@@ -293,6 +292,7 @@ def extending_edge() -> CitationEdge:
 # ============================================================================
 # Citation Parsing Fixtures
 # ============================================================================
+
 
 @pytest.fixture
 def raw_citation_bibliography() -> RawCitation:
@@ -362,6 +362,7 @@ def parsed_citation_arxiv() -> ParsedCitation:
 # Normalisation Fixtures
 # ============================================================================
 
+
 @pytest.fixture
 def normalised_citation() -> NormalisedCitation:
     """Normalised citation for matching."""
@@ -378,6 +379,7 @@ def normalised_citation() -> NormalisedCitation:
 # ============================================================================
 # Domain Term Fixtures
 # ============================================================================
+
 
 @pytest.fixture
 def domain_term_concept() -> DomainTerm:
@@ -431,6 +433,7 @@ def domain_term_tool() -> DomainTerm:
 # Batch & Aggregation Fixtures
 # ============================================================================
 
+
 @pytest.fixture
 def batch_result_successful(valid_document, valid_reference) -> BatchIngestResult:
     """Successful batch ingestion."""
@@ -480,13 +483,14 @@ def revalidation_result_all_updated() -> RevalidationResult:
             "failed": [
                 {"ref_id": "ref_999", "reason": "API timeout"},
             ],
-        }
+        },
     )
 
 
 # ============================================================================
 # Persona Context Fixtures
 # ============================================================================
+
 
 @pytest.fixture
 def persona_supervisor() -> PersonaContext:
@@ -537,6 +541,7 @@ def persona_researcher() -> PersonaContext:
 # Invalid Data Fixtures (for error testing)
 # ============================================================================
 
+
 @pytest.fixture
 def invalid_year_too_old() -> Dict[str, Any]:
     """Invalid: year too old."""
@@ -580,6 +585,7 @@ def invalid_negative_count() -> Dict[str, Any]:
 # ============================================================================
 # Factory Function Fixtures
 # ============================================================================
+
 
 @pytest.fixture
 def document_from_factory() -> AcademicDocument:

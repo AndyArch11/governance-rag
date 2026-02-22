@@ -1,8 +1,9 @@
 """Tests for sequence-based chapter classification and ToC parsing in PhDQualityAssessor."""
 
+from unittest.mock import Mock
+
 import numpy as np
 import pytest
-from unittest.mock import Mock
 
 from scripts.ingest.academic.phd_assessor import PhDQualityAssessor
 
@@ -20,10 +21,7 @@ class TestSequenceBasedClassification:
         """Sections before first numbered chapter are pre-matter."""
         # Abstract at sequence 10, Chapter 1 at 100, Chapter 5 at 500
         result = assessor._classify_section_type(
-            label="Abstract",
-            sequence_num=10,
-            first_chapter_seq=100,
-            last_chapter_seq=500
+            label="Abstract", sequence_num=10, first_chapter_seq=100, last_chapter_seq=500
         )
         assert result == "pre-matter"
 
@@ -31,10 +29,7 @@ class TestSequenceBasedClassification:
         """Sections between first and last numbered chapters are main-matter."""
         # Chapter 3 at sequence 300, between Chapter 1 (100) and Chapter 5 (500)
         result = assessor._classify_section_type(
-            label="Chapter 3",
-            sequence_num=300,
-            first_chapter_seq=100,
-            last_chapter_seq=500
+            label="Chapter 3", sequence_num=300, first_chapter_seq=100, last_chapter_seq=500
         )
         assert result == "main-matter"
 
@@ -42,10 +37,7 @@ class TestSequenceBasedClassification:
         """Sections after last numbered chapter are post-matter."""
         # References at sequence 600, after Chapter 5 at 500
         result = assessor._classify_section_type(
-            label="References",
-            sequence_num=600,
-            first_chapter_seq=100,
-            last_chapter_seq=500
+            label="References", sequence_num=600, first_chapter_seq=100, last_chapter_seq=500
         )
         assert result == "post-matter"
 
@@ -55,8 +47,8 @@ class TestSequenceBasedClassification:
         result = assessor._classify_section_type(
             label="Introduction",
             sequence_num=100,
-            first_chapter_seq=float('inf'),
-            last_chapter_seq=float('-inf')
+            first_chapter_seq=float("inf"),
+            last_chapter_seq=float("-inf"),
         )
         # Should use keyword fallback → Introduction is main-matter
         assert result == "main-matter"
@@ -102,14 +94,14 @@ class TestToCParsing:
         Chapter 4: Results ............................... 52
         Chapter 5: Discussion ............................ 78
         """
-        
+
         chunks_data = {
             "documents": [toc_text],
-            "metadatas": [{"section_title": "Table of Contents"}]
+            "metadatas": [{"section_title": "Table of Contents"}],
         }
-        
+
         toc_structure = assessor._parse_toc_structure(chunks_data)
-        
+
         # Should extract chapter names and page numbers
         assert len(toc_structure) > 0
         # Check for some expected chapters (exact matching depends on regex)
@@ -120,9 +112,9 @@ class TestToCParsing:
         """Returns empty dict when no ToC chunks present."""
         chunks_data = {
             "documents": ["Regular content without ToC patterns"],
-            "metadatas": [{"section_title": "Introduction"}]
+            "metadatas": [{"section_title": "Introduction"}],
         }
-        
+
         toc_structure = assessor._parse_toc_structure(chunks_data)
         assert toc_structure == {}
 
@@ -137,14 +129,11 @@ class TestToCParsing:
         References ....................................... 95
         Appendix A ....................................... 100
         """
-        
-        chunks_data = {
-            "documents": [toc_text],
-            "metadatas": [{"section_title": "Contents"}]
-        }
-        
+
+        chunks_data = {"documents": [toc_text], "metadatas": [{"section_title": "Contents"}]}
+
         toc_structure = assessor._parse_toc_structure(chunks_data)
-        
+
         # Should extract at least the chapter entry
         assert len(toc_structure) >= 1
 
@@ -210,7 +199,7 @@ class TestExtractChaptersSequenceBased:
                 "Chapter 1: Introduction content",
                 "Chapter 2: Methods content",
                 "Chapter 3: Results content",
-                "References section"
+                "References section",
             ],
             "metadatas": [
                 {"chunk_type": "parent", "chapter": "Abstract", "sequence_number": 10},
@@ -225,25 +214,25 @@ class TestExtractChaptersSequenceBased:
                 np.random.rand(1024),
                 np.random.rand(1024),
                 np.random.rand(1024),
-            ]
+            ],
         }
-        
+
         chapters = assessor._extract_chapters(chunks_data)
-        
+
         # Should have all chapters
         assert len(chapters) == 5
-        
+
         # Check classification
         chapter_dict = {ch["name"]: ch["section_type"] for ch in chapters}
-        
+
         # Abstract (seq 10) should be pre-matter (before Chapter 1 at seq 100)
         assert chapter_dict.get("Abstract") == "pre-matter"
-        
+
         # Chapters 1-3 should be main-matter
         assert chapter_dict.get("Chapter 1") == "main-matter"
         assert chapter_dict.get("Chapter 2") == "main-matter"
         assert chapter_dict.get("Chapter 3") == "main-matter"
-        
+
         # References (seq 400, after Chapter 3 at seq 300) should be post-matter
         assert chapter_dict.get("References") == "post-matter"
 
@@ -265,11 +254,11 @@ class TestExtractChaptersSequenceBased:
                 np.random.rand(1024),
                 np.random.rand(1024),
                 np.random.rand(1024),
-            ]
+            ],
         }
-        
+
         chapters = assessor._extract_chapters(chunks_data)
-        
+
         # Should be ordered by sequence number
         chapter_names = [ch["name"] for ch in chapters]
         assert chapter_names == ["Chapter 1", "Chapter 2", "Chapter 3"]
@@ -292,11 +281,11 @@ class TestExtractChaptersSequenceBased:
                 np.random.rand(1024),
                 np.random.rand(1024),
                 np.random.rand(1024),
-            ]
+            ],
         }
-        
+
         chapters = assessor._extract_chapters(chunks_data)
-        
+
         # Should only have valid chapters (invalid label filtered out)
         chapter_names = [ch["name"] for ch in chapters]
         assert "N Mean SD" not in chapter_names
@@ -320,20 +309,20 @@ class TestExtractChaptersSequenceBased:
                 np.random.rand(1024),
                 np.random.rand(1024),
                 np.random.rand(1024),
-            ]
+            ],
         }
-        
+
         chapters = assessor._extract_chapters(chunks_data)
-        
+
         # Should fall back to keyword classification (no numbered chapters)
         chapter_dict = {ch["name"]: ch["section_type"] for ch in chapters}
-        
+
         # Abstract should be pre-matter (keyword)
         assert chapter_dict.get("Abstract") == "pre-matter"
-        
+
         # Introduction should be main-matter (keyword)
         assert chapter_dict.get("Introduction") == "main-matter"
-        
+
         # References should be post-matter (keyword)
         assert chapter_dict.get("References") == "post-matter"
 

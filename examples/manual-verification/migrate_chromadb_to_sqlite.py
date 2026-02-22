@@ -9,11 +9,11 @@ Usage:
     python migrate_chromadb_to_sqlite.py [--backup] [--validate]
 """
 
+import argparse
 import json
 import sys
-import argparse
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Any, Dict, List
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -126,11 +126,13 @@ def migrate_chromadb_to_sqlite(
 
             print(f"   ✅ Migrated {migrated} documents")
 
-            stats["collections"].append({
-                "name": collection_name,
-                "documents": migrated,
-                "status": "success",
-            })
+            stats["collections"].append(
+                {
+                    "name": collection_name,
+                    "documents": migrated,
+                    "status": "success",
+                }
+            )
 
             if "chunk" in collection_name:
                 stats["total_chunks"] += migrated
@@ -158,9 +160,7 @@ def migrate_chromadb_to_sqlite(
                 if actual_count == expected_count:
                     print(f"   ✅ {collection_name}: {actual_count} documents")
                 else:
-                    print(
-                        f"   ❌ {collection_name}: Expected {expected_count}, got {actual_count}"
-                    )
+                    print(f"   ❌ {collection_name}: Expected {expected_count}, got {actual_count}")
                     validation_passed = False
             except Exception as e:
                 print(f"   ❌ {collection_name}: Validation failed - {str(e)}")

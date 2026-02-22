@@ -118,23 +118,19 @@ class SQLiteGraphStore:
             self._all_node_ids = [row["node_id"] for row in rows]
 
             # Load cluster metadata (lightweight)
-            risk_rows = cur.execute(
-                """
+            risk_rows = cur.execute("""
                 SELECT cluster_id, cluster_name, summary, node_count, metadata
                 FROM clusters
                 WHERE cluster_type = 'risk'
                 ORDER BY cluster_id
-                """
-            ).fetchall()
+                """).fetchall()
 
-            topic_rows = cur.execute(
-                """
+            topic_rows = cur.execute("""
                 SELECT cluster_id, cluster_name, summary, node_count, metadata
                 FROM clusters
                 WHERE cluster_type = 'topic'
                 ORDER BY cluster_id
-                """
-            ).fetchall()
+                """).fetchall()
 
             self._clusters["risk"] = [
                 {
@@ -244,15 +240,13 @@ class SQLiteGraphStore:
         conn = self._get_conn()
         cur = conn.cursor()
 
-        rows = cur.execute(
-            """
+        rows = cur.execute("""
             SELECT source, target, similarity, confidence, severity,
                    relationship, explanation, version_source, version_target,
                    interpolated, created_at
             FROM edges_directed
             ORDER BY source, target
-            """
-        ).fetchall()
+            """).fetchall()
 
         edges = []
         for row in rows:

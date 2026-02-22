@@ -13,14 +13,16 @@ Dataset sizes: 100, 500, 1000, 5000 nodes
 """
 
 import sqlite3
-import time
 import statistics
-from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+import time
 from contextlib import contextmanager
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 # Database paths
-CONSISTENCY_DB = Path("/workspaces/governance-rag/rag_data/consistency_graphs/consistency_graph.sqlite")
+CONSISTENCY_DB = Path(
+    "/workspaces/governance-rag/rag_data/consistency_graphs/consistency_graph.sqlite"
+)
 ACADEMIC_DB = Path("/workspaces/governance-rag/rag_data/academic_citation_graph.db")
 
 
@@ -39,9 +41,7 @@ def get_academic_nodes_count() -> int:
     """Count academic nodes in consistency graph."""
     with get_db_connection(CONSISTENCY_DB) as conn:
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT COUNT(*) FROM nodes WHERE source_category = 'academic_reference'"
-        )
+        cursor.execute("SELECT COUNT(*) FROM nodes WHERE source_category = 'academic_reference'")
         return cursor.fetchone()[0]
 
 
@@ -68,10 +68,7 @@ def benchmark_per_node_lookup(nodes: List[Dict]) -> Tuple[float, int]:
         cursor = conn.cursor()
         for node in nodes:
             # Query academic DB for this specific node_id
-            cursor.execute(
-                "SELECT title FROM nodes WHERE node_id = ?",
-                (node["node_id"],)
-            )
+            cursor.execute("SELECT title FROM nodes WHERE node_id = ?", (node["node_id"],))
             row = cursor.fetchone()
             if row and row[0]:
                 found_count += 1
@@ -95,8 +92,7 @@ def benchmark_batch_lookup(nodes: List[Dict], batch_size: int = 100) -> Tuple[fl
             node_ids = [n["node_id"] for n in batch]
 
             cursor.execute(
-                f"SELECT node_id, title FROM nodes WHERE node_id IN ({placeholders})",
-                node_ids
+                f"SELECT node_id, title FROM nodes WHERE node_id IN ({placeholders})", node_ids
             )
             rows = cursor.fetchall()
             found_count += len(rows)
@@ -152,8 +148,7 @@ def benchmark_prefetch_academic_only(nodes: List[Dict]) -> Tuple[float, int, int
         cursor = conn.cursor()
         placeholders = ",".join("?" * len(academic_node_ids))
         cursor.execute(
-            f"SELECT node_id, title FROM nodes WHERE node_id IN ({placeholders})",
-            academic_node_ids
+            f"SELECT node_id, title FROM nodes WHERE node_id IN ({placeholders})", academic_node_ids
         )
         academic_titles = {row[0]: row[1] for row in cursor.fetchall()}
     fetch_time = time.perf_counter() - fetch_start
@@ -178,10 +173,10 @@ def benchmark_join_in_consistency_db(nodes: List[Dict]) -> Tuple[float, int]:
     try:
         with get_db_connection(CONSISTENCY_DB) as conn:
             cursor = conn.cursor()
-            
+
             # Attach academic DB to consistency DB
             cursor.execute(f"ATTACH DATABASE '{ACADEMIC_DB}' AS academic")
-            
+
             # Query with cross-database join
             cursor.execute("""
                 SELECT COUNT(*) FROM (
@@ -192,7 +187,7 @@ def benchmark_join_in_consistency_db(nodes: List[Dict]) -> Tuple[float, int]:
                 )
             """)
             found_count = cursor.fetchone()[0]
-            
+
             cursor.execute("DETACH DATABASE academic")
     except Exception as e:
         print(f"  ⚠️  Cross-DB join not available: {e}")
@@ -287,7 +282,9 @@ def run_benchmark_suite(dataset_sizes: List[int] = None) -> None:
         for _ in range(3):
             elapsed, found, total_titles = benchmark_prefetch_all_titles(nodes)
             times_prefetch_all.append(elapsed)
-            print(f"     Run: {elapsed*1000:.2f}ms (loaded {total_titles:,} titles, matched {found})")
+            print(
+                f"     Run: {elapsed*1000:.2f}ms (loaded {total_titles:,} titles, matched {found})"
+            )
 
         avg_prefetch_all = statistics.mean(times_prefetch_all)
         size_results["prefetch_all"] = {
@@ -305,7 +302,9 @@ def run_benchmark_suite(dataset_sizes: List[int] = None) -> None:
         for _ in range(3):
             elapsed, found, acad_titles = benchmark_prefetch_academic_only(nodes)
             times_prefetch_acad.append(elapsed)
-            print(f"     Run: {elapsed*1000:.2f}ms (loaded {acad_titles:,} academic titles, matched {found})")
+            print(
+                f"     Run: {elapsed*1000:.2f}ms (loaded {acad_titles:,} academic titles, matched {found})"
+            )
 
         avg_prefetch_acad = statistics.mean(times_prefetch_acad)
         size_results["prefetch_academic"] = {
@@ -365,23 +364,29 @@ def run_benchmark_suite(dataset_sizes: List[int] = None) -> None:
     # Analyse 1000-node scenario (typical dashboard size)
     if 1000 in results:
         res_1k = results[1000]
-        
+
         print(f"\n📌 For typical dashboard session (1,000 nodes):")
         print(f"\n  1. Per-node lookup: {res_1k['per_node']['avg_ms']:.1f}ms")
         print(f"     ❌ NOT RECOMMENDED: ~1ms per query × 1000 = slow rendering")
-        
+
         print(f"\n  2. Batch lookup (100 nodes/batch): {res_1k['batch']['avg_ms']:.1f}ms")
         print(f"     ⚠️  ACCEPTABLE: 10x faster than per-node, still fast for 1000 nodes")
-        
+
         print(f"\n  3. Pre-fetch academic only: {res_1k['prefetch_academic']['avg_ms']:.1f}ms")
         print(f"     ✅ RECOMMENDED: Fastest + minimal memory footprint")
-        print(f"        • Loads {res_1k['prefetch_academic']['titles_loaded']} academic titles (~1-2MB)")
-        print(f"        • {res_1k['prefetch_academic']['avg_ms']:.0f}ms startup cost (imperceptible)")
+        print(
+            f"        • Loads {res_1k['prefetch_academic']['titles_loaded']} academic titles (~1-2MB)"
+        )
+        print(
+            f"        • {res_1k['prefetch_academic']['avg_ms']:.0f}ms startup cost (imperceptible)"
+        )
         print(f"        • All node renders are instant lookups")
-        
+
         print(f"\n  4. Pre-fetch all titles: {res_1k['prefetch_all']['avg_ms']:.1f}ms")
-        print(f"     ⚠️  OVERKILL: Similar speed to #3 but loads {res_1k['prefetch_all']['titles_loaded']:,} irrelevant titles")
-        
+        print(
+            f"     ⚠️  OVERKILL: Similar speed to #3 but loads {res_1k['prefetch_all']['titles_loaded']:,} irrelevant titles"
+        )
+
         if "cross_db_join" in res_1k:
             print(f"\n  5. SQL cross-DB join: {res_1k['cross_db_join']['avg_ms']:.1f}ms")
             print(f"     ⚠️  LIMITED: Requires ATTACH DATABASE, not much faster than batch")

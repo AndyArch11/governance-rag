@@ -2,6 +2,7 @@
 """Diagnostic script to debug academic document retrieval."""
 
 from pathlib import Path
+
 from scripts.rag.rag_config import RAGConfig
 from scripts.utils.db_factory import get_default_vector_path, get_vector_client
 
@@ -23,20 +24,21 @@ print(f"   Total chunks: {total}")
 # 2. Check academic chunks
 print("\n2. ACADEMIC CHUNKS:")
 academic_results = col.get(
-    where={"source_category": "academic_reference"},
-    limit=5,
-    include=["metadatas", "documents"]
+    where={"source_category": "academic_reference"}, limit=5, include=["metadatas", "documents"]
 )
 academic_count = len(academic_results["ids"])
 print(f"   Academic chunks found: {academic_count}")
 
 if academic_count > 0:
     print("\n   Sample academic chunks:")
-    for i, (chunk_id, meta, doc) in enumerate(zip(
-        academic_results["ids"][:3],
-        academic_results["metadatas"][:3],
-        academic_results["documents"][:3]
-    ), 1):
+    for i, (chunk_id, meta, doc) in enumerate(
+        zip(
+            academic_results["ids"][:3],
+            academic_results["metadatas"][:3],
+            academic_results["documents"][:3],
+        ),
+        1,
+    ):
         print(f"\n   [{i}] ID: {chunk_id}")
         print(f"       Title: {meta.get('title', 'N/A')[:60]}")
         print(f"       Authors: {meta.get('authors', 'N/A')[:60]}")
@@ -48,34 +50,30 @@ if academic_count > 0:
 print("\n3. VECTOR SEARCH TEST (academic topics):")
 from scripts.ingest.vectors import EMBEDDING_MODEL_NAME
 
-test_queries = [
-    "leadership",
-    "research methodology",
-    "thesis findings",
-    "academic research"
-]
+test_queries = ["leadership", "research methodology", "thesis findings", "academic research"]
 
 for query in test_queries:
     from langchain_ollama import OllamaEmbeddings
+
     embed_model = OllamaEmbeddings(model=EMBEDDING_MODEL_NAME)
     query_emb = embed_model.embed_query(query)
-    
+
     results = col.query(
         query_embeddings=[query_emb],
         n_results=3,
         where={"embedding_model": EMBEDDING_MODEL_NAME},
-        include=["metadatas", "distances"]
+        include=["metadatas", "distances"],
     )
-    
+
     if results["ids"] and results["ids"][0]:
         print(f"\n   Query: '{query}'")
         print(f"   Results: {len(results['ids'][0])}")
-        for j, (chunk_id, meta, distance) in enumerate(zip(
-            results["ids"][0][:2],
-            results["metadatas"][0][:2],
-            results["distances"][0][:2]
-        ), 1):
-            print(f"   [{j}] source_category: {meta.get('source_category', 'N/A')}, distance: {distance:.4f}")
+        for j, (chunk_id, meta, distance) in enumerate(
+            zip(results["ids"][0][:2], results["metadatas"][0][:2], results["distances"][0][:2]), 1
+        ):
+            print(
+                f"   [{j}] source_category: {meta.get('source_category', 'N/A')}, distance: {distance:.4f}"
+            )
     else:
         print(f"\n   Query: '{query}' → NO RESULTS")
 
@@ -99,7 +97,9 @@ for keyword in keywords:
     all_chunks = col.get(limit=100, include=["documents", "metadatas"])
     if all_chunks["documents"]:
         count = sum(1 for doc in all_chunks["documents"] if keyword.lower() in doc.lower())
-        print(f"   '{keyword}' appears in {count}/{len(all_chunks['documents'])} chunks (sampled 100)")
+        print(
+            f"   '{keyword}' appears in {count}/{len(all_chunks['documents'])} chunks (sampled 100)"
+        )
 
 print("\n" + "=" * 80)
 print("RECOMMENDATIONS:")

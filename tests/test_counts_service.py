@@ -12,36 +12,30 @@ def _setup_in_memory_db():
     cur = conn.cursor()
 
     # Create tables
-    cur.execute(
-        """
+    cur.execute("""
         CREATE TABLE bm25_index (
             doc_id TEXT,
             term TEXT,
             tf INTEGER,
             doc_length INTEGER
         )
-        """
-    )
-    cur.execute(
-        """
+        """)
+    cur.execute("""
         CREATE TABLE bm25_corpus_stats (
             term TEXT PRIMARY KEY,
             doc_freq INTEGER,
             corpus_term_freq INTEGER,
             total_docs INTEGER
         )
-        """
-    )
-    cur.execute(
-        """
+        """)
+    cur.execute("""
         CREATE TABLE bm25_doc_metadata (
             doc_id TEXT PRIMARY KEY,
             source_category TEXT,
             repo TEXT,
             project TEXT
         )
-        """
-    )
+        """)
 
     # Insert metadata
     cur.executemany(
@@ -81,7 +75,7 @@ def test_counts_service_core_functions():
 
     conn = None
     svc = None
-    
+
     try:
 
         conn = _setup_in_memory_db()

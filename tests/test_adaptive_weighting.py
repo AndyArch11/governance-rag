@@ -684,8 +684,9 @@ class TestSampleFreshness:
             assert len(version) > 0
             # Should be parseable as datetime
             from datetime import datetime
+
             try:
-                datetime.fromisoformat(version.replace('Z', '+00:00'))
+                datetime.fromisoformat(version.replace("Z", "+00:00"))
                 valid_timestamp = True
             except Exception:
                 valid_timestamp = False

@@ -223,8 +223,7 @@ class TestAdaptiveChunking:
 
     def test_realistic_guide_document(self):
         """Test with realistic guide document structure."""
-        guide_text = (
-            """
+        guide_text = """
         # Deployment Guide
         
         ## Prerequisites
@@ -248,9 +247,7 @@ class TestAdaptiveChunking:
         Execute the deployment script with appropriate permissions.
         Monitor the logs for any errors or warnings during installation.
         Verify all services start correctly after deployment completes.
-        """
-            * 3
-        )
+        """ * 3
 
         chunks = chunk_text(guide_text, doc_type="deployment guide", adaptive=True)
 

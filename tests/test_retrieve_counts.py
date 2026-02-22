@@ -4,8 +4,8 @@ Monkeypatches external dependencies to avoid network calls and asserts that
 the synthetic counts summary chunk is prepended when count/list intent is detected.
 """
 
-import types
 import sys
+import types
 
 
 class DummyCollection:
@@ -25,6 +25,7 @@ def test_retrieve_prepends_counts_summary(monkeypatch):
     class FakeCountsService:
         def __init__(self):
             pass
+
         def summarise_term(self, term, limit=10):
             return {
                 "term": term,
@@ -33,10 +34,13 @@ def test_retrieve_prepends_counts_summary(monkeypatch):
                 "sample_docs": ["docA", "docB"],
                 "category_breakdown": [("governance", 30), ("code", 12)],
             }
+
         def close(self):
             pass
+
         def __enter__(self):
             return self
+
         def __exit__(self, exc_type, exc_val, exc_tb):
             self.close()
             return False
@@ -46,10 +50,16 @@ def test_retrieve_prepends_counts_summary(monkeypatch):
     monkeypatch.setitem(sys.modules, "scripts.rag.counts_service", fake_module)
 
     # Avoid Ollama embeddings or Chroma calls
-    monkeypatch.setattr("scripts.rag.retrieve._embed_query", lambda q, m: [0.0, 0.0, 0.0], raising=False)
+    monkeypatch.setattr(
+        "scripts.rag.retrieve._embed_query", lambda q, m: [0.0, 0.0, 0.0], raising=False
+    )
     monkeypatch.setattr(
         "scripts.rag.retrieve._query_collection",
-        lambda collection, embedding, k, model, filters=None: {"documents": [[]], "metadatas": [[]], "ids": [[]]},
+        lambda collection, embedding, k, model, filters=None: {
+            "documents": [[]],
+            "metadatas": [[]],
+            "ids": [[]],
+        },
         raising=False,
     )
     monkeypatch.setattr(
@@ -72,6 +82,7 @@ def test_retrieve_list_intent(monkeypatch):
     class FakeCountsService:
         def __init__(self):
             pass
+
         def summarise_term(self, term, limit=10):
             return {
                 "term": term,
@@ -80,10 +91,13 @@ def test_retrieve_list_intent(monkeypatch):
                 "sample_docs": ["doc1"],
                 "category_breakdown": [("patterns", 3), ("governance", 2)],
             }
+
         def close(self):
             pass
+
         def __enter__(self):
             return self
+
         def __exit__(self, exc_type, exc_val, exc_tb):
             self.close()
             return False
@@ -93,7 +107,11 @@ def test_retrieve_list_intent(monkeypatch):
     monkeypatch.setattr("scripts.rag.retrieve._embed_query", lambda q, m: [0.0], raising=False)
     monkeypatch.setattr(
         "scripts.rag.retrieve._query_collection",
-        lambda collection, embedding, k, model, filters=None: {"documents": [[]], "metadatas": [[]], "ids": [[]]},
+        lambda collection, embedding, k, model, filters=None: {
+            "documents": [[]],
+            "metadatas": [[]],
+            "ids": [[]],
+        },
         raising=False,
     )
     monkeypatch.setattr(
@@ -116,7 +134,11 @@ def test_retrieve_non_count_query_no_counts_chunk(monkeypatch):
     monkeypatch.setattr("scripts.rag.retrieve._embed_query", lambda q, m: [0.0], raising=False)
     monkeypatch.setattr(
         "scripts.rag.retrieve._query_collection",
-        lambda collection, embedding, k, model, filters=None: {"documents": [["v1"]], "metadatas": [[{}]], "ids": [["id1"]]},
+        lambda collection, embedding, k, model, filters=None: {
+            "documents": [["v1"]],
+            "metadatas": [[{}]],
+            "ids": [["id1"]],
+        },
         raising=False,
     )
     monkeypatch.setattr(

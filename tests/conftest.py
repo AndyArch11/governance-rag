@@ -21,11 +21,11 @@ dash_mock.Input = MagicMock()
 dash_mock.Output = MagicMock()
 dash_mock.State = MagicMock()
 
-sys.modules['dash'] = dash_mock
-sys.modules['plotly'] = MagicMock()
-sys.modules['plotly.graph_objects'] = MagicMock()
-sys.modules['plotly.express'] = MagicMock()
-sys.modules['plotly.subplots'] = MagicMock()
+sys.modules["dash"] = dash_mock
+sys.modules["plotly"] = MagicMock()
+sys.modules["plotly.graph_objects"] = MagicMock()
+sys.modules["plotly.express"] = MagicMock()
+sys.modules["plotly.subplots"] = MagicMock()
 
 # Import academic model fixtures
 pytest_plugins = ["tests.conftest_academic_models"]
@@ -62,22 +62,22 @@ if "langchain_ollama" not in sys.modules:
 @pytest.fixture(autouse=True)
 def cleanup_cache_singletons():
     """Clean up cache singletons after each test to prevent ResourceWarnings.
-    
+
     This ensures that any CacheDB instances created during a test are properly
     closed after the test completes, preventing unclosed database connection
     warnings in test teardown.
     """
     yield
-    
+
     # After each test, clear the cache singleton registry
     try:
         from scripts.utils.db_factory import _cache_instances, _cache_lock
-        
+
         # Close all instances in the registry
         with _cache_lock:
             instances_to_close = list(_cache_instances.values())
             _cache_instances.clear()
-        
+
         # Close instances outside the lock
         for instance in instances_to_close:
             try:

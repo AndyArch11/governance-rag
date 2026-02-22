@@ -306,8 +306,7 @@ def score_summary(
         if cached is not None:
             return cached
 
-    prompt = textwrap.dedent(
-        f"""
+    prompt = textwrap.dedent(f"""
     You are evaluating the quality of a summary for a technical governance document.
 
     Criteria (0-10, integers):
@@ -331,8 +330,7 @@ def score_summary(
 
     DOCUMENT EXCERPT (may be truncated):
     \"\"\"{cleaned_text[:4000]}\"\"\"
-    """
-    )
+    """)
 
     raw = validator_llm.invoke(prompt)
     result = extract_first_json_block(raw)
@@ -369,8 +367,7 @@ def regenerate_summary(
         if cached is not None:
             return cached
 
-    prompt = textwrap.dedent(
-        f"""
+    prompt = textwrap.dedent(f"""
     You are generating a high-quality summary for a technical governance document.
 
     RULES:
@@ -383,8 +380,7 @@ def regenerate_summary(
     {cleaned_text}
 
     Return ONLY the summary text.
-    """
-    )
+    """)
     result = primary_llm.invoke(prompt).strip()
 
     # Store in cache
@@ -433,8 +429,7 @@ def clean_text_with_llm(
     # TODO: Add examples of boilerplate vs technical content to prompt for better accuracy.
     # TODO: Consider a two-pass approach where we first identify boilerplate sections, then remove them in a second pass to preserve more technical content.
     # TODO: Have explicit instructions to remove company/people references to ensure output is anonymised as an option rather than hard-coded.
-    clean_prompt = textwrap.dedent(
-        f"""
+    clean_prompt = textwrap.dedent(f"""
     You are a text normalisation assistant.
 
     Your job is to CLEAN the text, not summarise it.
@@ -462,8 +457,7 @@ def clean_text_with_llm(
 
     Text to clean:
     {raw_text}
-    """
-    )
+    """)
 
     cleaned_text = primary_llm.invoke(clean_prompt)
     cleaned_text = sanitise_for_json(cleaned_text)

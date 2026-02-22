@@ -2,6 +2,7 @@
 """Test keyword search fallback directly."""
 
 from pathlib import Path
+
 from scripts.rag.rag_config import RAGConfig
 from scripts.utils.db_factory import get_default_vector_path, get_vector_client
 
@@ -41,7 +42,7 @@ print("\nDirect ChromaDB check:")
 all_chunks = col.get(limit=10, include=["documents"])
 print(f"Total chunks fetched: {len(all_chunks['ids'])}")
 if all_chunks["documents"]:
-    doc_sample = all_chunks['documents'][0]
+    doc_sample = all_chunks["documents"][0]
     print(f"Sample doc preview: {doc_sample[:100]}...")
     print(f"Contains 'leadership': {'leadership' in doc_sample.lower()}")
 

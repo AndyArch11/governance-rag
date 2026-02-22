@@ -1,12 +1,12 @@
-import pytest
 import networkx as nx
+import pytest
 
 from scripts.consistency_graph.advanced_analytics import (
     compute_advanced_analytics,
-    compute_pagerank_influence,
     compute_betweenness_centrality,
-    detect_communities_louvain,
     compute_network_topology_metrics,
+    compute_pagerank_influence,
+    detect_communities_louvain,
     get_node_influence_rank,
 )
 from scripts.rag.retrieve import explain_retrieval

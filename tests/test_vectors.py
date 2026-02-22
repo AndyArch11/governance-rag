@@ -375,9 +375,9 @@ class TestChunkTruncation:
     def test_truncate_chunk_long_text_truncation(self):
         """Long text should be truncated to fit token limit."""
         from scripts.ingest.vectors import (
-            _truncate_chunk_to_token_limit,
-            EMBEDDING_MODEL_MAX_TOKEN_LIMIT,
             EMBEDDING_CONTEXT_SAFETY_MARGIN,
+            EMBEDDING_MODEL_MAX_TOKEN_LIMIT,
+            _truncate_chunk_to_token_limit,
         )
 
         # Create a very long text that exceeds token limit
@@ -391,9 +391,9 @@ class TestChunkTruncation:
     def test_truncate_chunk_respects_token_limit(self):
         """Truncated text should respect the token limit."""
         from scripts.ingest.vectors import (
-            _truncate_chunk_to_token_limit,
-            EMBEDDING_USABLE_TOKEN_LIMIT,
             EMBEDDING_CONTEXT_SAFETY_MARGIN,
+            EMBEDDING_USABLE_TOKEN_LIMIT,
+            _truncate_chunk_to_token_limit,
         )
 
         # Create a long text
@@ -427,9 +427,9 @@ class TestChunkTruncation:
             text_before_marker = truncated.replace(" [TRUNCATED]", "")
             # The text should be a series of complete words
             last_word = text_before_marker.split()[-1] if text_before_marker.split() else ""
-            assert last_word == "word" or last_word == "", (
-                f"Last word should be complete or empty, got '{last_word}'"
-            )
+            assert (
+                last_word == "word" or last_word == ""
+            ), f"Last word should be complete or empty, got '{last_word}'"
 
     def test_truncate_chunk_normalises_dot_leaders(self):
         """Long dot leaders should be collapsed to a single ellipsis."""
@@ -454,15 +454,13 @@ class TestChunkTruncation:
         text = "word " * 500
         custom_limit = 100  # Very restrictive limit
 
-        truncated, was_truncated = _truncate_chunk_to_token_limit(
-            text, max_tokens=custom_limit
-        )
+        truncated, was_truncated = _truncate_chunk_to_token_limit(text, max_tokens=custom_limit)
 
         # With 100 tokens and 1 token per 3 chars estimate, should truncate to ~300 chars
         max_chars = (custom_limit * 3) - 200
-        assert len(truncated) <= max_chars + 50, (
-            f"Truncated text should respect custom token limit (100 tokens = {max_chars} chars)"
-        )
+        assert (
+            len(truncated) <= max_chars + 50
+        ), f"Truncated text should respect custom token limit (100 tokens = {max_chars} chars)"
 
     def test_truncate_chunk_empty_text(self):
         """Empty text should not be truncated."""
@@ -482,16 +480,14 @@ class TestChunkTruncation:
         truncated, was_truncated = _truncate_chunk_to_token_limit(whitespace_text)
 
         assert not was_truncated, "Whitespace-only text should not be truncated"
-        assert (
-            truncated == whitespace_text
-        ), "Whitespace-only text should remain unchanged"
+        assert truncated == whitespace_text, "Whitespace-only text should remain unchanged"
 
     def test_truncate_chunk_exactly_at_limit(self):
         """Text exactly at token limit should not be truncated."""
         from scripts.ingest.vectors import (
-            _truncate_chunk_to_token_limit,
-            EMBEDDING_USABLE_TOKEN_LIMIT,
             EMBEDDING_CONTEXT_SAFETY_MARGIN,
+            EMBEDDING_USABLE_TOKEN_LIMIT,
+            _truncate_chunk_to_token_limit,
         )
 
         # Create text that's at the limit (accounting for [TRUNCATED] suffix buffer)
@@ -508,9 +504,9 @@ class TestChunkTruncation:
     def test_truncate_chunk_just_over_limit(self):
         """Text just over token limit should be truncated."""
         from scripts.ingest.vectors import (
-            _truncate_chunk_to_token_limit,
-            EMBEDDING_USABLE_TOKEN_LIMIT,
             EMBEDDING_CONTEXT_SAFETY_MARGIN,
+            EMBEDDING_USABLE_TOKEN_LIMIT,
+            _truncate_chunk_to_token_limit,
         )
 
         # Create text that's just over the limit (accounting for [TRUNCATED] suffix buffer)
@@ -559,9 +555,9 @@ class TestDocumentSummaryTruncation:
     def test_summary_respects_embedding_limit(self):
         """Truncated summary should fit within embedding model's token limit."""
         from scripts.ingest.vectors import (
-            _truncate_chunk_to_token_limit,
-            EMBEDDING_USABLE_TOKEN_LIMIT,
             EMBEDDING_CONTEXT_SAFETY_MARGIN,
+            EMBEDDING_USABLE_TOKEN_LIMIT,
+            _truncate_chunk_to_token_limit,
         )
 
         # Create a summary that definitely exceeds the limit
@@ -571,9 +567,9 @@ class TestDocumentSummaryTruncation:
 
         # Verify it fits within the conservative token limit
         max_chars = (EMBEDDING_USABLE_TOKEN_LIMIT * 3) - EMBEDDING_CONTEXT_SAFETY_MARGIN
-        assert len(truncated) <= max_chars + 50, (
-            f"Truncated summary ({len(truncated)} chars) should fit within limit ({max_chars} chars)"
-        )
+        assert (
+            len(truncated) <= max_chars + 50
+        ), f"Truncated summary ({len(truncated)} chars) should fit within limit ({max_chars} chars)"
 
     def test_summary_empty_string(self):
         """Empty summary should not cause issues."""
@@ -592,7 +588,8 @@ class TestDocumentSummaryTruncation:
         # Simulate metadata from academic ingestion
         metadata = {
             "doc_type": "academic_reference",
-            "summary": "This paper discusses machine learning approaches in natural language processing. " * 20,
+            "summary": "This paper discusses machine learning approaches in natural language processing. "
+            * 20,
             "summary_scores": {"overall": 0},
         }
 

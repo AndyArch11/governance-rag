@@ -86,7 +86,7 @@ from scripts.ui.academic.citation_graph_callbacks import register_citation_graph
 from scripts.ui.academic.citation_graph_viz import get_citation_viz
 from scripts.ui.export_manager import ExportManager
 from scripts.ui.word_cloud_provider import get_word_cloud_data, get_word_cloud_stats
-from scripts.utils.db_factory import get_default_vector_path, get_vector_client, get_cache_client
+from scripts.utils.db_factory import get_cache_client, get_default_vector_path, get_vector_client
 
 # Logger setup
 logger = logging.getLogger(__name__)

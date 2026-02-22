@@ -756,13 +756,11 @@ class TestBitbucketCodeIngestion:
             # Create test files
             (repo_path / "src" / "main" / "groovy").mkdir(parents=True)
             groovy_file = repo_path / "src" / "main" / "groovy" / "Route.groovy"
-            groovy_file.write_text(
-                """
+            groovy_file.write_text("""
             from('jms:queue:input')
                 .to('http://service/process')
                 .to('kafka:topic:output')
-            """
-            )
+            """)
 
             mock_connector = Mock()
             mock_connector_class.return_value = mock_connector
@@ -799,22 +797,18 @@ class TestBitbucketCodeIngestion:
             # Create test files
             (repo_path / "src" / "main" / "groovy").mkdir(parents=True)
             groovy_file = repo_path / "src" / "main" / "groovy" / "Route.groovy"
-            groovy_file.write_text(
-                """
+            groovy_file.write_text("""
             from('kafka:input')
                 .routeId('processor')
                 .to('http://service.example.com/api')
-            """
-            )
+            """)
 
             gradle_file = repo_path / "build.gradle"
-            gradle_file.write_text(
-                """
+            gradle_file.write_text("""
             dependencies {
                 implementation 'org.apache.camel.springboot:camel-core-starter:3.14.0'
             }
-            """
-            )
+            """)
 
             mock_connector = Mock()
             mock_connector_class.return_value = mock_connector

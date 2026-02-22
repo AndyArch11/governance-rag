@@ -25,7 +25,6 @@ from typing import Any, Dict, Iterable, List, Optional
 from scripts.ingest.academic.config import get_academic_config
 from scripts.utils.db_factory import get_default_vector_path, get_vector_client
 
-
 URL_REGEX = re.compile(r"https?://[^\s\)\]\}>\"']+", re.IGNORECASE)
 YEAR_REGEX = re.compile(r"\b(19|20)\d{2}[a-z]?\b")
 LONG_TOKEN_REGEX = re.compile(r"[A-Za-z]{20,}")
@@ -34,11 +33,7 @@ NON_ASCII_HYPHENS = {"\u2010", "\u2011", "\u2012", "\u2013", "\u2014", "\u2212"}
 
 def _extract_text(meta: Dict[str, Any]) -> str:
     return (
-        meta.get("citation")
-        or meta.get("title")
-        or meta.get("doc_id")
-        or meta.get("source")
-        or ""
+        meta.get("citation") or meta.get("title") or meta.get("doc_id") or meta.get("source") or ""
     )
 
 
@@ -120,9 +115,15 @@ def _iter_academic_chunks(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Validate academic reference metadata for common extraction issues")
+    parser = argparse.ArgumentParser(
+        description="Validate academic reference metadata for common extraction issues"
+    )
     parser.add_argument("--limit", type=int, default=5000, help="Max references to scan")
-    parser.add_argument("--only-reference-metadata", action="store_true", help="Only scan reference_metadata sources")
+    parser.add_argument(
+        "--only-reference-metadata",
+        action="store_true",
+        help="Only scan reference_metadata sources",
+    )
     parser.add_argument("--output-json", type=str, default=None, help="Optional JSON output path")
     args = parser.parse_args()
 

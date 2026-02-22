@@ -13,47 +13,39 @@ def _setup_db_with_chunk_metadata():
     cur = conn.cursor()
 
     # Core tables
-    cur.execute(
-        """
+    cur.execute("""
         CREATE TABLE bm25_index (
             doc_id TEXT,
             term TEXT,
             tf INTEGER,
             doc_length INTEGER
         )
-        """
-    )
-    cur.execute(
-        """
+        """)
+    cur.execute("""
         CREATE TABLE bm25_corpus_stats (
             term TEXT PRIMARY KEY,
             doc_freq INTEGER,
             corpus_term_freq INTEGER,
             total_docs INTEGER
         )
-        """
-    )
-    cur.execute(
-        """
+        """)
+    cur.execute("""
         CREATE TABLE bm25_doc_metadata (
             doc_id TEXT PRIMARY KEY,
             source_category TEXT,
             repo TEXT,
             project TEXT
         )
-        """
-    )
+        """)
 
     # Chunk metadata table (optional, parent-child mapping)
-    cur.execute(
-        """
+    cur.execute("""
         CREATE TABLE bm25_chunk_metadata (
             chunk_id TEXT PRIMARY KEY,
             parent_id TEXT,
             chunk_index INTEGER
         )
-        """
-    )
+        """)
 
     # Insert document metadata (parents only)
     cur.executemany(
@@ -103,40 +95,34 @@ def _setup_db_with_chunk_metadata():
 
 def _setup_db_without_chunk_metadata():
     """Create in-memory DB without chunk metadata (fallback to chunk-level counts)."""
-    
+
     conn = sqlite3.connect(":memory:")
     cur = conn.cursor()
 
-    cur.execute(
-        """
+    cur.execute("""
         CREATE TABLE bm25_index (
             doc_id TEXT,
             term TEXT,
             tf INTEGER,
             doc_length INTEGER
         )
-        """
-    )
-    cur.execute(
-        """
+        """)
+    cur.execute("""
         CREATE TABLE bm25_corpus_stats (
             term TEXT PRIMARY KEY,
             doc_freq INTEGER,
             corpus_term_freq INTEGER,
             total_docs INTEGER
         )
-        """
-    )
-    cur.execute(
-        """
+        """)
+    cur.execute("""
         CREATE TABLE bm25_doc_metadata (
             doc_id TEXT PRIMARY KEY,
             source_category TEXT,
             repo TEXT,
             project TEXT
         )
-        """
-    )
+        """)
 
     # Insert document metadata
     cur.executemany(
@@ -246,16 +232,17 @@ def test_parent_fallback_without_chunk_metadata():
         # Without chunk_metadata table, should fallback to chunk-level counts
         parent_count = svc.count_parent_docs_for_term("auth")
 
-        parent_docs = svc.list_parent_docs_for_term("auth", limit=10)   
+        parent_docs = svc.list_parent_docs_for_term("auth", limit=10)
         assert parent_count == 3  # Falls back to 3 chunks
         assert len(parent_docs) == 3
         assert set(parent_docs) == {"chunk1", "chunk2", "chunk3"}
-        
-    finally:     
+
+    finally:
         if conn:
             conn.close()
         if svc:
             svc.close()
+
 
 def test_parent_list_pagination():
     from scripts.rag.counts_service import CountsService
@@ -279,10 +266,9 @@ def test_parent_list_pagination():
         assert page1[0] != page2[0]
         assert set(page1 + page2) == {"parent1", "parent2"}
 
-    finally: 
-        
+    finally:
+
         if conn:
             conn.close()
         if svc:
             svc.close()
-

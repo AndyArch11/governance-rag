@@ -7,12 +7,11 @@ detect code languages, build heading paths, and create enhanced metadata.
 import pytest
 
 from scripts.ingest.chunk import (
-    extract_technical_entities,
+    create_enhanced_metadata,
     detect_code_language,
     extract_heading_path,
-    create_enhanced_metadata,
+    extract_technical_entities,
 )
-
 
 # =========================
 # Test extract_technical_entities
@@ -323,9 +322,9 @@ class TestExtractHeadingPath:
 This is content.
 More content here."""
         chunk = "More content here."
-        
+
         path = extract_heading_path(chunk, full_text)
-        
+
         assert path == "Main Title"
 
     def test_extract_nested_headings(self):
@@ -338,9 +337,9 @@ More content here."""
 
 Content for subsection 1.1"""
         chunk = "Content for subsection 1.1"
-        
+
         path = extract_heading_path(chunk, full_text)
-        
+
         assert path == "Document > Section 1 > Subsection 1.1"
 
     def test_extract_heading_multiple_levels(self):
@@ -355,9 +354,9 @@ Content for subsection 1.1"""
 
 This is the detailed content."""
         chunk = "This is the detailed content."
-        
+
         path = extract_heading_path(chunk, full_text)
-        
+
         assert "Title" in path
         assert "Chapter 1" in path
         assert "Part A" in path
@@ -377,27 +376,27 @@ Content here.
 
 Target content."""
         chunk = "Target content."
-        
+
         path = extract_heading_path(chunk, full_text)
-        
+
         assert path == "Title > Second Section > Subsection"
 
     def test_extract_no_headings(self):
         """Test extraction when no headings present."""
         full_text = "Just plain text without any headings."
         chunk = "plain text"
-        
+
         path = extract_heading_path(chunk, full_text)
-        
+
         assert path is None
 
     def test_extract_chunk_not_found(self):
         """Test extraction when chunk not found in full text."""
         full_text = "This is the full text."
         chunk = "This is different text."
-        
+
         path = extract_heading_path(chunk, full_text)
-        
+
         assert path is None
 
     def test_extract_chunk_at_start(self):
@@ -410,9 +409,9 @@ First paragraph of content.
 
 More content."""
         chunk = "First paragraph of content."
-        
+
         path = extract_heading_path(chunk, full_text)
-        
+
         assert path == "Title"
 
     def test_extract_heading_clears_deeper_levels(self):
@@ -429,9 +428,9 @@ Content A.1
 
 Content B"""
         chunk = "Content B"
-        
+
         path = extract_heading_path(chunk, full_text)
-        
+
         # Should be Title > Section B, not include Subsection A.1
         assert path == "Title > Section B"
 
@@ -441,18 +440,18 @@ Content B"""
 
 Some longer content paragraph here."""
         chunk = "Some"
-        
+
         path = extract_heading_path(chunk, full_text)
-        
+
         assert path == "Heading"
 
     def test_extract_empty_chunk(self):
         """Test extraction with empty chunk."""
         full_text = "# Heading\n\nContent"
         chunk = ""
-        
+
         path = extract_heading_path(chunk, full_text)
-        
+
         # Empty chunk won't be found
         assert path is None
 
@@ -466,9 +465,9 @@ Some longer content paragraph here."""
 
 Content here"""
         chunk = "Content here"
-        
+
         path = extract_heading_path(chunk, full_text)
-        
+
         assert "Configuration & Setup" in path
         assert "Database (MySQL)" in path
         assert "Connection: localhost:3306" in path
@@ -486,12 +485,9 @@ class TestCreateEnhancedMetadata:
         """Test basic metadata creation."""
         chunk = "This is a simple text chunk."
         metadata = create_enhanced_metadata(
-            chunk_text=chunk,
-            chunk_index=0,
-            total_chunks=3,
-            doc_id="doc_123"
+            chunk_text=chunk, chunk_index=0, total_chunks=3, doc_id="doc_123"
         )
-        
+
         assert metadata.content_type == "text"
         assert metadata.contains_code is False
         assert metadata.contains_table is False
@@ -501,12 +497,9 @@ class TestCreateEnhancedMetadata:
         """Test metadata creation with code content."""
         chunk = "```python\ndef hello():\n    print('world')\n```"
         metadata = create_enhanced_metadata(
-            chunk_text=chunk,
-            chunk_index=0,
-            total_chunks=1,
-            doc_id="doc_123"
+            chunk_text=chunk, chunk_index=0, total_chunks=1, doc_id="doc_123"
         )
-        
+
         assert metadata.contains_code is True
         assert metadata.content_type == "code"
         assert metadata.code_language == "python"
@@ -515,12 +508,9 @@ class TestCreateEnhancedMetadata:
         """Test metadata with inline code markers."""
         chunk = "Use the `get_user()` function to retrieve data."
         metadata = create_enhanced_metadata(
-            chunk_text=chunk,
-            chunk_index=0,
-            total_chunks=1,
-            doc_id="doc_123"
+            chunk_text=chunk, chunk_index=0, total_chunks=1, doc_id="doc_123"
         )
-        
+
         assert metadata.contains_code is True
         assert metadata.content_type == "mixed"
 
@@ -528,12 +518,9 @@ class TestCreateEnhancedMetadata:
         """Test metadata with table marker."""
         chunk = "[TABLE 1]\n| Col1 | Col2 |\n| ---- | ---- |\n[/TABLE 1]"
         metadata = create_enhanced_metadata(
-            chunk_text=chunk,
-            chunk_index=0,
-            total_chunks=1,
-            doc_id="doc_123"
+            chunk_text=chunk, chunk_index=0, total_chunks=1, doc_id="doc_123"
         )
-        
+
         assert metadata.contains_table is True
         assert metadata.content_type == "structured"
 
@@ -541,60 +528,45 @@ class TestCreateEnhancedMetadata:
         """Test metadata with markdown table."""
         chunk = "| Name | Age |\n| --- | --- |\n| John | 30 |"
         metadata = create_enhanced_metadata(
-            chunk_text=chunk,
-            chunk_index=0,
-            total_chunks=1,
-            doc_id="doc_123"
+            chunk_text=chunk, chunk_index=0, total_chunks=1, doc_id="doc_123"
         )
-        
+
         assert metadata.contains_table is True
 
     def test_create_metadata_with_diagram(self):
         """Test metadata with diagram reference."""
         chunk = "See the diagram below:\n![Architecture Diagram](image.png)"
         metadata = create_enhanced_metadata(
-            chunk_text=chunk,
-            chunk_index=0,
-            total_chunks=1,
-            doc_id="doc_123"
+            chunk_text=chunk, chunk_index=0, total_chunks=1, doc_id="doc_123"
         )
-        
+
         assert metadata.contains_diagram is True
 
     def test_create_metadata_api_reference(self):
         """Test metadata identifies API reference content."""
         chunk = "API endpoint: GET /api/users\nReturns: List of users"
         metadata = create_enhanced_metadata(
-            chunk_text=chunk,
-            chunk_index=0,
-            total_chunks=1,
-            doc_id="doc_123"
+            chunk_text=chunk, chunk_index=0, total_chunks=1, doc_id="doc_123"
         )
-        
+
         assert metadata.is_api_reference is True
 
     def test_create_metadata_configuration(self):
         """Test metadata identifies configuration content."""
         chunk = "Configuration settings:\n- database.host: localhost\n- server.port: 8080"
         metadata = create_enhanced_metadata(
-            chunk_text=chunk,
-            chunk_index=0,
-            total_chunks=1,
-            doc_id="doc_123"
+            chunk_text=chunk, chunk_index=0, total_chunks=1, doc_id="doc_123"
         )
-        
+
         assert metadata.is_configuration is True
 
     def test_create_metadata_technical_entities(self):
         """Test metadata extracts technical entities."""
         chunk = "Use UserService class and get_user() function"
         metadata = create_enhanced_metadata(
-            chunk_text=chunk,
-            chunk_index=0,
-            total_chunks=1,
-            doc_id="doc_123"
+            chunk_text=chunk, chunk_index=0, total_chunks=1, doc_id="doc_123"
         )
-        
+
         assert "UserService" in metadata.technical_entities
         assert "get_user" in metadata.technical_entities
 
@@ -609,13 +581,9 @@ class TestCreateEnhancedMetadata:
 Run the installer"""
         chunk = "Run the installer"
         metadata = create_enhanced_metadata(
-            chunk_text=chunk,
-            chunk_index=0,
-            total_chunks=1,
-            doc_id="doc_123",
-            full_text=full_text
+            chunk_text=chunk, chunk_index=0, total_chunks=1, doc_id="doc_123", full_text=full_text
         )
-        
+
         assert metadata.heading_path == "Guide > Setup > Installation"
         assert metadata.parent_section == "Installation"
         assert metadata.section_depth == 3
@@ -624,48 +592,36 @@ Run the installer"""
         """Test metadata includes sequential chunk references."""
         chunk = "Middle chunk content"
         metadata = create_enhanced_metadata(
-            chunk_text=chunk,
-            chunk_index=5,
-            total_chunks=10,
-            doc_id="doc_123"
+            chunk_text=chunk, chunk_index=5, total_chunks=10, doc_id="doc_123"
         )
-        
+
         assert metadata.prev_chunk_id == "doc_123_chunk_4"
         assert metadata.next_chunk_id == "doc_123_chunk_6"
 
     def test_create_metadata_first_chunk(self):
         """Test metadata for first chunk has no previous."""
         metadata = create_enhanced_metadata(
-            chunk_text="First chunk",
-            chunk_index=0,
-            total_chunks=5,
-            doc_id="doc_123"
+            chunk_text="First chunk", chunk_index=0, total_chunks=5, doc_id="doc_123"
         )
-        
+
         assert metadata.prev_chunk_id is None
         assert metadata.next_chunk_id == "doc_123_chunk_1"
 
     def test_create_metadata_last_chunk(self):
         """Test metadata for last chunk has no next."""
         metadata = create_enhanced_metadata(
-            chunk_text="Last chunk",
-            chunk_index=4,
-            total_chunks=5,
-            doc_id="doc_123"
+            chunk_text="Last chunk", chunk_index=4, total_chunks=5, doc_id="doc_123"
         )
-        
+
         assert metadata.prev_chunk_id == "doc_123_chunk_3"
         assert metadata.next_chunk_id is None
 
     def test_create_metadata_single_chunk(self):
         """Test metadata for single chunk document."""
         metadata = create_enhanced_metadata(
-            chunk_text="Only chunk",
-            chunk_index=0,
-            total_chunks=1,
-            doc_id="doc_123"
+            chunk_text="Only chunk", chunk_index=0, total_chunks=1, doc_id="doc_123"
         )
-        
+
         assert metadata.prev_chunk_id is None
         assert metadata.next_chunk_id is None
 
@@ -673,12 +629,9 @@ Run the installer"""
         """Test metadata with mixed content (code + text)."""
         chunk = "Here is some code `function()` and regular text"
         metadata = create_enhanced_metadata(
-            chunk_text=chunk,
-            chunk_index=0,
-            total_chunks=1,
-            doc_id="doc_123"
+            chunk_text=chunk, chunk_index=0, total_chunks=1, doc_id="doc_123"
         )
-        
+
         assert metadata.content_type == "mixed"
         assert metadata.contains_code is True
 
@@ -686,12 +639,9 @@ Run the installer"""
         """Test metadata creation without full_text parameter."""
         chunk = "Content without context"
         metadata = create_enhanced_metadata(
-            chunk_text=chunk,
-            chunk_index=0,
-            total_chunks=1,
-            doc_id="doc_123"
+            chunk_text=chunk, chunk_index=0, total_chunks=1, doc_id="doc_123"
         )
-        
+
         assert metadata.heading_path is None
         assert metadata.parent_section is None
         assert metadata.section_depth is None
@@ -704,9 +654,9 @@ Run the installer"""
             chunk_index=0,
             total_chunks=1,
             doc_id="doc_123",
-            doc_type="technical_guide"
+            doc_type="technical_guide",
         )
-        
+
         # doc_type is passed but not stored in metadata (used for chunking)
         assert metadata is not None
 
@@ -714,12 +664,9 @@ Run the installer"""
         """Test metadata detects JavaScript code."""
         chunk = "```javascript\nconst x = 5;\nconsole.log(x);\n```"
         metadata = create_enhanced_metadata(
-            chunk_text=chunk,
-            chunk_index=0,
-            total_chunks=1,
-            doc_id="doc_123"
+            chunk_text=chunk, chunk_index=0, total_chunks=1, doc_id="doc_123"
         )
-        
+
         assert metadata.code_language == "javascript"
         assert metadata.contains_code is True
 
@@ -727,12 +674,9 @@ Run the installer"""
         """Test metadata detects SQL code in fence."""
         chunk = "```sql\nSELECT * FROM users WHERE active = 1\n```"
         metadata = create_enhanced_metadata(
-            chunk_text=chunk,
-            chunk_index=0,
-            total_chunks=1,
-            doc_id="doc_123"
+            chunk_text=chunk, chunk_index=0, total_chunks=1, doc_id="doc_123"
         )
-        
+
         # SQL in code fence should be detected
         assert metadata.code_language == "sql"
         assert metadata.contains_code is True
@@ -758,13 +702,9 @@ def get_users():
 """
         full_text = f"# API Reference\n\n{chunk}"
         metadata = create_enhanced_metadata(
-            chunk_text=chunk,
-            chunk_index=0,
-            total_chunks=1,
-            doc_id="doc_123",
-            full_text=full_text
+            chunk_text=chunk, chunk_index=0, total_chunks=1, doc_id="doc_123", full_text=full_text
         )
-        
+
         assert metadata.contains_code is True
         assert metadata.contains_table is True
         assert metadata.is_api_reference is True
@@ -784,13 +724,9 @@ def get_users():
 Content here"""
         chunk = "Content here"
         metadata = create_enhanced_metadata(
-            chunk_text=chunk,
-            chunk_index=0,
-            total_chunks=1,
-            doc_id="doc_123",
-            full_text=full_text
+            chunk_text=chunk, chunk_index=0, total_chunks=1, doc_id="doc_123", full_text=full_text
         )
-        
+
         # Parent section should be the deepest heading
         assert metadata.parent_section == "Section A"
         assert metadata.section_depth == 3

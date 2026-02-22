@@ -1,7 +1,8 @@
 """Tests for DLP masking and detection."""
 
 import pytest
-from scripts.security.dlp import DLPScanner, DLPConfig
+
+from scripts.security.dlp import DLPConfig, DLPScanner
 
 
 def test_email_redaction():

@@ -2,9 +2,10 @@
 """
 Compare ChromaDB, Consistency Graph, and Citation Graph to understand the relationship.
 """
-from pathlib import Path
+
 import sqlite3
 from collections import Counter
+from pathlib import Path
 
 import chromadb
 
@@ -48,11 +49,7 @@ try:
         print(f"  {cat}: {count} chunks")
 
     print("\nAcademic-related documents:")
-    academic_docs = [
-        d
-        for d in doc_ids
-        if "academic" in d.lower() or "2025" in d
-    ]
+    academic_docs = [d for d in doc_ids if "academic" in d.lower() or "2025" in d]
     print(f"  Found {len(academic_docs)} academic doc_ids:")
     for doc in academic_docs[:5]:
         print(f"    - {doc}")
@@ -91,6 +88,7 @@ def table_exists(db_cursor: sqlite3.Cursor, table_name: str) -> bool:
     )
     return db_cursor.fetchone() is not None
 
+
 if cursor and table_exists(cursor, "nodes") and table_exists(cursor, "edges"):
     # Get node count and types
     cursor.execute("SELECT COUNT(*) as count FROM nodes")
@@ -115,8 +113,7 @@ if cursor and table_exists(cursor, "nodes") and table_exists(cursor, "edges"):
 
     # Check for reference/citation nodes
     cursor.execute(
-        "SELECT node_id FROM nodes WHERE node_id LIKE 'doi:%' "
-        "OR node_id LIKE 'ref:%' LIMIT 5"
+        "SELECT node_id FROM nodes WHERE node_id LIKE 'doi:%' " "OR node_id LIKE 'ref:%' LIMIT 5"
     )
     ref_graph_nodes = [row["node_id"] for row in cursor.fetchall()]
     print(f"\nReference nodes in consistency graph: {len(ref_graph_nodes)}")
@@ -133,7 +130,9 @@ if cursor:
 # 3. Citation Graph Analysis
 print("[3] Citation Graph (academic_citation_graph.db)")
 print("-" * 80)
-conn2 = sqlite3.connect(Path("/workspaces/governance-rag/rag_data/academic_citation_graph.db").expanduser())
+conn2 = sqlite3.connect(
+    Path("/workspaces/governance-rag/rag_data/academic_citation_graph.db").expanduser()
+)
 conn2.row_factory = sqlite3.Row
 cursor2 = conn2.cursor()
 

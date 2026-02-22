@@ -44,7 +44,9 @@ class AcademicIngestConfig(BaseConfig):
         self.bm25_index_original_text = self.get_bool("BM25_INDEX_ORIGINAL_TEXT", True)
 
         # Parent-child chunking (for better context preservation)
-        self.enable_parent_child_chunking = self.get_bool("ACADEMIC_INGEST_ENABLE_PARENT_CHILD_CHUNKING", True)
+        self.enable_parent_child_chunking = self.get_bool(
+            "ACADEMIC_INGEST_ENABLE_PARENT_CHILD_CHUNKING", True
+        )
 
 
 _ACADEMIC_CONFIG: Optional[AcademicIngestConfig] = None

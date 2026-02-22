@@ -172,9 +172,7 @@ def _clone_repository_safe(
     """
     try:
         logger.info(f"Cloning repository {repo_slug}...")
-        repo_path = connector.clone_repository(
-            project_key, repo_slug, target_dir=clone_path
-        )
+        repo_path = connector.clone_repository(project_key, repo_slug, target_dir=clone_path)
         return repo_path, None
     except Exception as e:
         error_dict = {
@@ -237,9 +235,7 @@ def _get_file_iterator(
                 modified_after=modified_after,
             )
         else:
-            patterns = [
-                f"**/*{ft}" if ft.startswith(".") else f"**/*{ft}" for ft in file_types
-            ]
+            patterns = [f"**/*{ft}" if ft.startswith(".") else f"**/*{ft}" for ft in file_types]
             return walker.walk_by_pattern(patterns)
 
 

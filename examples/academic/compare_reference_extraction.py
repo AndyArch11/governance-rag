@@ -21,9 +21,7 @@ URL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-NON_ASCII_HYPHENS = {
-    "\u2010", "\u2011", "\u2012", "\u2013", "\u2014", "\u2212"
-}
+NON_ASCII_HYPHENS = {"\u2010", "\u2011", "\u2012", "\u2013", "\u2014", "\u2212"}
 
 
 def _strip_urls(text: str) -> str:
@@ -73,7 +71,9 @@ def _count_urls(lines: List[str]) -> int:
     return sum(1 for ln in lines if URL_PATTERN.search(ln))
 
 
-def _diff_lists(expected: List[str], actual: List[str], strip_urls: bool = False) -> Tuple[List[str], List[str]]:
+def _diff_lists(
+    expected: List[str], actual: List[str], strip_urls: bool = False
+) -> Tuple[List[str], List[str]]:
     expected_norm = {_normalise_line(l, strip_urls=strip_urls): l for l in expected}
     actual_norm = {_normalise_line(l, strip_urls=strip_urls): l for l in actual}
 

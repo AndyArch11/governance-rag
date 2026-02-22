@@ -44,12 +44,14 @@ class DummyCollection:
 
     def add(self, ids=None, documents=None, metadatas=None, embeddings=None):
         """Store items in mock collection."""
-        self.add_calls.append({
-            "ids": ids,
-            "documents": documents,
-            "metadatas": metadatas,
-            "embeddings": embeddings,
-        })
+        self.add_calls.append(
+            {
+                "ids": ids,
+                "documents": documents,
+                "metadatas": metadatas,
+                "embeddings": embeddings,
+            }
+        )
         # Store for retrieval
         if ids and documents and metadatas:
             for i, item_id in enumerate(ids):
@@ -117,7 +119,9 @@ class TestCreateParentChildChunks:
 
         # Text that will create multiple parent chunks
         text = "This is a sentence. " * 150  # ~3000 chars
-        child_chunks, parent_chunks = create_parent_child_chunks(text, parent_size=1200, child_size=400)
+        child_chunks, parent_chunks = create_parent_child_chunks(
+            text, parent_size=1200, child_size=400
+        )
 
         # Should have parent chunks
         assert len(parent_chunks) > 0
@@ -153,17 +157,23 @@ class TestCreateParentChildChunks:
         # Verify each child's parent exists and references the child
         for child in child_chunks:
             parent_id = child["parent_id"]
-            assert parent_id in parent_lookup, f"Child {child['id']} references non-existent parent {parent_id}"
+            assert (
+                parent_id in parent_lookup
+            ), f"Child {child['id']} references non-existent parent {parent_id}"
 
             parent = parent_lookup[parent_id]
-            assert child["id"] in parent["child_ids"], f"Parent {parent_id} doesn't reference child {child['id']}"
+            assert (
+                child["id"] in parent["child_ids"]
+            ), f"Parent {parent_id} doesn't reference child {child['id']}"
 
     def test_parent_chunk_contains_child_text(self):
         """Test that parent chunks contain the text of their children."""
         from scripts.ingest.chunk import create_parent_child_chunks
 
         text = "This is test content. " * 80
-        child_chunks, parent_chunks = create_parent_child_chunks(text, parent_size=800, child_size=300)
+        child_chunks, parent_chunks = create_parent_child_chunks(
+            text, parent_size=800, child_size=300
+        )
 
         parent_lookup = {p["id"]: p for p in parent_chunks}
 
@@ -452,9 +462,7 @@ class TestBatchGetParentsForChildren:
             "metadata": {"is_parent": True},
         }
 
-        result = batch_get_parents_for_children(
-            ["child_0_0", "child_0_1", "child_1_0"], collection
-        )
+        result = batch_get_parents_for_children(["child_0_0", "child_0_1", "child_1_0"], collection)
 
         # Should return mapping of child_id -> parent data
         assert len(result) == 3
@@ -508,9 +516,7 @@ class TestBatchGetParentsForChildren:
             "metadata": {"is_parent": True},
         }
 
-        result = batch_get_parents_for_children(
-            ["child_with_parent", "child_orphan"], collection
-        )
+        result = batch_get_parents_for_children(["child_with_parent", "child_orphan"], collection)
 
         # Should only return parent for child_with_parent
         assert len(result) == 1
@@ -531,14 +537,16 @@ class TestParentChildIntegration:
     def test_full_parent_child_workflow(self, mock_audit, mock_get_logger):
         """Test complete workflow: create, store, retrieve."""
         from scripts.ingest.chunk import create_parent_child_chunks
-        from scripts.ingest.vectors import store_parent_chunks, batch_get_parents_for_children
+        from scripts.ingest.vectors import batch_get_parents_for_children, store_parent_chunks
 
         mock_get_logger.return_value = DummyLogger()
         collection = DummyCollection()
 
         # Step 1: Create parent-child chunks
         text = "Section one content. " * 100 + "Section two content. " * 100
-        child_chunks, parent_chunks = create_parent_child_chunks(text, parent_size=1200, child_size=400)
+        child_chunks, parent_chunks = create_parent_child_chunks(
+            text, parent_size=1200, child_size=400
+        )
 
         # Step 2: Simulate storing child chunks in collection
         # (In real code, store_chunks_in_chroma handles this)

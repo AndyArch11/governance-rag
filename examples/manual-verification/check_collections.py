@@ -2,6 +2,7 @@
 """Check what collections exist in ChromaDB."""
 
 from pathlib import Path
+
 import chromadb
 
 rag_data_dir = Path(__file__).parent.parent / "rag_data"

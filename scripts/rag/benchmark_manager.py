@@ -39,8 +39,7 @@ class BenchmarkManager:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
 
-            cursor.execute(
-                """
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS query_benchmarks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp TEXT NOT NULL,
@@ -101,30 +100,23 @@ class BenchmarkManager:
                     -- Additional metadata
                     metadata TEXT
                 )
-            """
-            )
+            """)
 
             # Create indices for faster queries
-            cursor.execute(
-                """
+            cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_timestamp 
                 ON query_benchmarks(timestamp)
-            """
-            )
+            """)
 
-            cursor.execute(
-                """
+            cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_model 
                 ON query_benchmarks(model_name)
-            """
-            )
+            """)
 
-            cursor.execute(
-                """
+            cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_success 
                 ON query_benchmarks(success)
-            """
-            )
+            """)
 
             conn.commit()
 
@@ -173,12 +165,10 @@ class BenchmarkManager:
         for col_name, col_type in columns_to_add:
             if col_name not in columns:
                 try:
-                    cursor.execute(
-                        f"""
+                    cursor.execute(f"""
                         ALTER TABLE query_benchmarks 
                         ADD COLUMN {col_name} {col_type}
-                    """
-                    )
+                    """)
                     print(f"✓ Added {col_name} column to query_benchmarks table")
                 except sqlite3.Error as e:
                     print(f"Note: Could not add {col_name} column: {e}")

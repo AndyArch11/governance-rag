@@ -72,7 +72,7 @@ def generate_module(monkeypatch):
     # Track the last created LLM instance and pending responses
     created_llm = [None]  # Use list to allow mutation in nested function
     pending_responses = [None]  # Responses to set on next LLM creation
-    
+
     def mock_get_llm(temperature=None):
         temp = temperature if temperature is not None else generate.config.temperature
         llm = DummyLLM(temperature=temp)
@@ -82,16 +82,16 @@ def generate_module(monkeypatch):
             pending_responses[0] = None
         created_llm[0] = llm
         return llm
-    
+
     monkeypatch.setattr(generate, "_get_llm", mock_get_llm)
-    
+
     # Create tracker that manages pending responses
     class LLMTracker:
         def __init__(self):
             self.created = created_llm
             self.pending = pending_responses
             self.responses = []
-        
+
         def set_responses(self, *responses):
             self.responses = list(responses)
             # If LLM exists, set directly; otherwise store for next creation
@@ -99,16 +99,16 @@ def generate_module(monkeypatch):
                 self.created[0].set_responses(*responses)
             else:
                 self.pending[0] = responses
-        
+
         @property
         def temperature(self):
             return self.created[0].temperature if self.created[0] else None
-        
+
         @property
         def prompts(self):
             """Delegate to created LLM's prompts."""
             return self.created[0].prompts if self.created[0] else []
-    
+
     dummy_llm = LLMTracker()
 
     return generate, dummy_logger, dummy_llm, audit_events
@@ -126,7 +126,9 @@ class TestAnswer:
         generate, logger, _, audit_events = generate_module
 
         # Mock retrieve to return no chunks
-        monkeypatch.setattr(generate, "retrieve", lambda q, c, k=None, persona=None, domain=None, **kwargs: ([], []))
+        monkeypatch.setattr(
+            generate, "retrieve", lambda q, c, k=None, persona=None, domain=None, **kwargs: ([], [])
+        )
 
         response = generate.answer("test query", collection=None, k=3)
 
@@ -147,7 +149,11 @@ class TestAnswer:
         # Mock retrieve to return chunks and sources
         chunks = ["chunk one", "chunk two"]
         sources = [{"id": "1"}, {"id": "2"}]
-        monkeypatch.setattr(generate, "retrieve", lambda q, c, k=None, persona=None, domain=None, **kwargs: (chunks, sources))
+        monkeypatch.setattr(
+            generate,
+            "retrieve",
+            lambda q, c, k=None, persona=None, domain=None, **kwargs: (chunks, sources),
+        )
 
         # Mock build_prompt to check inputs
         prompts_built = []
@@ -217,6 +223,7 @@ class TestAnswer:
 
         assert captured_k == [generate.config.k_results]
 
+
 class TestCodeAwareAnswerGeneration:
     """Tests for code-aware answer generation (Phase 4.2)."""
 
@@ -225,8 +232,14 @@ class TestCodeAwareAnswerGeneration:
 
         chunks = ["public class AuthService { }"]
         sources = [{"language": "java", "service_name": "AuthService"}]
-        monkeypatch.setattr(generate, "retrieve", lambda q, c, k=None, persona=None, domain=None, **kwargs: (chunks, sources))
-        monkeypatch.setattr(generate, "build_code_aware_prompt", lambda q, c, metadata=None: "CODE_PROMPT")
+        monkeypatch.setattr(
+            generate,
+            "retrieve",
+            lambda q, c, k=None, persona=None, domain=None, **kwargs: (chunks, sources),
+        )
+        monkeypatch.setattr(
+            generate, "build_code_aware_prompt", lambda q, c, metadata=None: "CODE_PROMPT"
+        )
         dummy_llm.set_responses("Generated answer")
 
         response = generate.answer("Show Java services", collection=None)
@@ -241,7 +254,11 @@ class TestCodeAwareAnswerGeneration:
 
         chunks = ["MFA requires..."]
         sources = [{"id": "1"}]
-        monkeypatch.setattr(generate, "retrieve", lambda q, c, k=None, persona=None, domain=None, **kwargs: (chunks, sources))
+        monkeypatch.setattr(
+            generate,
+            "retrieve",
+            lambda q, c, k=None, persona=None, domain=None, **kwargs: (chunks, sources),
+        )
         prompts_built = []
         monkeypatch.setattr(
             generate,
@@ -260,21 +277,25 @@ class TestCodeAwareAnswerGeneration:
         generate, logger, dummy_llm, audit_events = generate_module
 
         chunks = ["@Service public class PaymentService { }"]
-        sources = [{"language": "java", "bitbucket_url": "https://bitbucket.com/repo/PaymentService.java"}]
-        monkeypatch.setattr(generate, "retrieve", lambda q, c, k=None, persona=None, domain=None, **kwargs: (chunks, sources))
+        sources = [
+            {"language": "java", "bitbucket_url": "https://bitbucket.com/repo/PaymentService.java"}
+        ]
         monkeypatch.setattr(
             generate,
-            "build_code_aware_prompt",
-            lambda q, c, metadata=None: "CODE_PROMPT"
+            "retrieve",
+            lambda q, c, k=None, persona=None, domain=None, **kwargs: (chunks, sources),
+        )
+        monkeypatch.setattr(
+            generate, "build_code_aware_prompt", lambda q, c, metadata=None: "CODE_PROMPT"
         )
         # Mock response enhancement
         enhanced_responses = []
         original_enhance = generate._enhance_code_response
-        
+
         def track_enhance(answer, metadata=None):
             enhanced_responses.append((answer, metadata))
             return "Enhanced: " + answer
-        
+
         monkeypatch.setattr(generate, "_enhance_code_response", track_enhance)
         dummy_llm.set_responses("Payment service implementation")
 
@@ -290,10 +311,7 @@ class TestCodeAwareAnswerGeneration:
         generate, _, _, _ = generate_module
         from scripts.rag.assemble import extract_language_from_metadata
 
-        metadata = [
-            {"language": "java", "service_name": "Auth"},
-            {"language": "python"}
-        ]
+        metadata = [{"language": "java", "service_name": "Auth"}, {"language": "python"}]
         lang = extract_language_from_metadata(metadata)
         assert lang == "java"
 
@@ -317,9 +335,9 @@ class TestCodeAwareAnswerGeneration:
 
         answer = "Check the authentication service"
         metadata = [{"git_url": "https://github.com/org/repo/blob/main/AuthService.java"}]
-        
+
         enhanced = include_git_links(answer, metadata)
-        
+
         assert "github" in enhanced.lower()
         assert "https://github.com/org/repo/blob/main/AuthService.java" in enhanced
 
@@ -333,9 +351,9 @@ class TestCodeAwareAnswerGeneration:
             {"git_url": "https://github.com/org/repo/blob/main/A.java"},  # Duplicate
             {"git_url": "https://github.com/org/repo/blob/main/B.java"},
         ]
-        
+
         enhanced = include_git_links(answer, metadata)
-        
+
         # Count occurrences - each URL should appear once
         count_a = enhanced.count("A.java")
         count_b = enhanced.count("B.java")
@@ -348,9 +366,9 @@ class TestCodeAwareAnswerGeneration:
 
         chunks = ["@Service public class Auth { }"]
         metadata = [{"language": "java", "service_name": "AuthService"}]
-        
+
         prompt = build_code_aware_prompt("Show Auth service", chunks, metadata)
-        
+
         assert "code" in prompt.lower()
         assert "Auth" in prompt or "@Service" in prompt
         assert "Show Auth service" in prompt
@@ -360,7 +378,11 @@ class TestCodeAwareAnswerGeneration:
 
         chunks = ["test chunk"]
         sources = [{"id": "1"}]
-        monkeypatch.setattr(generate, "retrieve", lambda q, c, k=None, persona=None, domain=None, **kwargs: (chunks, sources))
+        monkeypatch.setattr(
+            generate,
+            "retrieve",
+            lambda q, c, k=None, persona=None, domain=None, **kwargs: (chunks, sources),
+        )
         monkeypatch.setattr(generate, "build_prompt", lambda q, ctx, **kwargs: "PROMPT")
         dummy_llm.set_responses("answer")
 
@@ -374,7 +396,11 @@ class TestCodeAwareAnswerGeneration:
 
         chunks = ["chunk"]
         sources = [{"id": "1"}]
-        monkeypatch.setattr(generate, "retrieve", lambda q, c, k=None, persona=None, domain=None, **kwargs: (chunks, sources))
+        monkeypatch.setattr(
+            generate,
+            "retrieve",
+            lambda q, c, k=None, persona=None, domain=None, **kwargs: (chunks, sources),
+        )
         monkeypatch.setattr(generate, "build_prompt", lambda q, ctx, **kwargs: "PROMPT")
         dummy_llm.set_responses("answer")
 
@@ -390,7 +416,11 @@ class TestCodeAwareAnswerGeneration:
 
         chunks = ["test chunk"]
         sources = [{"id": "1"}]
-        monkeypatch.setattr(generate, "retrieve", lambda q, c, k=None, persona=None, domain=None, **kwargs: (chunks, sources))
+        monkeypatch.setattr(
+            generate,
+            "retrieve",
+            lambda q, c, k=None, persona=None, domain=None, **kwargs: (chunks, sources),
+        )
         monkeypatch.setattr(generate, "build_prompt", lambda q, ctx, **kwargs: "PROMPT")
         dummy_llm.set_responses("answer")
 
@@ -407,7 +437,11 @@ class TestCodeAwareAnswerGeneration:
 
         chunks = ["test chunk"]
         sources = [{"id": "1"}]
-        monkeypatch.setattr(generate, "retrieve", lambda q, c, k=None, persona=None, domain=None, **kwargs: (chunks, sources))
+        monkeypatch.setattr(
+            generate,
+            "retrieve",
+            lambda q, c, k=None, persona=None, domain=None, **kwargs: (chunks, sources),
+        )
         monkeypatch.setattr(generate, "build_prompt", lambda q, ctx, **kwargs: "PROMPT")
         dummy_llm.set_responses("answer")
 
@@ -423,17 +457,17 @@ class TestCodeAwareAnswerGeneration:
 
         chunks_10 = [f"chunk {i}" for i in range(10)]
         sources_10 = [{"id": str(i)} for i in range(10)]
-        
+
         call_count = {"count": 0}
         original_retrieve = generate.retrieve
-        
+
         def mock_retrieve(q, c, k=None, persona=None, domain=None, **kwargs):
             call_count["count"] += 1
             # Verify k parameter was passed correctly
             if k is not None:
                 assert k == 10
             return chunks_10[:k] if k else chunks_10, sources_10[:k] if k else sources_10
-        
+
         monkeypatch.setattr(generate, "retrieve", mock_retrieve)
         monkeypatch.setattr(generate, "build_prompt", lambda q, ctx, **kwargs: "PROMPT")
         dummy_llm.set_responses("answer")

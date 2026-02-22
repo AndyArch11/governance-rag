@@ -72,7 +72,7 @@ class TestRerankerModule:
         reranker = CrossEncoderReranker(
             model_name="BAAI/bge-reranker-base", device="cpu", enable_cache=False
         )
-        
+
         # Model should not be loaded yet
         assert reranker._model is None
         assert reranker._model_loaded is False
@@ -80,11 +80,18 @@ class TestRerankerModule:
         # Mock cache and the dynamic import in _load_model
         with patch.object(reranker, "_load_cache"):
             with patch.object(reranker, "_save_cache_entry"):
-                with patch("builtins.__import__", side_effect=lambda *args, **kwargs: MagicMock(CrossEncoder=lambda **kw: mock_model_instance) if args[0] == "sentence_transformers" else __import__(*args, **kwargs)):
+                with patch(
+                    "builtins.__import__",
+                    side_effect=lambda *args, **kwargs: (
+                        MagicMock(CrossEncoder=lambda **kw: mock_model_instance)
+                        if args[0] == "sentence_transformers"
+                        else __import__(*args, **kwargs)
+                    ),
+                ):
                     # Manually set up the model to avoid import issues
                     reranker._model = mock_model_instance
                     reranker._model_loaded = True
-                    
+
                     results = reranker.rerank(
                         query="test query",
                         documents=[
@@ -150,26 +157,23 @@ class TestRerankerModule:
         )
 
         # Create 5 documents to test batching with batch_size=2
-        documents = [
-            {"doc_id": str(i), "text": f"document {i}"}
-            for i in range(5)
-        ]
+        documents = [{"doc_id": str(i), "text": f"document {i}"} for i in range(5)]
 
         with patch.object(reranker, "_load_cache"):
             with patch.object(reranker, "_save_cache_entry"):
                 # Mock the model directly
                 mock_instance = MagicMock()
                 mock_instance.predict.side_effect = [
-                    [0.9, 0.8],      # Batch 1 (2 items)
-                    [0.7, 0.6],      # Batch 2 (2 items)
-                    [0.5],           # Batch 3 (1 item)
+                    [0.9, 0.8],  # Batch 1 (2 items)
+                    [0.7, 0.6],  # Batch 2 (2 items)
+                    [0.5],  # Batch 3 (1 item)
                 ]
-                
+
                 # Inject the mock by setting it directly
                 def mock_load_model():
                     reranker._model = mock_instance
                     reranker._model_loaded = True
-                
+
                 with patch.object(reranker, "_load_model", side_effect=mock_load_model):
                     results = reranker.rerank(
                         query="test query",
@@ -196,7 +200,7 @@ class TestRerankerModule:
             # Mock the model
             mock_instance = MagicMock()
             mock_instance.predict.return_value = [0.9, 0.7]
-            
+
             def mock_load_model():
                 reranker._model = mock_instance
                 reranker._model_loaded = True
@@ -241,12 +245,12 @@ class TestRerankerIntegration:
         reranker = CrossEncoderReranker(
             model_name="BAAI/bge-reranker-base", device="cpu", enable_cache=False
         )
-        
+
         # Inject the mock
         def mock_load_model():
             reranker._model = mock_instance
             reranker._model_loaded = True
-        
+
         with patch.object(reranker, "_load_model", side_effect=mock_load_model):
             with patch.object(reranker, "_load_cache"):
                 with patch.object(reranker, "_save_cache_entry"):
@@ -275,16 +279,14 @@ class TestRerankerIntegration:
         reranker = CrossEncoderReranker(
             model_name="BAAI/bge-reranker-base", device="cpu", enable_cache=False
         )
-        
+
         # Inject the mock
         def mock_load_model():
             reranker._model = mock_instance
             reranker._model_loaded = True
 
         with patch.object(reranker, "_load_model", side_effect=mock_load_model):
-            documents = [
-                {"doc_id": str(i), "text": f"doc{i}"} for i in range(5)
-            ]
+            documents = [{"doc_id": str(i), "text": f"doc{i}"} for i in range(5)]
 
             with patch.object(reranker, "_load_cache"):
                 with patch.object(reranker, "_save_cache_entry"):

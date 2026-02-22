@@ -12,35 +12,35 @@ Tests cover:
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock, PropertyMock
+from unittest.mock import MagicMock, Mock, PropertyMock, patch
+
 import pytest
 
+from scripts.ingest.git.bitbucket_connector import BitbucketConnector, BitbucketRepository
+from scripts.ingest.git.bitbucket_git_connector import (
+    BitbucketGitConnector,
+    BitbucketRepositoryWalkerAdapter,
+)
 from scripts.ingest.git.git_connector import (
     GitConnector,
-    RepositoryWalker,
     GitProject,
-    GitRepository,
     GitPullRequest,
+    GitRepository,
+    RepositoryWalker,
 )
 from scripts.ingest.git.git_ingest_config import GitIngestConfig
 from scripts.ingest.git.git_snippet_parser import (
-    CodeParser,
-    CodeLanguage,
-    CodeChunk,
-    DependencyExtractor,
     EXTENSION_TO_LANGUAGE,
+    CodeChunk,
+    CodeLanguage,
+    CodeParser,
+    DependencyExtractor,
 )
 from scripts.ingest.git.github_connector import (
     GitHubGitConnector,
     GitHubRepositoryWalker,
 )
-from scripts.ingest.git.bitbucket_git_connector import (
-    BitbucketGitConnector,
-    BitbucketRepositoryWalkerAdapter,
-)
-from scripts.ingest.git.bitbucket_connector import BitbucketConnector, BitbucketRepository
 from scripts.ingest.ingest_git import GitConnectorFactory
-
 
 # ============================================================================
 # Data Class Tests
@@ -195,12 +195,12 @@ async def async_func():
 
 def test_extract_python_imports():
     """Test extracting Python imports."""
-    code = '''
+    code = """
 import os
 import sys
 from pathlib import Path
 from typing import List, Dict
-'''
+"""
     imports = CodeParser.extract_imports(code, CodeLanguage.PYTHON)
     assert "os" in imports
     assert "sys" in imports
@@ -210,11 +210,11 @@ from typing import List, Dict
 
 def test_extract_javascript_imports():
     """Test extracting JavaScript imports."""
-    code = '''
+    code = """
 import React from 'react';
 import { useState } from 'react';
 const axios = require('axios');
-'''
+"""
     imports = CodeParser.extract_imports(code, CodeLanguage.JAVASCRIPT)
     assert "react" in imports
     assert "axios" in imports
@@ -222,14 +222,14 @@ const axios = require('axios');
 
 def test_extract_python_classes():
     """Test extracting Python class definitions."""
-    code = '''
+    code = """
 class MyClass:
     pass
 
 class AnotherClass(BaseClass):
     def __init__(self):
         pass
-'''
+"""
     chunks = CodeParser.extract_classes(code, CodeLanguage.PYTHON)
     assert len(chunks) >= 2
     names = [c.name for c in chunks]
@@ -263,14 +263,14 @@ def test_code_chunk_creation():
 
 def test_extract_requirements_txt():
     """Test extracting dependencies from requirements.txt."""
-    content = '''
+    content = """
 # Comments should be ignored
 requests>=2.25.0
 flask==2.0.1
 numpy[extra]>=1.19.0
 # Another comment
 pandas
-'''
+"""
     deps = DependencyExtractor.extract_requirements_file(content, CodeLanguage.PYTHON)
     assert "requests" in deps
     assert "flask" in deps
@@ -280,7 +280,7 @@ pandas
 
 def test_extract_package_json():
     """Test extracting dependencies from package.json."""
-    content = '''
+    content = """
 {
   "dependencies": {
     "react": "^18.0.0",
@@ -290,10 +290,8 @@ def test_extract_package_json():
     "jest": "^28.0.0"
   }
 }
-'''
-    deps = DependencyExtractor.extract_requirements_file(
-        content, CodeLanguage.JAVASCRIPT
-    )
+"""
+    deps = DependencyExtractor.extract_requirements_file(content, CodeLanguage.JAVASCRIPT)
     assert "react" in deps
     assert "axios" in deps
     assert "jest" in deps
@@ -340,6 +338,7 @@ def test_github_connect_success(mock_session_class):
 def test_github_connect_failure(mock_session_class):
     """Test failed GitHub connection."""
     import requests
+
     mock_session = Mock()
     # Raise a proper requests exception that retry logic handles
     mock_session.get.side_effect = requests.exceptions.RequestException("Connection failed")
@@ -357,12 +356,12 @@ def test_github_connect_failure(mock_session_class):
 def test_github_list_projects(mock_session_class):
     """Test listing GitHub organisations and user account."""
     mock_session = Mock()
-    
+
     # Mock connect response
     connect_response = Mock()
     connect_response.json.return_value = {"login": "testuser"}
     connect_response.raise_for_status = Mock()
-    
+
     # Mock list user response for account project
     user_response = Mock()
     user_response.json.return_value = {
@@ -383,11 +382,11 @@ def test_github_list_projects(mock_session_class):
         }
     ]
     orgs_response1.raise_for_status = Mock()
-    
+
     orgs_response2 = Mock()
     orgs_response2.json.return_value = []  # Empty page signals end
     orgs_response2.raise_for_status = Mock()
-    
+
     mock_session.get.side_effect = [
         connect_response,
         user_response,
@@ -411,7 +410,7 @@ def test_github_list_projects(mock_session_class):
 def test_github_clone_repository(mock_run):
     """Test cloning a GitHub repository."""
     mock_run.return_value = Mock()
-    
+
     with tempfile.TemporaryDirectory() as tmpdir:
         connector = GitHubGitConnector(
             host="https://github.com",
@@ -804,13 +803,13 @@ def test_context_manager_support(mock_bitbucket_connector_class):
     # Connector needs _connector set to call close
     connector._connector = mock_bb_connector
     connector._connected = False
-    
+
     connector.__enter__()
     # Context manager calls connect which sets _connected = True
     # For this test, manually set it since we're mocking
     connector._connected = True
     assert connector._connected is True
-    
+
     connector.__exit__(None, None, None)
     assert connector._connected is False
     # Now the mock should be closed

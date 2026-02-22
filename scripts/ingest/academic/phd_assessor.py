@@ -2036,16 +2036,14 @@ class PhDQualityAssessor:
 
                 if doc_count == 1:
                     # Get the single document's citations
-                    cursor.execute(
-                        """
+                    cursor.execute("""
                         SELECT DISTINCT n.node_id, n.title, n.authors, n.year, n.doi, 
                                n.reference_type, n.source
                         FROM nodes n
                         INNER JOIN edges e ON n.node_id = e.target
                         WHERE e.source = (SELECT node_id FROM nodes WHERE node_type = 'document' LIMIT 1)
                           AND n.node_type = 'reference'
-                    """
-                    )
+                    """)
                     rows = cursor.fetchall()
 
             # Convert rows to citation dicts

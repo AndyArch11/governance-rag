@@ -9,13 +9,14 @@ Tests:
 """
 
 import pytest
+
 from scripts.ui.layout_engine import (
+    CircularLayout,
     ForceDirectedLayout,
     HierarchicalLayout,
-    CircularLayout,
 )
-from scripts.ui.spatial_index import Bounds, Quadtree
 from scripts.ui.performance_monitor import PerformanceMonitor, format_timings_ms
+from scripts.ui.spatial_index import Bounds, Quadtree
 
 
 class TestLayoutEngine:
@@ -33,9 +34,9 @@ class TestLayoutEngine:
             {"source": "A", "target": "B"},
             {"source": "B", "target": "C"},
         ]
-        
+
         positions = layout.compute_layout(nodes, edges)
-        
+
         assert len(positions) == 3
         assert "A" in positions
         assert "B" in positions
@@ -56,9 +57,9 @@ class TestLayoutEngine:
             {"source": "root", "target": "child1"},
             {"source": "root", "target": "child2"},
         ]
-        
+
         positions = layout.compute_layout(nodes, edges)
-        
+
         assert len(positions) == 3
         # Root should have different y-coordinate than children
         assert positions["root"][1] != positions["child1"][1]
@@ -68,9 +69,9 @@ class TestLayoutEngine:
         layout = CircularLayout()
         nodes = {f"node_{i}": {"conflict_score": 0.5} for i in range(6)}
         edges = []
-        
+
         positions = layout.compute_layout(nodes, edges)
-        
+
         assert len(positions) == 6
         # All nodes should be on circle perimeter (distance from origin ~= 1)
         for pos in positions.values():
@@ -110,7 +111,7 @@ class TestSpatialIndex:
         b1 = Bounds(0.0, 0.0, 10.0, 10.0)
         b2 = Bounds(5.0, 5.0, 15.0, 15.0)
         b3 = Bounds(20.0, 20.0, 30.0, 30.0)
-        
+
         assert b1.intersects(b2)
         assert b2.intersects(b1)
         assert not b1.intersects(b3)
@@ -119,7 +120,7 @@ class TestSpatialIndex:
         """Test bounds expansion."""
         bounds = Bounds(0.0, 0.0, 10.0, 10.0)
         expanded = bounds.expanded(2.0)
-        
+
         assert expanded.min_x == -2.0
         assert expanded.min_y == -2.0
         assert expanded.max_x == 12.0
@@ -129,7 +130,7 @@ class TestSpatialIndex:
         """Test quadtree insertion and viewport query."""
         bounds = Bounds(0.0, 0.0, 100.0, 100.0)
         tree = Quadtree(bounds, max_depth=5, max_items=4)
-        
+
         # Insert points
         points = [
             ("A", 10.0, 10.0),
@@ -139,11 +140,11 @@ class TestSpatialIndex:
         ]
         for node_id, x, y in points:
             tree.insert(node_id, x, y)
-        
+
         # Query small viewport (should only get A and B)
         viewport = Bounds(0.0, 0.0, 30.0, 30.0)
         visible = tree.query(viewport)
-        
+
         assert "A" in visible
         assert "B" in visible
         assert "C" not in visible
@@ -153,11 +154,11 @@ class TestSpatialIndex:
         """Test quadtree subdivides when capacity exceeded."""
         bounds = Bounds(0.0, 0.0, 100.0, 100.0)
         tree = Quadtree(bounds, max_depth=3, max_items=2)
-        
+
         # Insert enough points to force subdivision
         for i in range(10):
             tree.insert(f"node_{i}", float(i * 5), float(i * 5))
-        
+
         # All points should still be queryable
         all_nodes = tree.query(bounds)
         assert len(all_nodes) == 10
@@ -169,14 +170,15 @@ class TestPerformanceMonitor:
     def test_performance_monitor_basic(self):
         """Test basic timing recording."""
         monitor = PerformanceMonitor()
-        
+
         import time
+
         time.sleep(0.01)
         monitor.record("step1")
-        
+
         time.sleep(0.01)
         monitor.record("step2")
-        
+
         snapshot = monitor.snapshot()
         assert "step1" in snapshot
         assert "step2" in snapshot
@@ -186,13 +188,14 @@ class TestPerformanceMonitor:
     def test_performance_monitor_reset(self):
         """Test monitor reset."""
         monitor = PerformanceMonitor()
-        
+
         import time
+
         time.sleep(0.01)
         monitor.record("step1")
-        
+
         assert len(monitor.snapshot()) == 1
-        
+
         monitor.reset()
         assert len(monitor.snapshot()) == 0
 
@@ -200,12 +203,12 @@ class TestPerformanceMonitor:
         """Test millisecond formatting."""
         timings = {
             "fast": 0.001,  # 1ms
-            "slow": 0.1,    # 100ms
-            "medium": 0.05, # 50ms
+            "slow": 0.1,  # 100ms
+            "medium": 0.05,  # 50ms
         }
-        
+
         formatted = format_timings_ms(timings)
-        
+
         assert formatted["fast"] == 1.0
         assert formatted["slow"] == 100.0
         assert formatted["medium"] == 50.0
@@ -213,11 +216,11 @@ class TestPerformanceMonitor:
     def test_performance_monitor_order(self):
         """Test that order is preserved."""
         monitor = PerformanceMonitor()
-        
+
         monitor.record("first")
         monitor.record("second")
         monitor.record("third")
-        
+
         assert monitor.order == ["first", "second", "third"]
 
 
@@ -229,19 +232,19 @@ class TestViewportCulling:
         # Create grid of nodes
         all_bounds = Bounds(0.0, 0.0, 100.0, 100.0)
         tree = Quadtree(all_bounds, max_depth=5, max_items=4)
-        
+
         node_count = 0
         for x in range(0, 100, 10):
             for y in range(0, 100, 10):
                 tree.insert(f"node_{node_count}", float(x), float(y))
                 node_count += 1
-        
+
         assert node_count == 100
-        
+
         # Small viewport should show fewer nodes
         small_viewport = Bounds(0.0, 0.0, 30.0, 30.0)
         visible = tree.query(small_viewport)
-        
+
         assert len(visible) < node_count
         assert len(visible) < 20  # Should be roughly 16 (4x4 grid)
 
@@ -249,11 +252,11 @@ class TestViewportCulling:
         """Test that full viewport returns all nodes."""
         bounds = Bounds(0.0, 0.0, 100.0, 100.0)
         tree = Quadtree(bounds)
-        
+
         # Insert 50 nodes
         for i in range(50):
             tree.insert(f"node_{i}", float(i), float(i))
-        
+
         # Query entire bounds
         all_visible = tree.query(bounds)
         assert len(all_visible) == 50
@@ -265,12 +268,12 @@ class TestWebGLIntegration:
     def test_webgl_threshold_logic(self):
         """Test that WebGL is enabled for large graphs."""
         webgl_threshold = 1000
-        
+
         # Small graph
         node_count = 500
         use_webgl = node_count > webgl_threshold
         assert not use_webgl
-        
+
         # Large graph
         node_count = 1500
         use_webgl = node_count > webgl_threshold
@@ -279,7 +282,7 @@ class TestWebGLIntegration:
     def test_layout_selection(self):
         """Test layout type selection."""
         layouts = ["force", "hierarchical", "circular"]
-        
+
         for layout_type in layouts:
             if layout_type == "force":
                 engine = ForceDirectedLayout()
@@ -287,9 +290,9 @@ class TestWebGLIntegration:
                 engine = HierarchicalLayout()
             elif layout_type == "circular":
                 engine = CircularLayout()
-            
+
             assert engine is not None
-            
+
             # All should be able to handle empty graph
             positions = engine.compute_layout({}, [])
             assert positions == {}

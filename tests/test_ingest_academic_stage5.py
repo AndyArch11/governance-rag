@@ -18,7 +18,7 @@ class DummyLogger:
 
     def warning(self, msg):
         self.warnings.append(msg)
-    
+
     def error(self, msg, exc_info=False):
         self.errors.append(msg)
 
@@ -146,6 +146,7 @@ def test_stage_chunk_and_store_parent_child_storage(monkeypatch, tmp_path):
     assert calls["child_metadata"]["embedding_model"]
     assert calls["parent_metadata"]["embedding_model"]
 
+
 class TestMetadataSanitisation:
     """Test ChromaDB metadata sanitisation logic."""
 
@@ -171,9 +172,9 @@ class TestMetadataSanitisation:
             "summary_scores": {"overall": 0, "confidence": 0.95},
             "name": "test",
         }
-        
+
         sanitised = self._sanitise_metadata(metadata)
-        
+
         # Dict should be converted to JSON string
         assert isinstance(sanitised["summary_scores"], str)
         assert sanitised["summary_scores"] == '{"overall": 0, "confidence": 0.95}'
@@ -186,9 +187,9 @@ class TestMetadataSanitisation:
             "technical_entities": ["ML", "NLP", "RNN"],
             "tags": "important",
         }
-        
+
         sanitised = self._sanitise_metadata(metadata)
-        
+
         # List should be converted to JSON string
         assert isinstance(sanitised["technical_entities"], str)
         assert sanitised["technical_entities"] == '["ML", "NLP", "RNN"]'
@@ -204,22 +205,22 @@ class TestMetadataSanitisation:
             "contains_code": True,
             "score": 0.95,
         }
-        
+
         sanitised = self._sanitise_metadata(metadata)
-        
+
         # All primitives should remain unchanged and of same type
         assert sanitised["doc_id"] == "doc_123"
         assert isinstance(sanitised["doc_id"], str)
-        
+
         assert sanitised["section_depth"] == 2
         assert isinstance(sanitised["section_depth"], int)
-        
+
         assert sanitised["timestamp"] == 1707244500
         assert isinstance(sanitised["timestamp"], int)
-        
+
         assert sanitised["contains_code"] is True
         assert isinstance(sanitised["contains_code"], bool)
-        
+
         assert sanitised["score"] == 0.95
         assert isinstance(sanitised["score"], float)
 
@@ -231,9 +232,9 @@ class TestMetadataSanitisation:
             "doc_id": "doc_123",
             "parent_section": None,
         }
-        
+
         sanitised = self._sanitise_metadata(metadata)
-        
+
         # None values should be absent from sanitised dict
         assert "heading_path" not in sanitised
         assert "chapter" not in sanitised
@@ -253,14 +254,15 @@ class TestMetadataSanitisation:
             "heading_path": None,
             "invalid_type": {"nested": "dict"},
         }
-        
+
         sanitised = self._sanitise_metadata(metadata)
-        
+
         # All values should be valid ChromaDB types
         for key, value in sanitised.items():
-            assert isinstance(value, (str, int, float, bool)), \
-                f"Key '{key}' has invalid type {type(value).__name__}: {value}"
-        
+            assert isinstance(
+                value, (str, int, float, bool)
+            ), f"Key '{key}' has invalid type {type(value).__name__}: {value}"
+
         # Verify specific conversions
         assert isinstance(json.loads(sanitised["summary_scores"]), dict)  # Was valid JSON
         assert isinstance(json.loads(sanitised["technical_entities"]), list)  # Was valid JSON
@@ -294,21 +296,22 @@ class TestMetadataSanitisation:
             "is_api_reference": False,
             "is_configuration": False,
         }
-        
+
         sanitised = self._sanitise_metadata(metadata)
-        
+
         # Verify all values are ChromaDB compatible
         for key, value in sanitised.items():
-            assert isinstance(value, (str, int, float, bool)), \
-                f"Key '{key}' has invalid type {type(value).__name__}"
-        
+            assert isinstance(
+                value, (str, int, float, bool)
+            ), f"Key '{key}' has invalid type {type(value).__name__}"
+
         # None values should not be present
         assert "heading_path" not in sanitised
         assert "parent_section" not in sanitised
         assert "section_title" not in sanitised
         assert "chapter" not in sanitised
         assert "code_language" not in sanitised
-        
+
         # Essential fields should be present
         assert sanitised["doc_id"] == "Smith_2020_SomeTitle"
         assert sanitised["doc_type"] == "academic_reference"
@@ -322,9 +325,9 @@ class TestMetadataSanitisation:
             "empty_list": [],
             "normal_value": "test",
         }
-        
+
         sanitised = self._sanitise_metadata(metadata)
-        
+
         # Empty dict and list should convert to JSON strings
         assert sanitised["empty_dict"] == "{}"
         assert sanitised["empty_list"] == "[]"
@@ -345,17 +348,17 @@ class TestMetadataSanitisation:
                 {"name": "item2", "score": 0.9},
             ],
         }
-        
+
         sanitised = self._sanitise_metadata(metadata)
-        
+
         # Both should convert to JSON strings
         assert isinstance(sanitised["nested_dict"], str)
         assert isinstance(sanitised["list_of_dicts"], str)
-        
+
         # Should be valid JSON
         nested = json.loads(sanitised["nested_dict"])
         assert nested["level1"]["level2"] == ["value1", "value2"]
-        
+
         list_data = json.loads(sanitised["list_of_dicts"])
         assert list_data[0]["name"] == "item1"
         assert list_data[1]["score"] == 0.9

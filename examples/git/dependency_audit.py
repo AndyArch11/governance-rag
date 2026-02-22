@@ -53,15 +53,14 @@ PROFILES: Dict[str, Sequence[str]] = {
         r"amqp",
         r"activemq",
         r"qpid",
-        r"rabbitmq"
-        r"connectionfactory",
+        r"rabbitmq" r"connectionfactory",
         r"queue",
     ],
     "fileshare": [
         r"smb",
         r"cifs",
         r"nfs",
-        #r"\\\\[a-zA-Z0-9_.-]+\\\\",  # UNC paths like \\server\share
+        # r"\\\\[a-zA-Z0-9_.-]+\\\\",  # UNC paths like \\server\share
         r"smbclient",
         r"filename",
         r"share",
@@ -73,7 +72,7 @@ PROFILES: Dict[str, Sequence[str]] = {
     ],
     "idempotent": [
         r"idempotent",
-        r"@Idempotent", 
+        r"@Idempotent",
         r"camel_messageprocesed",
         r"idempotentconsumer",
         r"idempotentrepository",
@@ -82,7 +81,7 @@ PROFILES: Dict[str, Sequence[str]] = {
         r"keystore",
         r"trust",
         r"trustmanager",
-        r"credentials", 
+        r"credentials",
         r"password",
     ],
 }

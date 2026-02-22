@@ -165,6 +165,7 @@ class TestDashboardFilters:
 
     def test_extract_filter_options_identifies_source_categories(self):
         """Test that source categories are correctly extracted from graph."""
+
         # Inline the function to avoid module import issues
         def extract_filter_options(graph_dict: Dict[str, Any]) -> Dict[str, List[str]]:
             source_categories = set()
@@ -205,6 +206,7 @@ class TestDashboardFilters:
 
     def test_extract_filter_options_identifies_repositories(self):
         """Test that repositories are extracted from code doc_ids."""
+
         def extract_filter_options(graph_dict: Dict[str, Any]) -> Dict[str, List[str]]:
             source_categories = set()
             repositories = set()
@@ -248,6 +250,7 @@ class TestDashboardFilters:
 
     def test_extract_filter_options_identifies_projects(self):
         """Test that projects are extracted from code doc_ids."""
+
         def extract_filter_options(graph_dict: Dict[str, Any]) -> Dict[str, List[str]]:
             source_categories = set()
             repositories = set()
@@ -291,6 +294,7 @@ class TestDashboardFilters:
 
     def test_filter_options_sorting(self):
         """Test that filter options are returned sorted."""
+
         def extract_filter_options(graph_dict: Dict[str, Any]) -> Dict[str, List[str]]:
             source_categories = set()
             repositories = set()
@@ -346,6 +350,7 @@ class TestDashboardFilters:
             show_only_conflicts = False
 
         import types
+
         mock_state = types.SimpleNamespace()
         mock_state.selected_source_type = "code"
         mock_state.selected_repositories = []
@@ -405,9 +410,15 @@ class TestDashboardFilters:
     def test_filter_graph_by_repository(self):
         """Test that code can be filtered by repository."""
         G = nx.Graph()
-        G.add_node("file1", source_category="code", doc_id="PROJ/service-a/Main.java", conflict_score=0.5)
-        G.add_node("file2", source_category="code", doc_id="PROJ/service-b/Main.java", conflict_score=0.3)
-        G.add_node("file3", source_category="code", doc_id="PROJ/service-a/Helper.java", conflict_score=0.4)
+        G.add_node(
+            "file1", source_category="code", doc_id="PROJ/service-a/Main.java", conflict_score=0.5
+        )
+        G.add_node(
+            "file2", source_category="code", doc_id="PROJ/service-b/Main.java", conflict_score=0.3
+        )
+        G.add_node(
+            "file3", source_category="code", doc_id="PROJ/service-a/Helper.java", conflict_score=0.4
+        )
         G.add_edge("file1", "file2", severity=0.2, relationship="calls")
         G.add_edge("file1", "file3", severity=0.3, relationship="includes")
 
@@ -501,30 +512,36 @@ class TestDependencyVisualiser:
                 "dependencies": ["spring-boot", "jwt"],
             },
         }
-        
+
         # Build dependency graph
         dep_graph = nx.DiGraph()
         for node_id, data in code_nodes.items():
             dep_graph.add_node(node_id, service=data["service"], language=data["language"])
-        
+
         # Add internal call edges
         for node_id, data in code_nodes.items():
             internal_calls = data.get("internal_calls", [])
             if internal_calls:
-                calls_list = internal_calls if isinstance(internal_calls, list) else [internal_calls]
+                calls_list = (
+                    internal_calls if isinstance(internal_calls, list) else [internal_calls]
+                )
                 for called_service in calls_list:
                     # Find target node
                     for target_id, target_data in code_nodes.items():
-                        if target_data.get("service") == called_service or called_service in str(target_id):
+                        if target_data.get("service") == called_service or called_service in str(
+                            target_id
+                        ):
                             if node_id != target_id:
                                 dep_graph.add_edge(node_id, target_id, type="internal_call")
                             break
-        
+
         # Verify graph structure
         assert len(dep_graph.nodes()) == 3
         assert dep_graph.has_edge("AuthService_v1", "UserService_v1")
         assert dep_graph.has_edge("AuthService_v1", "TokenService_v1")
-        assert dep_graph.has_edge("UserService_v1", "TokenService_v1") or not dep_graph.has_edge("UserService_v1", "TokenService_v1")
+        assert dep_graph.has_edge("UserService_v1", "TokenService_v1") or not dep_graph.has_edge(
+            "UserService_v1", "TokenService_v1"
+        )
 
     def test_detect_circular_dependencies(self):
         """Test detection of circular dependencies."""
@@ -533,10 +550,10 @@ class TestDependencyVisualiser:
         dep_graph.add_edge("service-a", "service-b", type="internal_call")
         dep_graph.add_edge("service-b", "service-c", type="internal_call")
         dep_graph.add_edge("service-c", "service-a", type="internal_call")
-        
+
         # Detect cycles
         cycles = list(nx.simple_cycles(dep_graph))
-        
+
         assert len(cycles) > 0
         # Verify the cycle exists (could be in different order)
         cycle_nodes = set(cycles[0])
@@ -548,7 +565,7 @@ class TestDependencyVisualiser:
         dep_graph = nx.DiGraph()
         dep_graph.add_edge("service-a", "service-b", type="internal_call")
         dep_graph.add_edge("service-b", "service-c", type="internal_call")
-        
+
         cycles = list(nx.simple_cycles(dep_graph))
         assert len(cycles) == 0
 
@@ -572,18 +589,18 @@ class TestDependencyVisualiser:
                 "dependencies": ["quarkus", "junit"],
             },
         }
-        
+
         # Find shared dependencies
         shared_count = 0
         services = list(code_nodes.keys())
         for i, node_a in enumerate(services):
             deps_a = set(code_nodes[node_a].get("dependencies", []))
-            for node_b in services[i+1:]:
+            for node_b in services[i + 1 :]:
                 deps_b = set(code_nodes[node_b].get("dependencies", []))
                 shared = deps_a & deps_b
                 if shared:
                     shared_count += 1
-        
+
         # ServiceA and ServiceB share 2 deps (spring-boot, lombok)
         # ServiceA and ServiceC share 0 deps
         # ServiceB and ServiceC share 0 deps
@@ -594,15 +611,15 @@ class TestDependencyVisualiser:
         # Create dependency graph
         dep_graph = nx.DiGraph()
         services = ["service-a", "service-b", "service-c"]
-        
+
         for service in services:
             dep_graph.add_node(service)
-        
+
         # Add edges: a→b, b→c, a→c
         dep_graph.add_edge("service-a", "service-b", weight=1.0)
         dep_graph.add_edge("service-b", "service-c", weight=1.0)
         dep_graph.add_edge("service-a", "service-c", weight=0.5)
-        
+
         # Build matrix
         matrix = [[0.0 for _ in services] for _ in services]
         for i, node_a in enumerate(services):
@@ -610,7 +627,7 @@ class TestDependencyVisualiser:
                 if dep_graph.has_edge(node_a, node_b):
                     edges = dep_graph.get_edge_data(node_a, node_b)
                     matrix[i][j] = edges.get("weight", 1.0)
-        
+
         # Verify matrix
         assert matrix[0][1] == 1.0  # a→b
         assert matrix[1][2] == 1.0  # b→c
@@ -625,13 +642,13 @@ class TestDependencyVisualiser:
         dep_graph.add_edge("service-a", "service-c")
         dep_graph.add_edge("service-d", "service-b")
         dep_graph.add_edge("service-b", "service-e")
-        
+
         # For service-b:
         # Incoming: service-a, service-d (2)
         # Outgoing: service-e (1)
         incoming_b = len(list(dep_graph.predecessors("service-b")))
         outgoing_b = len(list(dep_graph.successors("service-b")))
-        
+
         assert incoming_b == 2
         assert outgoing_b == 1
 
@@ -642,17 +659,17 @@ class TestDependencyVisualiser:
             "dependencies": ["dep1", "dep2"],
             "internal_calls": ["call1", "call2"],
         }
-        
+
         deps_list = node_list.get("dependencies", [])
         deps_list = deps_list if isinstance(deps_list, list) else [deps_list]
         assert deps_list == ["dep1", "dep2"]
-        
+
         # String format
         node_string = {
             "dependencies": "single-dep",
             "internal_calls": "single-call",
         }
-        
+
         deps_str = node_string.get("dependencies", [])
         deps_str = deps_str if isinstance(deps_str, list) else [deps_str]
         assert deps_str == ["single-dep"]
@@ -661,32 +678,32 @@ class TestDependencyVisualiser:
         """Test computing centrality metrics for services."""
         # Create a network with different centrality patterns
         dep_graph = nx.DiGraph()
-        
+
         # Hub service: service-hub has many connections
         dep_graph.add_edge("service-a", "service-hub")
         dep_graph.add_edge("service-b", "service-hub")
         dep_graph.add_edge("service-c", "service-hub")
         dep_graph.add_edge("service-hub", "service-d")
         dep_graph.add_edge("service-hub", "service-e")
-        
+
         # Compute in/out degree
         in_degree_hub = dep_graph.in_degree("service-hub")
         out_degree_hub = dep_graph.out_degree("service-hub")
-        
+
         assert in_degree_hub == 3  # Called by 3 services
         assert out_degree_hub == 2  # Calls 2 services
-        
+
         # Leaf service: service-e has only outgoing
         in_degree_e = dep_graph.in_degree("service-e")
         out_degree_e = dep_graph.out_degree("service-e")
-        
+
         assert in_degree_e == 1
         assert out_degree_e == 0
 
     def test_language_grouping_in_dependencies(self):
         """Test grouping services by language in dependency graph."""
         dep_graph = nx.DiGraph()
-        
+
         # Add nodes with language metadata
         languages = {
             "service-a": "java",
@@ -694,14 +711,18 @@ class TestDependencyVisualiser:
             "service-c": "groovy",
             "service-d": "groovy",
         }
-        
+
         for service, lang in languages.items():
             dep_graph.add_node(service, language=lang)
-        
+
         # Group by language
-        java_services = [n for n in dep_graph.nodes() if dep_graph.nodes[n].get("language") == "java"]
-        groovy_services = [n for n in dep_graph.nodes() if dep_graph.nodes[n].get("language") == "groovy"]
-        
+        java_services = [
+            n for n in dep_graph.nodes() if dep_graph.nodes[n].get("language") == "java"
+        ]
+        groovy_services = [
+            n for n in dep_graph.nodes() if dep_graph.nodes[n].get("language") == "groovy"
+        ]
+
         assert len(java_services) == 2
         assert len(groovy_services) == 2
         assert "service-a" in java_services
@@ -713,6 +734,7 @@ class TestNodeColouringAndTooltips:
 
     def test_node_colour_for_high_conflict_overrides_language_colour(self):
         """Test that high conflict score (>0.6) always produces red colour."""
+
         # Simulate node colouring logic
         def get_node_colour(conflict_score: float, source_category: str, language: str = "") -> str:
             language_colours = {
@@ -720,13 +742,13 @@ class TestNodeColouringAndTooltips:
                 "groovy": "#228B22",
                 "kotlin": "#FF9933",
             }
-            
+
             colour = "#4da6ff"  # Default
             if conflict_score > 0.6:
                 colour = "#ff4d4d"  # Red for high conflict
             elif conflict_score > 0.3:
                 colour = "#ffa64d"  # Orange for medium conflict
-            
+
             if source_category == "code" and language:
                 lang_lower = language.lower()
                 if lang_lower in language_colours:
@@ -736,9 +758,9 @@ class TestNodeColouringAndTooltips:
                         colour = "#ffa64d"  # Keep orange for medium conflict
                     else:
                         colour = language_colours[lang_lower]
-            
+
             return colour
-        
+
         # High conflict should be red even for code
         assert get_node_colour(0.8, "code", "java") == "#ff4d4d"
         # Medium conflict should be orange
@@ -748,6 +770,7 @@ class TestNodeColouringAndTooltips:
 
     def test_node_colour_language_mapping(self):
         """Test that different languages get distinct colours."""
+
         def get_node_colour(conflict_score: float, source_category: str, language: str = "") -> str:
             language_colours = {
                 "java": "#0066cc",
@@ -756,13 +779,13 @@ class TestNodeColouringAndTooltips:
                 "gradle": "#9966cc",
                 "xml": "#FF6666",
             }
-            
+
             colour = "#4da6ff"
             if conflict_score > 0.6:
                 colour = "#ff4d4d"
             elif conflict_score > 0.3:
                 colour = "#ffa64d"
-            
+
             if source_category == "code" and language:
                 lang_lower = language.lower()
                 if lang_lower in language_colours:
@@ -772,9 +795,9 @@ class TestNodeColouringAndTooltips:
                         colour = "#ffa64d"
                     else:
                         colour = language_colours[lang_lower]
-            
+
             return colour
-        
+
         # Test language-specific colours (low conflict)
         assert get_node_colour(0.1, "code", "java") == "#0066cc"
         assert get_node_colour(0.1, "code", "groovy") == "#228B22"
@@ -784,6 +807,7 @@ class TestNodeColouringAndTooltips:
 
     def test_tooltip_includes_code_metadata(self):
         """Test that tooltips include code-specific metadata."""
+
         def build_tooltip(node_id: str, data: Dict[str, Any]) -> str:
             """Simulate tooltip building logic."""
             conflict = float(data.get("conflict_score", 0.0))
@@ -793,34 +817,44 @@ class TestNodeColouringAndTooltips:
                 f"Version: {data.get('version')}\n"
                 f"Conflict Score: {conflict:.3f}\n"
             )
-            
+
             source_category = data.get("source_category", "")
             if source_category == "code":
                 language = data.get("language")
                 if language:
                     title += f"\nLanguage: {language}"
-                
+
                 service = data.get("service")
                 if service:
                     title += f"\nService: {service}"
-                
+
                 dependencies = data.get("dependencies")
                 if dependencies:
-                    dep_list = ", ".join(dependencies) if isinstance(dependencies, list) else str(dependencies)
+                    dep_list = (
+                        ", ".join(dependencies)
+                        if isinstance(dependencies, list)
+                        else str(dependencies)
+                    )
                     title += f"\nDependencies: {dep_list}"
-                
+
                 internal_calls = data.get("internal_calls")
                 if internal_calls:
-                    calls_list = ", ".join(internal_calls) if isinstance(internal_calls, list) else str(internal_calls)
+                    calls_list = (
+                        ", ".join(internal_calls)
+                        if isinstance(internal_calls, list)
+                        else str(internal_calls)
+                    )
                     title += f"\nInternal Calls: {calls_list}"
-                
+
                 endpoints = data.get("endpoints")
                 if endpoints:
-                    endpoints_list = ", ".join(endpoints) if isinstance(endpoints, list) else str(endpoints)
+                    endpoints_list = (
+                        ", ".join(endpoints) if isinstance(endpoints, list) else str(endpoints)
+                    )
                     title += f"\nEndpoints: {endpoints_list}"
-            
+
             return title
-        
+
         node_data = {
             "doc_type": "code",
             "version": 1,
@@ -832,9 +866,9 @@ class TestNodeColouringAndTooltips:
             "internal_calls": ["UserService", "TokenService"],
             "endpoints": ["/auth/login", "/auth/logout"],
         }
-        
+
         tooltip = build_tooltip("MyClass_v1", node_data)
-        
+
         # Check that all code metadata is present
         assert "Language: java" in tooltip
         assert "Service: auth-service" in tooltip
@@ -847,20 +881,25 @@ class TestNodeColouringAndTooltips:
 
     def test_tooltip_handles_list_and_string_metadata(self):
         """Test tooltip handles both list and string metadata."""
+
         def build_tooltip(node_id: str, data: Dict[str, Any]) -> str:
             """Simulate tooltip building logic."""
             conflict = float(data.get("conflict_score", 0.0))
             title = f"{node_id}\nConflict Score: {conflict:.3f}\n"
-            
+
             source_category = data.get("source_category", "")
             if source_category == "code":
                 dependencies = data.get("dependencies")
                 if dependencies:
-                    dep_list = ", ".join(dependencies) if isinstance(dependencies, list) else str(dependencies)
+                    dep_list = (
+                        ", ".join(dependencies)
+                        if isinstance(dependencies, list)
+                        else str(dependencies)
+                    )
                     title += f"Dependencies: {dep_list}"
-            
+
             return title
-        
+
         # Test with list
         node_with_list = {
             "conflict_score": 0.1,
@@ -869,7 +908,7 @@ class TestNodeColouringAndTooltips:
         }
         tooltip = build_tooltip("node1", node_with_list)
         assert "dep1, dep2, dep3" in tooltip
-        
+
         # Test with string
         node_with_string = {
             "conflict_score": 0.1,
@@ -881,19 +920,20 @@ class TestNodeColouringAndTooltips:
 
     def test_tooltip_omits_missing_metadata(self):
         """Test that tooltip doesn't include metadata that isn't present."""
+
         def build_tooltip(node_id: str, data: Dict[str, Any]) -> str:
             """Simulate tooltip building logic."""
             conflict = float(data.get("conflict_score", 0.0))
             title = f"{node_id}\nConflict Score: {conflict:.3f}\n"
-            
+
             source_category = data.get("source_category", "")
             if source_category == "code":
                 language = data.get("language")
                 if language:
                     title += f"Language: {language}"
-            
+
             return title
-        
+
         # Node without language
         node_data = {
             "conflict_score": 0.1,
@@ -904,11 +944,12 @@ class TestNodeColouringAndTooltips:
 
     def test_non_code_nodes_skip_code_metadata(self):
         """Test that non-code documents don't include code metadata in tooltip."""
+
         def build_tooltip(node_id: str, data: Dict[str, Any]) -> str:
             """Simulate tooltip building logic."""
             conflict = float(data.get("conflict_score", 0.0))
             title = f"{node_id}\nType: {data.get('doc_type')}\nConflict Score: {conflict:.3f}\n"
-            
+
             source_category = data.get("source_category", "")
             if source_category == "code":
                 language = data.get("language")
@@ -917,16 +958,16 @@ class TestNodeColouringAndTooltips:
                 service = data.get("service")
                 if service:
                     title += f"Service: {service}"
-            
+
             return title
-        
+
         # Documentation node
         doc_data = {
             "doc_type": "governance_doc",
             "conflict_score": 0.2,
             "source_category": "governance_doc",
             "language": "java",  # Should be ignored
-            "service": "auth",   # Should be ignored
+            "service": "auth",  # Should be ignored
         }
         tooltip = build_tooltip("policy_v1", doc_data)
         assert "Language:" not in tooltip

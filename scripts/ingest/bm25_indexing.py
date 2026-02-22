@@ -12,7 +12,7 @@ This module handles:
 
 Usage:
     from scripts.ingest.bm25_indexing import index_chunks_in_bm25
-    
+
     total_indexed = index_chunks_in_bm25(
         doc_id="my_doc",
         chunks=chunks,
@@ -121,9 +121,11 @@ def index_chunks_in_bm25(
                     doc_id=child_id,
                     term_frequencies=dict(term_freq),
                     doc_length=len(tokens),
-                    original_text=child_chunk["text"]
-                    if (config and getattr(config, "bm25_index_original_text", False))
-                    else None,
+                    original_text=(
+                        child_chunk["text"]
+                        if (config and getattr(config, "bm25_index_original_text", False))
+                        else None
+                    ),
                 )
                 total_indexed += 1
                 total_tokens += len(tokens)
@@ -139,9 +141,11 @@ def index_chunks_in_bm25(
                     doc_id=parent_id,
                     term_frequencies=dict(term_freq),
                     doc_length=len(tokens),
-                    original_text=parent_chunk["text"]
-                    if (config and getattr(config, "bm25_index_original_text", False))
-                    else None,
+                    original_text=(
+                        parent_chunk["text"]
+                        if (config and getattr(config, "bm25_index_original_text", False))
+                        else None
+                    ),
                 )
                 total_indexed += 1
                 total_tokens += len(tokens)
@@ -154,7 +158,5 @@ def index_chunks_in_bm25(
         return total_indexed
 
     except Exception as e:
-        logger.error(
-            f"BM25 indexing failed for {doc_id} after {total_indexed} chunks: {e}"
-        )
+        logger.error(f"BM25 indexing failed for {doc_id} after {total_indexed} chunks: {e}")
         raise

@@ -43,13 +43,15 @@ class MockCollection:
         embeddings: List[List[float]] = None,
     ):
         """Store data in mock collection."""
-        self.add_calls.append({
-            "ids": ids,
-            "documents": documents,
-            "metadatas": metadatas,
-            "embeddings": embeddings,
-        })
-        
+        self.add_calls.append(
+            {
+                "ids": ids,
+                "documents": documents,
+                "metadatas": metadatas,
+                "embeddings": embeddings,
+            }
+        )
+
         if ids:
             self.stored_data["ids"].extend(ids)
         if documents:
@@ -66,29 +68,49 @@ class MockCollection:
         include: List[str] = None,
     ):
         """Retrieve data from mock collection."""
-        self.get_calls.append({
-            "ids": ids,
-            "where": where,
-            "include": include,
-        })
-        
+        self.get_calls.append(
+            {
+                "ids": ids,
+                "where": where,
+                "include": include,
+            }
+        )
+
         # Simple retrieval - return all or filter by ids
         if ids:
             indices = [i for i, stored_id in enumerate(self.stored_data["ids"]) if stored_id in ids]
             result = {
                 "ids": [self.stored_data["ids"][i] for i in indices],
-                "documents": [self.stored_data["documents"][i] for i in indices] if "documents" in (include or []) else [],
-                "metadatas": [self.stored_data["metadatas"][i] for i in indices] if "metadatas" in (include or []) else [],
-                "embeddings": [self.stored_data["embeddings"][i] for i in indices] if "embeddings" in (include or []) else [],
+                "documents": (
+                    [self.stored_data["documents"][i] for i in indices]
+                    if "documents" in (include or [])
+                    else []
+                ),
+                "metadatas": (
+                    [self.stored_data["metadatas"][i] for i in indices]
+                    if "metadatas" in (include or [])
+                    else []
+                ),
+                "embeddings": (
+                    [self.stored_data["embeddings"][i] for i in indices]
+                    if "embeddings" in (include or [])
+                    else []
+                ),
             }
         else:
             result = {
                 "ids": self.stored_data["ids"][:],
-                "documents": self.stored_data["documents"][:] if "documents" in (include or []) else [],
-                "metadatas": self.stored_data["metadatas"][:] if "metadatas" in (include or []) else [],
-                "embeddings": self.stored_data["embeddings"][:] if "embeddings" in (include or []) else [],
+                "documents": (
+                    self.stored_data["documents"][:] if "documents" in (include or []) else []
+                ),
+                "metadatas": (
+                    self.stored_data["metadatas"][:] if "metadatas" in (include or []) else []
+                ),
+                "embeddings": (
+                    self.stored_data["embeddings"][:] if "embeddings" in (include or []) else []
+                ),
             }
-        
+
         return result
 
 
@@ -346,7 +368,7 @@ class TestStoreParentChunksWithEnhancedMetadata:
 
         assert len(stored_metadatas) == 1
 
-        # Verify enhanced metadata 
+        # Verify enhanced metadata
         chunk_meta = stored_metadatas[0]
         assert chunk_meta["is_parent"] is True
         assert "heading_path" in chunk_meta
@@ -418,11 +440,12 @@ class TestStoreChildChunksWithEnhancedMetadata:
         assert "parent_section" in chunk_meta
         # Verify enhanced metadata exists (even if some fields might be empty)
         enhanced_fields_present = sum(
-            1 for field in ["content_type", "section_depth", "contains_code"]
-            if field in chunk_meta
+            1 for field in ["content_type", "section_depth", "contains_code"] if field in chunk_meta
         )
-        assert enhanced_fields_present >= 1, f"Expected at least 1 enhanced field, got: {list(chunk_meta.keys())}"
-        
+        assert (
+            enhanced_fields_present >= 1
+        ), f"Expected at least 1 enhanced field, got: {list(chunk_meta.keys())}"
+
         assert "is_api_reference" in chunk_meta
         # Technical entities should be stored as JSON
         entities = json.loads(chunk_meta["technical_entities"])
@@ -483,9 +506,7 @@ class TestEnhancedMetadataRetrieval:
         )
 
         # Now retrieve chunks
-        result = mock_collections["chunk_collection"].get(
-            include=["documents", "metadatas"]
-        )
+        result = mock_collections["chunk_collection"].get(include=["documents", "metadatas"])
 
         assert len(result["documents"]) > 0
         assert len(result["metadatas"]) > 0

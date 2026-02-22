@@ -106,8 +106,7 @@ class ReferenceCache:
             cursor = conn.cursor()
 
             # References table
-            cursor.execute(
-                """
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS cached_references (
                     ref_id TEXT PRIMARY KEY,
                     cache_key TEXT UNIQUE NOT NULL,
@@ -136,8 +135,7 @@ class ReferenceCache:
                     cached_at TIMESTAMP,
                     expires_at TIMESTAMP
                 )
-            """
-            )
+            """)
 
             # Add missing columns to existing tables (backward compatibility migration)
             cursor.execute("PRAGMA table_info(cached_references)")
@@ -162,8 +160,7 @@ class ReferenceCache:
                     pass  # Column already exists
 
             # Document citations table (tracks which docs cite which refs)
-            cursor.execute(
-                """
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS document_citations (
                     id INTEGER PRIMARY KEY,
                     doc_id TEXT NOT NULL,
@@ -172,12 +169,10 @@ class ReferenceCache:
                     FOREIGN KEY (ref_id) REFERENCES cached_references(ref_id),
                     UNIQUE(doc_id, ref_id)
                 )
-            """
-            )
+            """)
 
             # Cache statistics table
-            cursor.execute(
-                """
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS cache_stats (
                     id INTEGER PRIMARY KEY,
                     date TEXT,
@@ -186,8 +181,7 @@ class ReferenceCache:
                     total_resolved INTEGER,
                     total_unresolved INTEGER
                 )
-            """
-            )
+            """)
 
             # Create indexes
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_doi ON cached_references(doi)")

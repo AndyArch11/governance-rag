@@ -15,8 +15,8 @@ from scripts.utils.clear_databases import (
     clear_academic_pdf_cache,
     clear_bm25_cache,
     clear_cache_database,
-    clear_citation_graph_database,
     clear_chromadb,
+    clear_citation_graph_database,
     clear_graph_database,
     clear_legacy_artifacts,
     clear_reference_cache,
@@ -30,13 +30,15 @@ class MockConfig:
 
     def __init__(self, rag_data_path: str):
         """Initialise mock config with test paths.
-        
+
         Args:
             rag_data_path: Path to temporary rag_data directory
         """
         self.rag_data_path = rag_data_path
         self.cache_path = str(Path(rag_data_path) / "cache.db")
-        self.output_sqlite = str(Path(rag_data_path) / "consistency_graphs" / "consistency_graph.sqlite")
+        self.output_sqlite = str(
+            Path(rag_data_path) / "consistency_graphs" / "consistency_graph.sqlite"
+        )
 
 
 class TestClearChromadb:
@@ -47,7 +49,7 @@ class TestClearChromadb:
         with tempfile.TemporaryDirectory() as tmpdir:
             config = MockConfig(tmpdir)
             clear_chromadb(config)
-            
+
             captured = capsys.readouterr()
             assert "already clean" in captured.out
 
@@ -58,15 +60,15 @@ class TestClearChromadb:
             chroma_path = Path(tmpdir) / "chromadb"
             chroma_path.mkdir()
             sqlite_path = Path(tmpdir) / "chromadb.db"
-            
+
             # Create some files
             (chroma_path / "test.db").write_text("test data")
             sqlite_path.write_text("sqlite data")
             assert chroma_path.exists()
             assert sqlite_path.exists()
-            
+
             clear_chromadb(config)
-            
+
             assert not chroma_path.exists()
             assert not sqlite_path.exists()
             captured = capsys.readouterr()
@@ -81,9 +83,9 @@ class TestClearChromadb:
             (chroma_path / "test.db").write_text("test data")
             sqlite_path = Path(tmpdir) / "chromadb.db"
             sqlite_path.write_text("sqlite data")
-            
+
             clear_chromadb(config, dry_run=True)
-            
+
             assert chroma_path.exists()
             assert sqlite_path.exists()
             captured = capsys.readouterr()
@@ -98,7 +100,7 @@ class TestClearGraphDatabase:
         with tempfile.TemporaryDirectory() as tmpdir:
             config = MockConfig(tmpdir)
             clear_graph_database(config)
-            
+
             captured = capsys.readouterr()
             assert "already clean" in captured.out
 
@@ -109,24 +111,26 @@ class TestClearGraphDatabase:
             graph_dir = Path(tmpdir) / "consistency_graphs"
             graph_dir.mkdir(parents=True)
             db_path = graph_dir / "consistency_graph.sqlite"
-            
+
             # Create database with tables and data
             conn = sqlite3.connect(str(db_path))
             cursor = conn.cursor()
             cursor.execute("CREATE TABLE nodes (id INTEGER PRIMARY KEY, name TEXT)")
-            cursor.execute("CREATE TABLE edges (id INTEGER PRIMARY KEY, source INTEGER, target INTEGER)")
+            cursor.execute(
+                "CREATE TABLE edges (id INTEGER PRIMARY KEY, source INTEGER, target INTEGER)"
+            )
             cursor.execute("INSERT INTO nodes (name) VALUES ('node1')")
             cursor.execute("INSERT INTO edges (source, target) VALUES (1, 2)")
             conn.commit()
-            
+
             # Verify data exists
             cursor.execute("SELECT COUNT(*) FROM nodes")
             assert cursor.fetchone()[0] == 1
             conn.close()
-            
+
             # Clear database
             clear_graph_database(config)
-            
+
             # Verify tables are empty but still exist
             conn = sqlite3.connect(str(db_path))
             cursor = conn.cursor()
@@ -135,7 +139,7 @@ class TestClearGraphDatabase:
             cursor.execute("SELECT COUNT(*) FROM edges")
             assert cursor.fetchone()[0] == 0
             conn.close()
-            
+
             captured = capsys.readouterr()
             assert "Cleared graph database" in captured.out
 
@@ -146,7 +150,7 @@ class TestClearGraphDatabase:
             graph_dir = Path(tmpdir) / "consistency_graphs"
             graph_dir.mkdir(parents=True)
             db_path = graph_dir / "consistency_graph.sqlite"
-            
+
             # Create database with data
             conn = sqlite3.connect(str(db_path))
             cursor = conn.cursor()
@@ -154,10 +158,10 @@ class TestClearGraphDatabase:
             cursor.execute("INSERT INTO nodes (name) VALUES ('node1')")
             conn.commit()
             conn.close()
-            
+
             # Dry run should not modify
             clear_graph_database(config, dry_run=True)
-            
+
             # Verify data still exists
             conn = sqlite3.connect(str(db_path))
             cursor = conn.cursor()
@@ -174,7 +178,7 @@ class TestClearCacheDatabase:
         with tempfile.TemporaryDirectory() as tmpdir:
             config = MockConfig(tmpdir)
             clear_cache_database(config)
-            
+
             captured = capsys.readouterr()
             assert "already clean" in captured.out
 
@@ -184,31 +188,41 @@ class TestClearCacheDatabase:
             config = MockConfig(tmpdir)
             cache_path = Path(config.cache_path)
             cache_path.parent.mkdir(parents=True, exist_ok=True)
-            
+
             # Create cache database with tables
             conn = sqlite3.connect(str(cache_path))
             cursor = conn.cursor()
-            cursor.execute("CREATE TABLE embeddings_cache (id INTEGER PRIMARY KEY, text TEXT, embedding BLOB)")
-            cursor.execute("CREATE TABLE llm_cache (id INTEGER PRIMARY KEY, prompt TEXT, response TEXT)")
+            cursor.execute(
+                "CREATE TABLE embeddings_cache (id INTEGER PRIMARY KEY, text TEXT, embedding BLOB)"
+            )
+            cursor.execute(
+                "CREATE TABLE llm_cache (id INTEGER PRIMARY KEY, prompt TEXT, response TEXT)"
+            )
             cursor.execute("CREATE TABLE bm25_cache (id INTEGER PRIMARY KEY, term TEXT)")
             cursor.execute("CREATE TABLE bm25_corpus_stats (id INTEGER PRIMARY KEY, stat TEXT)")
-            cursor.execute("CREATE TABLE bm25_doc_metadata (id INTEGER PRIMARY KEY, doc_id INTEGER)")
+            cursor.execute(
+                "CREATE TABLE bm25_doc_metadata (id INTEGER PRIMARY KEY, doc_id INTEGER)"
+            )
             cursor.execute("CREATE TABLE bm25_index (id INTEGER PRIMARY KEY, term_id INTEGER)")
-            cursor.execute("CREATE TABLE word_frequency (word TEXT PRIMARY KEY, frequency INTEGER, doc_count INTEGER)")
+            cursor.execute(
+                "CREATE TABLE word_frequency (word TEXT PRIMARY KEY, frequency INTEGER, doc_count INTEGER)"
+            )
             cursor.execute("CREATE TABLE graph_cache (id INTEGER PRIMARY KEY, data TEXT)")
             cursor.execute("CREATE TABLE graph_settings_map (id INTEGER PRIMARY KEY, setting TEXT)")
-            
+
             # Insert data into all tables
             cursor.execute("INSERT INTO embeddings_cache (text) VALUES ('text1')")
             cursor.execute("INSERT INTO llm_cache (prompt, response) VALUES ('q', 'a')")
-            cursor.execute("INSERT INTO word_frequency (word, frequency, doc_count) VALUES ('test', 5, 2)")
+            cursor.execute(
+                "INSERT INTO word_frequency (word, frequency, doc_count) VALUES ('test', 5, 2)"
+            )
             cursor.execute("INSERT INTO graph_cache (data) VALUES ('cached')")
             conn.commit()
             conn.close()
-            
+
             # Clear cache database
             clear_cache_database(config)
-            
+
             # Verify ingest caches are empty
             conn = sqlite3.connect(str(cache_path))
             cursor = conn.cursor()
@@ -218,12 +232,12 @@ class TestClearCacheDatabase:
             assert cursor.fetchone()[0] == 0
             cursor.execute("SELECT COUNT(*) FROM word_frequency")
             assert cursor.fetchone()[0] == 0
-            
+
             # Verify graph cache is preserved
             cursor.execute("SELECT COUNT(*) FROM graph_cache")
             assert cursor.fetchone()[0] == 1
             conn.close()
-            
+
             captured = capsys.readouterr()
             assert "Ingest caches cleared" in captured.out
             assert "graph caches preserved" in captured.out
@@ -234,7 +248,7 @@ class TestClearCacheDatabase:
             config = MockConfig(tmpdir)
             cache_path = Path(config.cache_path)
             cache_path.parent.mkdir(parents=True, exist_ok=True)
-            
+
             # Create cache database with data
             conn = sqlite3.connect(str(cache_path))
             cursor = conn.cursor()
@@ -242,10 +256,10 @@ class TestClearCacheDatabase:
             cursor.execute("INSERT INTO embeddings_cache (text) VALUES ('text1')")
             conn.commit()
             conn.close()
-            
+
             # Dry run should not modify
             clear_cache_database(config, dry_run=True)
-            
+
             # Verify data still exists
             conn = sqlite3.connect(str(cache_path))
             cursor = conn.cursor()
@@ -262,7 +276,7 @@ class TestClearBM25Cache:
         with tempfile.TemporaryDirectory() as tmpdir:
             config = MockConfig(tmpdir)
             clear_bm25_cache(config)
-            
+
             captured = capsys.readouterr()
             assert "already clean" in captured.out
 
@@ -273,9 +287,9 @@ class TestClearBM25Cache:
             bm25_path = Path(tmpdir) / "bm25_index"
             bm25_path.mkdir()
             (bm25_path / "index.pkl").write_text("index data")
-            
+
             clear_bm25_cache(config)
-            
+
             assert not bm25_path.exists()
             captured = capsys.readouterr()
             assert "Cleared BM25 index" in captured.out
@@ -287,9 +301,9 @@ class TestClearBM25Cache:
             bm25_path = Path(tmpdir) / "bm25_index"
             bm25_path.mkdir()
             (bm25_path / "index.pkl").write_text("index data")
-            
+
             clear_bm25_cache(config, dry_run=True)
-            
+
             assert bm25_path.exists()
             captured = capsys.readouterr()
             assert "DRY RUN" in captured.out
@@ -303,7 +317,7 @@ class TestClearReferenceCache:
         with tempfile.TemporaryDirectory() as tmpdir:
             config = MockConfig(tmpdir)
             clear_reference_cache(config)
-            
+
             captured = capsys.readouterr()
             assert "already clean" in captured.out
 
@@ -313,10 +327,10 @@ class TestClearReferenceCache:
             config = MockConfig(tmpdir)
             cache_path = Path(tmpdir) / "academic_references.db"
             cache_path.write_text("reference cache data")
-            
+
             assert cache_path.exists()
             clear_reference_cache(config)
-            
+
             assert not cache_path.exists()
             captured = capsys.readouterr()
             assert "Cleared reference cache" in captured.out
@@ -327,7 +341,7 @@ class TestClearReferenceCache:
             config = MockConfig(tmpdir)
             cache_path = Path(tmpdir) / "academic_references.db"
             cache_path.write_text("reference cache data")
-            
+
             clear_reference_cache(config, dry_run=True)
             assert cache_path.exists()
             captured = capsys.readouterr()
@@ -527,7 +541,7 @@ class TestShowCurrentState:
         with tempfile.TemporaryDirectory() as tmpdir:
             config = MockConfig(tmpdir)
             show_current_state(config)
-            
+
             captured = capsys.readouterr()
             assert "Current Database State" in captured.out
             assert "Not found" in captured.out
@@ -538,7 +552,7 @@ class TestShowCurrentState:
             config = MockConfig(tmpdir)
             chroma_path = Path(tmpdir) / "chromadb"
             chroma_path.mkdir()
-            
+
             # Try to show state (may fail if chromadb not installed, that's ok)
             try:
                 show_current_state(config)
@@ -555,9 +569,9 @@ class TestShowCurrentState:
             cache_path = Path(config.cache_path)
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             cache_path.write_text("cache data")
-            
+
             show_current_state(config)
-            
+
             captured = capsys.readouterr()
             assert "Cache Database" in captured.out
 
@@ -569,23 +583,23 @@ class TestIntegration:
         """Test clearing all databases with consistent config."""
         with tempfile.TemporaryDirectory() as tmpdir:
             config = MockConfig(tmpdir)
-            
+
             # Set up all databases
             chroma_path = Path(tmpdir) / "chromadb"
             chroma_path.mkdir()
             (chroma_path / "data.db").write_text("chroma data")
-            
+
             bm25_path = Path(tmpdir) / "bm25_index"
             bm25_path.mkdir()
             (bm25_path / "index.pkl").write_text("bm25 data")
-            
+
             cache_path = Path(config.cache_path)
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             cache_path.write_text("cache data")
-            
+
             ref_cache = Path(tmpdir) / "academic_references.db"
             ref_cache.write_text("reference data")
-            
+
             term_db = Path(tmpdir) / "academic_terminology.db"
             term_db.write_text("terminology data")
 
@@ -602,8 +616,7 @@ class TestIntegration:
             legacy_dir = Path(tmpdir) / "chroma_db"
             legacy_dir.mkdir()
             (legacy_dir / "chroma.sqlite3").write_text("legacy data")
-            
-            
+
             # Clear all
             clear_terminology_database(config)
             clear_citation_graph_database(config)
@@ -613,7 +626,7 @@ class TestIntegration:
             clear_bm25_cache(config)
             clear_cache_database(config)
             clear_reference_cache(config)
-            
+
             # Verify all cleared
             assert not chroma_path.exists()
             assert not bm25_path.exists()
@@ -628,12 +641,12 @@ class TestIntegration:
         """Test that config paths are used consistently."""
         with tempfile.TemporaryDirectory() as tmpdir:
             config = MockConfig(tmpdir)
-            
+
             # All clear functions should use paths from config
             assert Path(config.rag_data_path).exists()
             assert isinstance(config.cache_path, str)
             assert isinstance(config.output_sqlite, str)
-            
+
             # Paths should be within rag_data
             assert tmpdir in config.rag_data_path
             assert tmpdir in config.cache_path

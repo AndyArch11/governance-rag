@@ -21,7 +21,7 @@ from embedding_cache import EmbeddingCache  # type: ignore
 def test_get_put_and_stats(tmp_path):
     cache_file = tmp_path / "embedding_cache.json"
     cache = EmbeddingCache(str(cache_file), enabled=True, auto_save_interval=10)
-    
+
     # Clear any existing cache state from previous tests
     cache.clear()
 
@@ -34,7 +34,7 @@ def test_get_put_and_stats(tmp_path):
     assert stats["hits"] == 1
     assert stats["misses"] == 1
     assert 0.0 <= stats["hit_rate"] <= 1.0
-    
+
     cache.close()
 
 
@@ -53,7 +53,7 @@ def test_batch_ops(tmp_path):
 
     cache.put_batch(["b"], [[2.0]])
     assert cache.get("b") == [2.0]
-    
+
     cache.close()
 
 

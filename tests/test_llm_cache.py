@@ -108,11 +108,11 @@ class TestLLMCache:
             # Verify recent entry is retrieved
             result = cache.get(doc_hash, operation)
             assert result == {"recent": "data"}
-            
+
             # For expired entries, manually set old timestamp
             old_key = f"old_doc_{operation}"
             cache.entry_timestamps[old_key] = time.time() - (2 * 24 * 60 * 60)
-            
+
             # Verify old entry is expired
             assert cache._is_expired(cache.entry_timestamps[old_key])
         finally:

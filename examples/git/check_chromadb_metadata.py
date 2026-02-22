@@ -6,6 +6,7 @@ from pathlib import Path
 
 from chromadb import PersistentClient
 
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Inspect ChromaDB metadata for code documents (Bitbucket/GitHub)."
@@ -72,21 +73,30 @@ if not results.get("ids"):
     print("\n❌ No code documents found in ChromaDB with the current filter")
 else:
     print(f"\n✅ Found {len(results['ids'])} code documents")
-    
+
     for i, (doc_id, metadata) in enumerate(zip(results["ids"], results["metadatas"]), 1):
         print(f"\n--- Document {i} ---")
         print(f"ID: {doc_id}")
         print("\nMetadata fields present:")
-        
+
         if not metadata:
             print("  ❌ NO METADATA")
             continue
-            
+
         # Check for code-specific fields
-        code_fields = ["language", "service_name", "service", "service_type", 
-                       "dependencies", "internal_calls", "endpoints", 
-                       "db", "queue", "exports"]
-        
+        code_fields = [
+            "language",
+            "service_name",
+            "service",
+            "service_type",
+            "dependencies",
+            "internal_calls",
+            "endpoints",
+            "db",
+            "queue",
+            "exports",
+        ]
+
         found_count = 0
         for field in code_fields:
             if field in metadata:
@@ -100,9 +110,9 @@ else:
                 found_count += 1
             else:
                 print(f"  ❌ {field}: MISSING")
-        
+
         print(f"\n  Total code fields found: {found_count}/{len(code_fields)}")
-        
+
         print("\n  All available fields:")
         for key, value in sorted(metadata.items()):
             if key not in ["text", "document"]:  # Skip large fields
@@ -111,4 +121,4 @@ else:
                 else:
                     print(f"    {key}: {value}")
 
-print("\n" + "="*80)
+print("\n" + "=" * 80)

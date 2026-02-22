@@ -3,7 +3,11 @@
 import json
 from pathlib import Path
 
-from scripts.ingest.academic.graph import CitationGraph, add_references_to_graph, reference_id_from_metadata
+from scripts.ingest.academic.graph import (
+    CitationGraph,
+    add_references_to_graph,
+    reference_id_from_metadata,
+)
 
 
 def test_reference_id_from_metadata_prefers_doi():
@@ -26,4 +30,3 @@ def test_add_references_to_graph_creates_edges():
     add_references_to_graph(graph, "doc1", refs)
     assert "doc1" in graph.nodes
     assert len(graph.edges) == 2
-

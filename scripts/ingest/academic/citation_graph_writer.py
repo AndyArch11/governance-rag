@@ -248,13 +248,11 @@ class CitationGraphWriter:
         cursor = self._conn.cursor()
 
         # Load all nodes - select only the columns we need
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT node_id, node_type, title, authors, doi, year, year_verified, 
                    reference_type, source
             FROM nodes
-        """
-        )
+        """)
         nodes = []
         for row in cursor.fetchall():
             node_id, node_type, title, authors_json, doi, year, year_verified, ref_type, source = (

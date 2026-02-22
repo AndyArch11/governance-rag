@@ -23,7 +23,6 @@ from scripts.ingest.chromadb_sqlite import (
     PersistentClient,
 )
 
-
 # ============================================================================
 # Fixtures
 # ============================================================================
@@ -185,9 +184,7 @@ class TestCollectionBasicOperations:
 
         # Verify table exists
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='test_chunks'"
-        )
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='test_chunks'")
         assert cursor.fetchone() is not None
         collection.close()
 
@@ -209,9 +206,7 @@ class TestCollectionBasicOperations:
         """count() returns 0 for empty collection."""
         assert collection.count() == 0
 
-    def test_collection_count_with_documents(
-        self, collection, sample_embeddings, sample_documents
-    ):
+    def test_collection_count_with_documents(self, collection, sample_embeddings, sample_documents):
         """count() returns correct number of documents."""
         collection.add(
             ids=["doc1", "doc2", "doc3"],
@@ -257,9 +252,7 @@ class TestCollectionAdd:
         """add() without embeddings uses dummy embedding."""
         # Provide a dummy embedding since schema requires it
         collection.add(
-            ids=["doc1"],
-            documents=sample_documents[:1],
-            embeddings=[[0.0, 0.0, 0.0, 0.0]]
+            ids=["doc1"], documents=sample_documents[:1], embeddings=[[0.0, 0.0, 0.0, 0.0]]
         )
 
         result = collection.get(ids=["doc1"])
@@ -269,9 +262,7 @@ class TestCollectionAdd:
     def test_add_with_metadata_only(self, collection):
         """add() with only metadata requires embedding."""
         collection.add(
-            ids=["doc1"],
-            metadatas=[{"source": "test"}],
-            embeddings=[[0.0, 0.0, 0.0, 0.0]]
+            ids=["doc1"], metadatas=[{"source": "test"}], embeddings=[[0.0, 0.0, 0.0, 0.0]]
         )
 
         result = collection.get(ids=["doc1"])
@@ -311,10 +302,7 @@ class TestCollectionAdd:
     def test_add_with_empty_metadata(self, collection):
         """add() handles empty metadata dictionary."""
         collection.add(
-            ids=["doc1"],
-            metadatas=[{}],
-            documents=["Test"],
-            embeddings=[[0.1, 0.2, 0.3, 0.4]]
+            ids=["doc1"], metadatas=[{}], documents=["Test"], embeddings=[[0.1, 0.2, 0.3, 0.4]]
         )
 
         result = collection.get(ids=["doc1"])
@@ -478,9 +466,7 @@ class TestCollectionQuery:
 
         # Only bitbucket results should be returned
         assert len(result["ids"][0]) <= 2  # Only 2 bitbucket docs
-        assert all(
-            m["source"] == "bitbucket" for m in result["metadatas"][0]
-        )
+        assert all(m["source"] == "bitbucket" for m in result["metadatas"][0])
 
     def test_query_includes_distances(self, collection, sample_embeddings):
         """query() includes distance scores."""
@@ -698,11 +684,7 @@ class TestCollectionUpdate:
 
     def test_update_nonexistent_document(self, collection):
         """update() on nonexistent document creates it."""
-        collection.update(
-            ids=["new_doc"],
-            documents=["New"],
-            embeddings=[[0.1, 0.2, 0.3, 0.4]]
-        )
+        collection.update(ids=["new_doc"], documents=["New"], embeddings=[[0.1, 0.2, 0.3, 0.4]])
 
         result = collection.get(ids=["new_doc"])
         assert result["documents"][0] == "New"
@@ -720,7 +702,9 @@ class TestEdgeCases:
         """Operations on empty collection return empty results."""
         assert collection.count() == 0
         assert collection.get()["ids"] == []
-        assert collection.query(query_embeddings=[[0.1, 0.2, 0.3, 0.4]], n_results=10)["ids"][0] == []
+        assert (
+            collection.query(query_embeddings=[[0.1, 0.2, 0.3, 0.4]], n_results=10)["ids"][0] == []
+        )
 
     def test_add_with_mismatched_lengths(self, collection):
         """add() handles mismatched array lengths gracefully."""
@@ -739,11 +723,7 @@ class TestEdgeCases:
             "path": "/path/to/file.groovy",
             "description": 'Contains "quotes"',
         }
-        collection.add(
-            ids=["doc1"],
-            metadatas=[metadata],
-            embeddings=[[0.1, 0.2, 0.3, 0.4]]
-        )
+        collection.add(ids=["doc1"], metadatas=[metadata], embeddings=[[0.1, 0.2, 0.3, 0.4]])
 
         result = collection.get(ids=["doc1"])
         assert result["metadatas"][0] == metadata
@@ -751,11 +731,7 @@ class TestEdgeCases:
     def test_unicode_in_documents(self, collection):
         """Unicode text is preserved in documents."""
         doc = "Hello 世界 🌍 Привет"
-        collection.add(
-            ids=["doc1"],
-            documents=[doc],
-            embeddings=[[0.1, 0.2, 0.3, 0.4]]
-        )
+        collection.add(ids=["doc1"], documents=[doc], embeddings=[[0.1, 0.2, 0.3, 0.4]])
 
         result = collection.get(ids=["doc1"])
         assert result["documents"][0] == doc
@@ -778,11 +754,7 @@ class TestEdgeCases:
             },
             "tags": ["java", "gradle"],
         }
-        collection.add(
-            ids=["doc1"],
-            metadatas=[metadata],
-            embeddings=[[0.1, 0.2, 0.3, 0.4]]
-        )
+        collection.add(ids=["doc1"], metadatas=[metadata], embeddings=[[0.1, 0.2, 0.3, 0.4]])
 
         result = collection.get(ids=["doc1"])
         assert result["metadatas"][0] == metadata
@@ -793,7 +765,7 @@ class TestEdgeCases:
         collection.add(
             ids=["doc1", "doc2"],
             documents=["With embedding", "Zero embedding"],
-            embeddings=[[0.1, 0.2, 0.3, 0.4], [0.0, 0.0, 0.0, 0.0]]
+            embeddings=[[0.1, 0.2, 0.3, 0.4], [0.0, 0.0, 0.0, 0.0]],
         )
 
         result = collection.query(query_embeddings=[[0.1, 0.2, 0.3, 0.4]], n_results=10)
@@ -806,7 +778,7 @@ class TestEdgeCases:
             ids=["doc1"],
             metadatas=[{"source": "bitbucket"}],
             documents=["Test"],
-            embeddings=[[0.1, 0.2, 0.3, 0.4]]
+            embeddings=[[0.1, 0.2, 0.3, 0.4]],
         )
 
         result = collection.get(where={"nonexistent": "value"})

@@ -132,7 +132,9 @@ class CrossEncoderReranker:
                 os.environ.setdefault("HF_HUB_OFFLINE", "1")
                 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
-                hf_home = Path(os.environ.get("HF_HOME", str(Path.home() / ".cache" / "huggingface")))
+                hf_home = Path(
+                    os.environ.get("HF_HOME", str(Path.home() / ".cache" / "huggingface"))
+                )
                 transformers_cache = Path(
                     os.environ.get(
                         "TRANSFORMERS_CACHE",

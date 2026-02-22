@@ -12,9 +12,9 @@ import argparse
 import csv
 import json
 import sys
-from typing import Optional, List, Dict
+from typing import Dict, List, Optional
 
-from scripts.rag.domain_terms import get_domain_term_manager, DomainType, resolve_domain_type
+from scripts.rag.domain_terms import DomainType, get_domain_term_manager, resolve_domain_type
 
 
 def _parse_domain(value: Optional[str]) -> Optional[DomainType]:
