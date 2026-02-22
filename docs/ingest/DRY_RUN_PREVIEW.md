@@ -40,7 +40,7 @@ All three ingestion scripts support `--dry-run`:
 
 ### DryRunStats Class
 
-`rag-project/scripts/ingest/ingest.py`
+`/workspaces/governance-rag/scripts/ingest/ingest.py`
 
 **Purpose:** Thread-safe statistics collector for dry-run preview metrics.
 

@@ -36,9 +36,9 @@ Usage:
     Access at http://localhost:8050
 
 Configuration:
-    CHROMA_PATH: ~/rag-project/rag_data/chromadb
+    CHROMA_PATH: <project_root>/rag_data/chromadb
     DOC_COLLECTION_NAME: governance_docs_documents
-    GRAPH_SQLITE: ~/rag-project/consistency_graph.sqlite
+    GRAPH_SQLITE: <project_root>/rag_data/consistency_graphs/consistency_graph.sqlite
 """
 
 import asyncio

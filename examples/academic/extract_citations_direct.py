@@ -4,8 +4,8 @@
 from pypdf import PdfReader
 from scripts.ingest.academic.parser import extract_citations
 
-pdf_path = "~/rag-project/data_raw/academic_papers/Author Final.pdf"
-output_path = "~/rag-project/data_raw/extracted_citations.txt"
+pdf_path = "/workspaces/governance-rag/data_raw/academic_papers/Author Final.pdf"
+output_path = "/workspaces/governance-rag/data_raw/extracted_citations.txt"
 
 # Read PDF
 reader = PdfReader(pdf_path)

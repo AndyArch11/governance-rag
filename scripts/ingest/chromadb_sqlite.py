@@ -475,11 +475,10 @@ class ChromaSQLiteClient:
     def __init__(self, db_path: str = None):
         """Initialise SQLite ChromaDB client.
 
-        TODO: should get path from config or environment variable instead of hardcoding.
-
         """
         if db_path is None:
-            db_path = str(Path.home() / "rag-project" / "rag_data" / "chromadb.db")
+            project_root = Path(__file__).resolve().parents[2]
+            db_path = str(project_root / "rag_data" / "chromadb.db")
 
         self.db_path = db_path
         self.collections = {}

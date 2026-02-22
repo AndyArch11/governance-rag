@@ -62,7 +62,7 @@ ollama serve
 
 ✓ **Dashboard Running:**
 ```bash
-cd ~/rag-project
+cd /workspaces/governance-rag
 source .venv/bin/activate
 python -m scripts.ui.dashboard
 ```

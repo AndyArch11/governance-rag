@@ -20,8 +20,8 @@ from typing import Dict, List, Tuple, Optional
 from contextlib import contextmanager
 
 # Database paths
-CONSISTENCY_DB = Path("~/rag-project/rag_data/consistency_graphs/consistency_graph.sqlite")
-ACADEMIC_DB = Path("~/rag-project/rag_data/academic_citation_graph.db")
+CONSISTENCY_DB = Path("/workspaces/governance-rag/rag_data/consistency_graphs/consistency_graph.sqlite")
+ACADEMIC_DB = Path("/workspaces/governance-rag/rag_data/academic_citation_graph.db")
 
 
 @contextmanager

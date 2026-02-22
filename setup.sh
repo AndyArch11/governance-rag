@@ -24,11 +24,12 @@ cd "$PROJECT_ROOT"
 echo -e "${BLUE}[1/7]${NC} Checking Python version..."
 PYTHON_VERSION=$(python3 --version 2>&1 | awk '{print $2}')
 REQUIRED_VERSION="3.10"
+MAX_TESTED_VERSION="3.13"
 
-if python3 -c "import sys; exit(0 if sys.version_info >= (3, 10) else 1)"; then
-    echo -e "${GREEN}✓${NC} Python $PYTHON_VERSION detected (>= $REQUIRED_VERSION required)"
+if python3 -c "import sys; exit(0 if (3, 10) <= sys.version_info[:2] < (3, 14) else 1)"; then
+    echo -e "${GREEN}✓${NC} Python $PYTHON_VERSION detected (supported: $REQUIRED_VERSION-$MAX_TESTED_VERSION)"
 else
-    echo -e "${RED}✗${NC} Python $PYTHON_VERSION is too old. Python >= $REQUIRED_VERSION required."
+    echo -e "${RED}✗${NC} Python $PYTHON_VERSION is unsupported. Use Python $REQUIRED_VERSION-$MAX_TESTED_VERSION."
     exit 1
 fi
 

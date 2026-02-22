@@ -30,6 +30,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+# Ensure project root is importable when running as a script path, e.g.:
+# python scripts/ingest/ingest_git.py --help
+if __name__ == "__main__" and __package__ is None:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 import chardet
 import chromadb
 import psutil

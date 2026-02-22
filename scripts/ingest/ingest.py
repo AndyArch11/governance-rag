@@ -68,6 +68,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 
+# Ensure project root is importable when running as a script path, e.g.:
+# python scripts/ingest/ingest.py --help
+if __name__ == "__main__" and __package__ is None:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
@@ -127,8 +132,7 @@ except ImportError:
 
 # Handle both package imports and direct script execution
 if __name__ == "__main__" and __package__ is None:
-    # Running as script - add parent directory to path
-    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+    # Running as script
     from scripts.ingest.bm25_indexing import index_chunks_in_bm25
     from scripts.ingest.chunk import chunk_text, create_parent_child_chunks
     from scripts.ingest.htmlparser import extract_text_from_html

@@ -244,6 +244,79 @@ class DomainVocabulary:
 class DomainTermManager:
     """Manages domain-specific vocabularies and term indexing."""
 
+    BUILTIN_SEED_TERMS: Dict[DomainType, List[DomainTerm]] = {
+        DomainType.CYBERSECURITY: [
+            DomainTerm("encryption", acronym="ENC", category="crypto", weight=2.0),
+            DomainTerm("authentication", acronym="AUTH", category="identity", weight=1.8),
+            DomainTerm("firewall", category="network", weight=1.6),
+            DomainTerm("intrusion detection", acronym="IDS", category="monitoring", weight=1.8),
+            DomainTerm("intrusion prevention", acronym="IPS", category="monitoring", weight=1.8),
+            DomainTerm("multi-factor authentication", acronym="MFA", category="identity", weight=2.0),
+            DomainTerm("public key infrastructure", acronym="PKI", category="crypto", weight=1.7),
+            DomainTerm("security information and event management", acronym="SIEM", category="monitoring", weight=1.8),
+            DomainTerm("security operations centre", acronym="SOC", category="operations", weight=1.7),
+            DomainTerm("vulnerability management", category="risk", weight=1.7),
+            DomainTerm("zero trust", category="architecture", weight=1.9),
+            DomainTerm("data loss prevention", acronym="DLP", category="protection", weight=1.7),
+            DomainTerm("endpoint detection and response", acronym="EDR", category="endpoint", weight=1.8),
+            DomainTerm("extended detection and response", acronym="XDR", category="endpoint", weight=1.7),
+            DomainTerm("identity and access management", acronym="IAM", category="identity", weight=1.9),
+            DomainTerm("least privilege", category="access", weight=1.6),
+            DomainTerm("threat intelligence", category="analysis", weight=1.7),
+            DomainTerm("penetration testing", category="assurance", weight=1.6),
+            DomainTerm("incident response", category="operations", weight=1.8),
+            DomainTerm("patch management", category="operations", weight=1.5),
+        ],
+        DomainType.CLOUD_INFRASTRUCTURE: [
+            DomainTerm("amazon web services", acronym="AWS", category="platform", weight=2.0),
+            DomainTerm("azure", category="platform", weight=1.8),
+            DomainTerm("kubernetes", acronym="K8S", category="orchestration", weight=1.7),
+            DomainTerm("google cloud platform", acronym="GCP", category="platform", weight=1.8),
+            DomainTerm("infrastructure as code", acronym="IaC", category="automation", weight=1.8),
+            DomainTerm("container orchestration", category="orchestration", weight=1.6),
+            DomainTerm("virtual private cloud", acronym="VPC", category="network", weight=1.7),
+            DomainTerm("load balancer", category="network", weight=1.5),
+            DomainTerm("object storage", category="storage", weight=1.5),
+            DomainTerm("serverless", category="compute", weight=1.7),
+        ],
+        DomainType.FINANCE: [
+            DomainTerm("liquidity", category="risk", weight=1.6),
+            DomainTerm("capital adequacy", category="compliance", weight=1.8),
+            DomainTerm("market risk", category="risk", weight=1.6),
+            DomainTerm("credit risk", category="risk", weight=1.6),
+            DomainTerm("operational risk", category="risk", weight=1.5),
+            DomainTerm("know your customer", acronym="KYC", category="compliance", weight=1.9),
+            DomainTerm("anti-money laundering", acronym="AML", category="compliance", weight=1.9),
+            DomainTerm("value at risk", acronym="VaR", category="risk", weight=1.7),
+            DomainTerm("return on investment", acronym="ROI", category="performance", weight=1.5),
+            DomainTerm("cash flow", category="reporting", weight=1.4),
+        ],
+        DomainType.HEALTHCARE: [
+            DomainTerm("electronic health record", acronym="EHR", category="clinical", weight=1.8),
+            DomainTerm("patient safety", category="quality", weight=1.6),
+            DomainTerm("health insurance portability and accountability act", acronym="HIPAA", category="compliance", weight=2.0),
+            DomainTerm("electronic medical record", acronym="EMR", category="clinical", weight=1.7),
+            DomainTerm("clinical decision support", acronym="CDS", category="clinical", weight=1.6),
+            DomainTerm("protected health information", acronym="PHI", category="privacy", weight=1.9),
+            DomainTerm("medical record number", acronym="MRN", category="administration", weight=1.5),
+            DomainTerm("adverse event", category="safety", weight=1.5),
+            DomainTerm("continuity of care", category="care", weight=1.5),
+            DomainTerm("telehealth", category="care", weight=1.4),
+        ],
+        DomainType.LEGAL: [
+            DomainTerm("due diligence", category="compliance", weight=1.7),
+            DomainTerm("contractual obligation", category="contract", weight=1.6),
+            DomainTerm("general data protection regulation", acronym="GDPR", category="privacy", weight=2.0),
+            DomainTerm("privacy act", category="privacy", weight=1.7),
+            DomainTerm("intellectual property", acronym="IP", category="rights", weight=1.6),
+            DomainTerm("service level agreement", acronym="SLA", category="contract", weight=1.6),
+            DomainTerm("non-disclosure agreement", acronym="NDA", category="contract", weight=1.8),
+            DomainTerm("statutory interpretation", category="process", weight=1.4),
+            DomainTerm("regulatory compliance", category="compliance", weight=1.7),
+            DomainTerm("data residency", category="privacy", weight=1.5),
+        ],
+    }
+
     # Standard domain term sources
     DOMAIN_SOURCES = {
         DomainType.CYBERSECURITY: {
@@ -279,7 +352,8 @@ class DomainTermManager:
         Args:
             config_path: Path to domain vocabularies directory
         """
-        if config_path is None:
+        use_default_config_path = config_path is None
+        if use_default_config_path:
             from scripts.rag.rag_config import RAGConfig
 
             config = RAGConfig()
@@ -297,7 +371,49 @@ class DomainTermManager:
         self.candidate_terms_path = self.config_path / "candidate_terms.json"
 
         self._load_available_vocabularies()
+        if use_default_config_path and not self.vocabularies:
+            self._seed_builtin_vocabularies()
+        elif use_default_config_path:
+            self._merge_builtin_seed_terms()
         self._load_candidate_terms()
+
+    def _seed_builtin_vocabularies(self) -> None:
+        """Seed minimal built-in vocabularies when no files are available.
+
+        This ensures baseline domain boosting works in fresh environments
+        before any curated JSON vocabularies are provided.
+        """
+        for domain, terms in self.BUILTIN_SEED_TERMS.items():
+            vocabulary = DomainVocabulary(
+                domain=domain,
+                name=domain.value.replace("_", " ").title(),
+                description=f"Built-in baseline terms for {domain.value}",
+            )
+            for term in terms:
+                vocabulary.add_term(term)
+            self.vocabularies[domain] = vocabulary
+
+    def _merge_builtin_seed_terms(self) -> None:
+        """Merge baseline seed terms into any loaded vocabularies."""
+        for domain, terms in self.BUILTIN_SEED_TERMS.items():
+            vocabulary = self.vocabularies.get(domain)
+            if vocabulary is None:
+                vocabulary = DomainVocabulary(
+                    domain=domain,
+                    name=domain.value.replace("_", " ").title(),
+                    description=f"Built-in baseline terms for {domain.value}",
+                )
+                self.vocabularies[domain] = vocabulary
+
+            self._merge_seed_terms_for_domain(domain, vocabulary)
+
+    def _merge_seed_terms_for_domain(self, domain: DomainType, vocabulary: DomainVocabulary) -> None:
+        """Merge baseline seed terms for a single domain into a vocabulary."""
+        seed_terms = self.BUILTIN_SEED_TERMS.get(domain, [])
+        existing_terms = set(vocabulary.terms.keys())
+        for term in seed_terms:
+            if term.term.lower() not in existing_terms:
+                vocabulary.add_term(term)
 
     def _load_available_vocabularies(self) -> None:
         """Load all available vocabularies from disk."""
@@ -447,6 +563,8 @@ class DomainTermManager:
                 )
                 if term.term:
                     vocab.add_term(term)
+
+            self._merge_seed_terms_for_domain(domain, vocab)
 
             self.logger.info(f"Loaded {len(vocab.terms)} terms from {json_path}")
             return vocab

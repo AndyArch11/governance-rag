@@ -7,7 +7,7 @@ import chromadb
 
 # Check ChromaDB doc_ids
 print("=== ChromaDB Document IDs ===")
-client = chromadb.PersistentClient(path="~/rag-project/rag_data/chromadb")
+client = chromadb.PersistentClient(path="/workspaces/governance-rag/rag_data/chromadb")
 collection = client.get_collection(name="governance_docs_chunks")
 
 # Get sample metadata
@@ -23,7 +23,7 @@ for doc_id in sorted(doc_ids)[:5]:
 
 # Check Citation Graph
 print("\n=== Citation Graph Nodes ===")
-db_path = "~/rag-project/rag_data/academic_citation_graph.db"
+db_path = "/workspaces/governance-rag/rag_data/academic_citation_graph.db"
 conn = sqlite3.connect(db_path)
 conn.row_factory = sqlite3.Row
 cursor = conn.cursor()

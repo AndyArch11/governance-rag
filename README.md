@@ -27,6 +27,31 @@ Motivation for this work is to serve as a platform to explore various AI related
 
 **Testing:** Almost 2,000 tests with ~60% code coverage
 
+## 🐳 WSL Dev Container Setup (Python 3.13)
+
+Use this when running inside the container at `/workspaces/governance-rag`.
+
+```bash
+cd /workspaces/governance-rag
+
+# Recreate local virtual environment with Python 3.13
+rm -rf .venv
+/usr/local/py-utils/bin/virtualenv -p /usr/bin/python3.13 .venv
+
+# Install dependencies into local environment
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+
+# Run tests
+python -m pytest tests -q --maxfail=1
+```
+
+Notes:
+- `make` commands now prefer `.venv/bin/python` when `.venv` exists.
+- Default project paths are workspace-relative, not tied to `/workspaces/governance-rag`.
+- Supported Python versions are `3.10` to `3.13`.
+
 ### 🔍 Resource Monitoring
 
 **Supports Capacity planning and resource alerting:**
@@ -47,14 +72,14 @@ Motivation for this work is to serve as a platform to explore various AI related
 - Resource alert threshold configuration
 
 **Quick Start:**
-Place files to ingest in `rag-project/data_raw/downloads`
+Place files to ingest in `/workspaces/governance-rag/data_raw/downloads`
 
 ```bash
 # Enable in .env
 ENABLE_RESOURCE_MONITORING=true
 
 # Activate project environment
-cd ~/rag-project
+cd /workspaces/governance-rag
 source .venv/bin/activate
 
 # Run with monitoring
@@ -100,9 +125,9 @@ python scripts/ingest/ingest.py  # Auto-captures stats
 
 Key variables (see .env.example and the respective `*_config.py` modules for full details and defaults):
 - Environment: `ENVIRONMENT` (Dev/Test/Prod) - Controls log purging behaviour and deployment settings.
-- Paths: `RAG_BASE_PATH` (`~/rag-project/data_raw/downloads/`), `RAG_DATA_PATH` (`~/rag-project/rag_data`), `URL_SEED_JSON_PATH`, `URL_DOWNLOAD_DIR`.
+- Paths: `RAG_BASE_PATH` (`/workspaces/governance-rag/data_raw/downloads/`), `RAG_DATA_PATH` (`/workspaces/governance-rag/rag_data`), `URL_SEED_JSON_PATH`, `URL_DOWNLOAD_DIR`.
 - Collections: `CHUNK_COLLECTION_NAME` (governance_docs_chunks), `DOC_COLLECTION_NAME` (governance_docs_documents).
-- Caching: `RAG_CACHE_ENABLED` (true), `RAG_CACHE_PATH` (`~/rag-project/rag_data/cache.db`), `LLM_CACHE_ENABLED` (true), `EMBEDDING_CACHE_ENABLED` (true), `LLM_CACHE_MAX_AGE_DAYS` (0).
+- Caching: `RAG_CACHE_ENABLED` (true), `RAG_CACHE_PATH` (`/workspaces/governance-rag/rag_data/cache.db`), `LLM_CACHE_ENABLED` (true), `EMBEDDING_CACHE_ENABLED` (true), `LLM_CACHE_MAX_AGE_DAYS` (0).
 - Quality/versions: `ENABLE_SEMANTIC_DRIFT_DETECTION` (true), `ENABLE_CHUNK_HEURISTIC_SKIP` (true), `VERSIONS_TO_KEEP` (3).
 - Performance: `MAX_WORKERS` (4), `LLM_RATE_LIMIT` (10.0), `EMBEDDING_BATCH_SIZE` (32), `PROGRESS_LOG_INTERVAL` (10).
 - Clean-up: `REINITIALISE_CHROMA_STORAGE` (false).
@@ -234,7 +259,7 @@ A Dash application that visualises:
 ## 📦 Project Structure
 
 ```
-rag-project/
+/workspaces/governance-rag/
 │
 ├── .venv/                              # Python virtual environment
 │
@@ -427,7 +452,7 @@ N.B. Solution assumes that application is running from the root of the home dire
 
 ```bash
 git clone <repo-url>
-cd ~/rag-project
+cd /workspaces/governance-rag
 ```
 
 ### 2. Create and activate the virtual environment
@@ -825,7 +850,7 @@ make graph
 
 ```bash
 # Activate environment
-cd ~/rag-project
+cd /workspaces/governance-rag
 source .venv/bin/activate
 
 # Ingest a single thesis/paper PDF

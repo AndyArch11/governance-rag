@@ -8,9 +8,15 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from collections import Counter
 from pathlib import Path
 from typing import List, Optional, Tuple
+
+# Ensure project root is importable when running as a script path, e.g.:
+# python scripts/ingest/ingest_academic.py --help
+if __name__ == "__main__" and __package__ is None:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from scripts.ingest.academic.cache import ReferenceCache
 from scripts.ingest.academic.config import AcademicIngestConfig, get_academic_config

@@ -79,7 +79,7 @@ When running in virtualised environments (VMware, VirtualBox, Hyper-V, WSL), res
 **Disk I/O:**
 - WSL2 uses a virtual disk (ext4.vhdx) which can add overhead
 - File operations crossing Windows/WSL boundary are slower
-- Recommend storing rag_data/ within WSL filesystem (`~/rag-project/rag_data`) not Windows mount (`/mnt/c/...`)
+- Recommend storing rag_data/ within the Linux workspace filesystem (`/workspaces/governance-rag/rag_data`) not Windows mount (`/mnt/c/...`)
 - IOPS measurements include virtualisation overhead
 - For accurate disk performance: add 20-30% overhead to observed values
 
@@ -118,7 +118,7 @@ When running in virtualised environments (VMware, VirtualBox, Hyper-V, WSL), res
 **Recommendations for WSL:**
 ```bash
 # Store data in WSL filesystem
-RAG_DATA_PATH=~/rag-project/rag_data  # ✅ Good
+RAG_DATA_PATH=/workspaces/governance-rag/rag_data  # ✅ Good
 RAG_DATA_PATH=/mnt/c/Users/.../rag_data  # ❌ Slow
 
 # Increase monitoring interval to reduce overhead

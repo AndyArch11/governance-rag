@@ -152,7 +152,7 @@ When writing technical documentation or comments:
 
 ### Project Structure
 ```
-~/rag-project/
+/workspaces/governance-rag/
 ├── data_raw/          # Raw data for ingestion (PDFs, HTML)
 ├── docs/              # Documentation
 ├── examples/          # Example scripts and troubleshooting tools

@@ -25,7 +25,7 @@ For large repositories or bulk operations, consider:
 Reference: https://support.atlassian.com/bitbucket-cloud/docs/api-request-limits/
 
 Usage:
-    cd ~/rag-project
+    cd /workspaces/governance-rag
     python examples/git/bitbucket_dated_example.py
 """
 

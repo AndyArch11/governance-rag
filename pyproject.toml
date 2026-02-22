@@ -7,7 +7,7 @@ name = "governance-intelligence-console"
 version = "0.1.0"
 description = "Interactive analysis platform for governance documentation with version-aware consistency graphs and risk analysis"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.14"
 license = "Apache-2.0"
 authors = [
     {name = "Andy", email = "andy.arch11@gmail.com"}
@@ -31,6 +31,8 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 
 dependencies = [
@@ -43,7 +45,7 @@ dependencies = [
     "beautifulsoup4>=4.12.0",
     "requests>=2.31.0",
     "pypdf>=4.0.0",
-    "chardet>=5.0.0",
+    "chardet>=5.0.0,<6.0.0",
     # Data processing and analysis
     "pandas>=2.1.0",
     "numpy>=1.24.0",

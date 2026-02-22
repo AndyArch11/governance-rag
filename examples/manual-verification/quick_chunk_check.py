@@ -3,7 +3,7 @@
 from pathlib import Path
 import chromadb
 
-client = chromadb.PersistentClient(Path("~/rag-project/rag_data/chromadb").expanduser())
+client = chromadb.PersistentClient(Path("/workspaces/governance-rag/rag_data/chromadb").expanduser())
 collection = client.get_collection("governance_docs_chunks")
 
 # Get first 5 chunks

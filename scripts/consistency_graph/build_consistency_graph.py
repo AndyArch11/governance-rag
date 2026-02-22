@@ -46,6 +46,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+# Ensure project root is importable when running as a script path, e.g.:
+# python scripts/consistency_graph/build_consistency_graph.py --help
+if __name__ == "__main__" and __package__ is None:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 import networkx as nx
 from dotenv import load_dotenv
 from langchain_ollama import OllamaLLM
@@ -79,7 +84,6 @@ PersistentClient, USING_SQLITE = get_vector_client(prefer="chroma")
 
 # Handle both package imports and direct script execution
 if __name__ == "__main__" and __package__ is None:
-    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
     from scripts.consistency_graph.consistency_config import get_consistency_config
     from scripts.utils.json_utils import extract_first_json_block, repair_json, sanitise_for_json
     from scripts.utils.logger import create_module_logger, flush_all_handlers

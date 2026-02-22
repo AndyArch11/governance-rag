@@ -17,6 +17,11 @@ import sys
 from pathlib import Path
 from typing import Any, Optional, Union
 
+# Ensure project root is importable when running as a script path, e.g.:
+# python scripts/rag/query.py --help
+if __name__ == "__main__" and __package__ is None:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 from scripts.utils.db_factory import get_default_vector_path, get_vector_client
 
 # Optional typing helpers
@@ -44,7 +49,6 @@ from scripts.utils.retry_utils import retry_chromadb_call
 
 # Handle both package imports and direct script execution
 if __name__ == "__main__" and __package__ is None:
-    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
     from scripts.rag.generate import answer, record_query_sample_for_adaptive_learning
     from scripts.rag.rag_config import RAGConfig
 

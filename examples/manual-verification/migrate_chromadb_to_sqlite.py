@@ -216,14 +216,14 @@ Examples:
 
     parser.add_argument(
         "--chromadb-path",
-        default="~/rag-project/rag_data/chromadb",
-        help="Path to ChromaDB directory (default: ~/rag-project/rag_data/chromadb)",
+        default="/workspaces/governance-rag/rag_data/chromadb",
+        help="Path to ChromaDB directory (default: /workspaces/governance-rag/rag_data/chromadb)",
     )
 
     parser.add_argument(
         "--sqlite-path",
-        default="~/rag-project/rag_data/chromadb.db",
-        help="Path to SQLite database file (default: ~/rag-project/rag_data/chromadb.db)",
+        default="/workspaces/governance-rag/rag_data/chromadb.db",
+        help="Path to SQLite database file (default: /workspaces/governance-rag/rag_data/chromadb.db)",
     )
 
     parser.add_argument(

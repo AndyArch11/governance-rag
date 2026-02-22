@@ -29,7 +29,7 @@ class RAGConfig(BaseConfig):
         logs_dir (Path): Directory for log files (created if missing).
 
     Environment Variables (with defaults):
-        RAG_DATA_PATH: ChromaDB data directory (default: ~/rag-project/rag_data)
+        RAG_DATA_PATH: ChromaDB data directory (default: <project_root>/rag_data)
         CHUNK_COLLECTION_NAME: Chunk collection name (default: governance_docs_chunks)
         DOC_COLLECTION_NAME: Document collection name (default: governance_docs_documents)
         RAG_K_RESULTS: Chunks to retrieve (default: 5, must be >= 1)

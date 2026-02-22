@@ -480,7 +480,7 @@ class BitbucketConnector:
         Args:
             project_key: Project key/slug
             repo_slug: Repository slug
-            target_dir: Target directory for clone (defaults to rag-project/repos/bitbucket/{project_key}/{repo_slug})
+            target_dir: Target directory for clone (defaults to repos/bitbucket/{project_key}/{repo_slug})
             use_ssh: Use SSH for cloning (requires SSH key setup)
             branch: Optional branch to checkout (defaults to default branch)
             refresh_if_exists: If True, will fetch latest changes if repo already exists locally; otherwise reuses existing clone without updating
@@ -526,7 +526,8 @@ class BitbucketConnector:
 
         # Prepare target directory
         if target_dir is None:
-            target_dir = f"rag-project/repos/bitbucket/{project_key}/{repo_slug}"
+            project_root = Path(__file__).resolve().parents[3]
+            target_dir = str(project_root / "repos" / "bitbucket" / project_key / repo_slug)
 
         target_path = Path(target_dir)
         target_path.parent.mkdir(parents=True, exist_ok=True)

@@ -48,13 +48,13 @@ class IngestConfig(BaseConfig):
         # Paths
         self.base_path = self.get_path(
             "RAG_BASE_PATH",
-            "~/rag-project/data_raw/downloads/",
+            str(self.project_root / "data_raw" / "downloads"),
         )
 
         # URL seed ingestion
         self.url_seed_json_path = self.get_path(
             "URL_SEED_JSON_PATH",
-            "~/rag-project/data_raw/url_seeds.json",
+            str(self.project_root / "data_raw" / "url_seeds.json"),
         )
         self.url_download_dir = self.get_str(
             "URL_DOWNLOAD_DIR",

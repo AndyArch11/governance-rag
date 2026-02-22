@@ -239,6 +239,18 @@ class BaseConfig:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    @property
+    def project_root(self) -> Path:
+        """Get project root directory.
+
+        Prefers PROJECT_ROOT environment variable when provided,
+        otherwise resolves from this module location.
+        """
+        project_root_env = os.getenv("PROJECT_ROOT", "").strip()
+        if project_root_env:
+            return Path(project_root_env).expanduser().resolve()
+        return Path(__file__).resolve().parents[2]
+
     # Common configuration properties used across modules
 
     @property
@@ -250,7 +262,7 @@ class BaseConfig:
         if not hasattr(self, "_rag_data_path"):
             self._rag_data_path = self.get_path(
                 "RAG_DATA_PATH",
-                "~/rag-project/rag_data",
+                str(self.project_root / "rag_data"),
             )
         return self._rag_data_path
 
@@ -302,9 +314,7 @@ class BaseConfig:
         Common across all modules. Override in subclass for custom location.
         """
         if not hasattr(self, "_logs_dir"):
-            # Default to project root logs directory
-            project_root = Path(__file__).parent.parent.parent
-            self._logs_dir = self.ensure_dir(project_root / "logs")
+            self._logs_dir = self.ensure_dir(self.project_root / "logs")
         return self._logs_dir
 
     def to_dict(self) -> Dict[str, Any]:

@@ -786,7 +786,7 @@ python scripts/ingest/ingest_academic.py --revalidate ids --ref-ids ref_abc123 r
 python scripts/ingest/ingest_academic.py --revalidate all
 
 # New ingest reset with additional metadata
-python scripts/ingest/ingest_academic.py --institution "University Name" --authors "John Doe, Jane Smith" --papers-dir ~/rag-project/data_raw/academic_papers --domain "security" --topic "RBAC for AI" --title "Title of Thesis"  --reset --purge-logs
+python scripts/ingest/ingest_academic.py --institution "University Name" --authors "John Doe, Jane Smith" --papers-dir /workspaces/governance-rag/data_raw/academic_papers --domain "security" --topic "RBAC for AI" --title "Title of Thesis"  --reset --purge-logs
 ```
 
 ### Re-validation Process

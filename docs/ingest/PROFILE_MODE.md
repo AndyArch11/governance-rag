@@ -191,7 +191,7 @@ Recommended workflow:
 
 ### ProfileStats Class
 
-`rag-project/scripts/ingest/ingest.py`
+`/workspaces/governance-rag/scripts/ingest/ingest.py`
 
 Thread-safe statistics collector tracking:
 - Document count and chunk count

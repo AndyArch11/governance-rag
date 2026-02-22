@@ -15,7 +15,7 @@ print("=" * 80)
 # 1. ChromaDB Analysis
 print("\n[1] ChromaDB (governance_docs_chunks)")
 print("-" * 80)
-chroma_path = Path("~/rag-project/rag_data/chromadb").expanduser()
+chroma_path = Path("/workspaces/governance-rag/rag_data/chromadb").expanduser()
 chroma_client = chromadb.PersistentClient(path=str(chroma_path))
 
 doc_ids = set()
@@ -70,7 +70,7 @@ except chromadb.errors.NotFoundError:
 print("[2] Consistency Graph (consistency_graph.sqlite)")
 print("-" * 80)
 consistency_db = Path(
-    "~/rag-project/rag_data/consistency_graphs/consistency_graph.sqlite"
+    "/workspaces/governance-rag/rag_data/consistency_graphs/consistency_graph.sqlite"
 ).expanduser()
 
 if not consistency_db.exists():
@@ -133,7 +133,7 @@ if cursor:
 # 3. Citation Graph Analysis
 print("[3] Citation Graph (academic_citation_graph.db)")
 print("-" * 80)
-conn2 = sqlite3.connect(Path("~/rag-project/rag_data/academic_citation_graph.db").expanduser())
+conn2 = sqlite3.connect(Path("/workspaces/governance-rag/rag_data/academic_citation_graph.db").expanduser())
 conn2.row_factory = sqlite3.Row
 cursor2 = conn2.cursor()
 

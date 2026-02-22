@@ -15,7 +15,7 @@ The assistant is available in the **Chat** tab of the dashboard and provides:
 
 1. **Start the dashboard:**
    ```bash
-   cd ~/rag-project
+   cd /workspaces/governance-rag
    source .venv/bin/activate
    python -m scripts.ui.dashboard
    ```
@@ -196,7 +196,7 @@ If needed, test reranker health directly by running a query and confirming logs 
 **Solution:** Check these components are running:
 1. **ChromaDB:** Documents ingested and available
    ```bash
-   python -c "from chromadb import PersistentClient; c = PersistentClient(path='~/rag-project/rag_data/chromadb'); print(c.list_collections())"
+   python -c "from chromadb import PersistentClient; c = PersistentClient(path='/workspaces/governance-rag/rag_data/chromadb'); print(c.list_collections())"
    ```
 
 2. **Ollama:** Running with embedding and LLM models
@@ -216,7 +216,7 @@ If needed, test reranker health directly by running a query and confirming logs 
 1. Check Ollama is responsive: `curl http://localhost:11434/api/tags`
 2. Reduce k value (fewer chunks to retrieve)
 3. Monitor system resources: `top` or `htop`
-4. Check ChromaDB collection size: `ls -lh ~/rag-project/rag_data/`
+4. Check ChromaDB collection size: `ls -lh /workspaces/governance-rag/rag_data/`
 
 ### Issue: "No answer generated"
 **Possible causes:**

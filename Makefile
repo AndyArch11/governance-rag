@@ -6,8 +6,9 @@
 # Default target
 .DEFAULT_GOAL := help
 
-# Python executable
-PYTHON := python3
+# Python executable (prefer local virtual environment when available)
+VENV_PYTHON := .venv/bin/python
+PYTHON := $(if $(wildcard $(VENV_PYTHON)),$(VENV_PYTHON),python3)
 PIP := $(PYTHON) -m pip
 
 # Project directories
@@ -61,10 +62,10 @@ clean: ## Remove Python cache files and build artifacts
 	@echo "✓ Cleaned cache and build artifacts"
 
 test: ## Run tests
-	cd $(TEST_DIR) && $(PYTHON) -m pytest -v
+	$(PYTHON) -m pytest $(TEST_DIR) -v
 
 test-cov: ## Run tests with coverage report
-	cd $(TEST_DIR) && $(PYTHON) -m pytest --cov=$(SCRIPTS_DIR) --cov-report=html --cov-report=term
+	$(PYTHON) -m pytest $(TEST_DIR) --cov=$(SCRIPTS_DIR) --cov-report=html --cov-report=term
 
 lint: ## Run pylint checks
 	$(PYTHON) -m pylint $(SCRIPTS_DIR) --disable=C0114,C0103,R0913,R0914,C0301,C0303 --max-line-length=100 --fail-under=8

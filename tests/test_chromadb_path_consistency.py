@@ -42,7 +42,7 @@ class TestPathFactoryPattern:
         """Test get_default_vector_path returns correct path for Chroma backend."""
         from scripts.utils.db_factory import get_default_vector_path
 
-        rag_data_path = Path("~/rag-project/rag_data").expanduser()
+        rag_data_path = PROJECT_ROOT / "rag_data"
         result = get_default_vector_path(rag_data_path, using_sqlite=False)
 
         assert result == str(rag_data_path / "chromadb")
@@ -53,7 +53,7 @@ class TestPathFactoryPattern:
         """Test get_default_vector_path returns correct path for SQLite backend."""
         from scripts.utils.db_factory import get_default_vector_path
 
-        rag_data_path = Path("~/rag-project/rag_data").expanduser()
+        rag_data_path = PROJECT_ROOT / "rag_data"
         result = get_default_vector_path(rag_data_path, using_sqlite=True)
 
         assert result == str(rag_data_path / "chromadb.db")
@@ -63,12 +63,12 @@ class TestPathFactoryPattern:
         from scripts.utils.db_factory import get_default_vector_path
 
         # Test with Path object
-        path_obj = Path("~/rag-project/rag_data").expanduser()
+        path_obj = PROJECT_ROOT / "rag_data"
         result_path = get_default_vector_path(path_obj, using_sqlite=False)
 
         # Test with string
-        path_str = "~/rag-project/rag_data"
-        result_str = get_default_vector_path(Path(path_str).expanduser(), using_sqlite=False)
+        path_str = str(PROJECT_ROOT / "rag_data")
+        result_str = get_default_vector_path(Path(path_str), using_sqlite=False)
 
         assert result_path == result_str
 
@@ -76,7 +76,7 @@ class TestPathFactoryPattern:
         """Test that paths returned are absolute."""
         from scripts.utils.db_factory import get_default_vector_path
 
-        rag_data_path = Path("~/rag-project/rag_data").expanduser()
+        rag_data_path = PROJECT_ROOT / "rag_data"
         
         result_chroma = get_default_vector_path(rag_data_path, using_sqlite=False)
         result_sqlite = get_default_vector_path(rag_data_path, using_sqlite=True)
@@ -219,7 +219,7 @@ class TestPathComputationConsistency:
         """Test that the same config always produces the same path."""
         from scripts.utils.db_factory import get_default_vector_path
 
-        rag_data_path = Path("~/rag-project/rag_data").expanduser()
+        rag_data_path = PROJECT_ROOT / "rag_data"
 
         # Compute same path multiple times
         path1 = get_default_vector_path(rag_data_path, using_sqlite=False)
@@ -232,7 +232,7 @@ class TestPathComputationConsistency:
         """Test that different backends produce different paths."""
         from scripts.utils.db_factory import get_default_vector_path
 
-        rag_data_path = Path("~/rag-project/rag_data").expanduser()
+        rag_data_path = PROJECT_ROOT / "rag_data"
 
         path_chroma = get_default_vector_path(rag_data_path, using_sqlite=False)
         path_sqlite = get_default_vector_path(rag_data_path, using_sqlite=True)
@@ -245,7 +245,7 @@ class TestPathComputationConsistency:
         """Test that computed paths are within rag_data directory."""
         from scripts.utils.db_factory import get_default_vector_path
 
-        rag_data_path = Path("~/rag-project/rag_data").expanduser()
+        rag_data_path = PROJECT_ROOT / "rag_data"
 
         path_chroma = get_default_vector_path(rag_data_path, using_sqlite=False)
         path_sqlite = get_default_vector_path(rag_data_path, using_sqlite=True)
@@ -259,7 +259,7 @@ class TestPathComputationConsistency:
         from scripts.utils.db_factory import get_default_vector_path
 
         # Test with absolute path
-        abs_path = Path("~/rag-project/rag_data").expanduser()
+        abs_path = PROJECT_ROOT / "rag_data"
         result_abs = get_default_vector_path(abs_path, using_sqlite=False)
 
         # Result should be absolute
@@ -269,7 +269,7 @@ class TestPathComputationConsistency:
         """Test that computed paths clearly identify the backend type."""
         from scripts.utils.db_factory import get_default_vector_path
 
-        rag_data_path = Path("~/rag-project/rag_data").expanduser()
+        rag_data_path = PROJECT_ROOT / "rag_data"
 
         path_chroma = get_default_vector_path(rag_data_path, using_sqlite=False)
         path_sqlite = get_default_vector_path(rag_data_path, using_sqlite=True)
@@ -408,7 +408,7 @@ class TestPathEdgeCases:
         from scripts.utils.db_factory import get_default_vector_path
 
         # Create path with tilde
-        rag_data_path = Path("~/rag-project/rag_data").expanduser()
+        rag_data_path = PROJECT_ROOT / "rag_data"
         result = get_default_vector_path(rag_data_path, using_sqlite=False)
 
         # Result should be absolute, not contain tilde
@@ -419,8 +419,8 @@ class TestPathEdgeCases:
         """Test that paths with trailing slashes are normalised."""
         from scripts.utils.db_factory import get_default_vector_path
 
-        path_with_slash = Path("~/rag-project/rag_data/").expanduser()
-        path_without_slash = Path("~/rag-project/rag_data").expanduser()
+        path_with_slash = Path(f"{PROJECT_ROOT / 'rag_data'}/")
+        path_without_slash = PROJECT_ROOT / "rag_data"
 
         result_with = get_default_vector_path(path_with_slash, using_sqlite=False)
         result_without = get_default_vector_path(path_without_slash, using_sqlite=False)
@@ -432,7 +432,7 @@ class TestPathEdgeCases:
         """Test that path components are not duplicated."""
         from scripts.utils.db_factory import get_default_vector_path
 
-        rag_data_path = Path("~/rag-project/rag_data").expanduser()
+        rag_data_path = PROJECT_ROOT / "rag_data"
         result = get_default_vector_path(rag_data_path, using_sqlite=False)
 
         # Should not have duplicate "rag_data" components

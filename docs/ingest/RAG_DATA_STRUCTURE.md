@@ -87,16 +87,16 @@ No manual pre-creation is required for normal operation.
 Primary path settings:
 
 ```env
-RAG_DATA_PATH=~/rag-project/rag_data
-CONSISTENCY_GRAPH_SQLITE=~/rag-project/rag_data/consistency_graphs/consistency_graph.sqlite
-RAG_GRAPH_SQLITE_PATH=~/rag-project/rag_data/consistency_graphs/consistency_graph.sqlite
+RAG_DATA_PATH=/workspaces/governance-rag/rag_data
+CONSISTENCY_GRAPH_SQLITE=/workspaces/governance-rag/rag_data/consistency_graphs/consistency_graph.sqlite
+RAG_GRAPH_SQLITE_PATH=/workspaces/governance-rag/rag_data/consistency_graphs/consistency_graph.sqlite
 ```
 
 Cache settings used by current code paths:
 
 ```env
 RAG_CACHE_ENABLED=true
-RAG_CACHE_PATH=~/rag-project/rag_data/cache.db
+RAG_CACHE_PATH=/workspaces/governance-rag/rag_data/cache.db
 LLM_CACHE_ENABLED=true
 EMBEDDING_CACHE_ENABLED=true
 ```

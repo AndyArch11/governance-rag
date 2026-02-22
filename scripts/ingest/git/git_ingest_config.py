@@ -43,7 +43,7 @@ class GitIngestConfig(IngestConfig):
 
         # Repository settings (common across providers)
         self.git_branch = self.get_str("GIT_BRANCH", "main")
-        self.git_clone_dir = self.get_str("GIT_CLONE_DIR", "~/rag-project/repos")
+        self.git_clone_dir = self.get_str("GIT_CLONE_DIR", str(self.project_root / "repos"))
         # Each provider keeps its own clone directory underneath the base path
         base_clone_path = Path(self.git_clone_dir)
         self.provider_clone_dir = str(base_clone_path / (self.git_provider or "git"))
