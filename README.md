@@ -451,8 +451,8 @@ N.B. Jupyter libraries to view the notebooks with are optional.
 N.B. Solution assumes that application is running from the root of the home directory.
 
 ```bash
-git clone <repo-url>
-cd /workspaces/governance-rag
+git clone [https://github.com/AndyArch11/governance-rag](https://github.com/AndyArch11/governance-rag)
+cd ~/rag-project
 ```
 
 ### 2. Create and activate the virtual environment
