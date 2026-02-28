@@ -87,7 +87,10 @@ class CrossEncoderReranker:
             enable_cache: Cache reranker scores to memory and optionally disk
             cache_dir: Directory for persistent score cache (~/.cache/rag_reranker default)
             strict_offline: If True, disallow all Hugging Face network access and require
-                model/tokeniser files to already exist in local cache.
+            model/tokeniser files to already exist in local cache.
+
+            TODO: Evaluate BAAI/bge-reranker-v2-m3, can take longer to initialise, but can be faster and more accurate at inference time.
+            TODO: Add support for other cross-encoder reranker libraries.
 
         Raises:
             ImportError: If sentence-transformers is not installed
