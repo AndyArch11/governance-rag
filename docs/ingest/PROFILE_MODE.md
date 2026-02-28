@@ -269,6 +269,21 @@ LLM_RATE_LIMIT=10.0        # Affects LLM call throttling
 ### High error rate
 - Review error messages in report
 - Check Ollama service is running: `ollama list`
+- Validate application-path Ollama access from the dev container:
+
+```bash
+export OLLAMA_HOST=http://host.docker.internal:11434
+curl $OLLAMA_HOST/api/tags
+python - <<'PY'
+from scripts.ingest.vectors import EMBEDDING_MODEL_NAME
+from langchain_ollama import OllamaEmbeddings
+
+vector = OllamaEmbeddings(model=EMBEDDING_MODEL_NAME).embed_query("connectivity check")
+print(f"Ollama reachable from application path. Embedding length: {len(vector)}")
+PY
+```
+
+- If it fails with model-not-found, run: `ollama pull mxbai-embed-large`
 - Verify ChromaDB is accessible
 
 ### Low throughput
