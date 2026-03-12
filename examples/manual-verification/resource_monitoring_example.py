@@ -1,11 +1,11 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """Example: Resource monitoring for ingestion, query, and graph building.
 
 Demonstrates how to use ResourceMonitor to capture CPU, RAM, VRAM, IOPS,
 and network utilisation for capacity planning.
 
 Usage:
-    python examples/resource_monitoring_example.py
+    python3 examples/resource_monitoring_example.py
 
 Output:
     - Console summary with peak values

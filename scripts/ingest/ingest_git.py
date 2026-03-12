@@ -9,8 +9,6 @@ Supports ingesting code from:
 Provider selection via GIT_PROVIDER environment variable or CLI argument.
 Shares common configuration and code parsing logic across all providers.
 
-TODO: - Replace MD5 with SHA256 for better collision resistance in file hashing
-
 Usage:
     python -m scripts.ingest.ingest_git --provider bitbucket --host ... --branch main
     python -m scripts.ingest.ingest_git --provider github --token ... --owner myorg
@@ -19,6 +17,7 @@ Usage:
 import argparse
 import hashlib
 import json
+import logging
 import os
 import shutil
 import sys
@@ -55,8 +54,15 @@ from scripts.ingest.vectors import (
     store_chunks_in_chroma,
     store_parent_chunks,
 )
-from scripts.utils.db_factory import get_default_vector_path, get_vector_client
+from scripts.utils.clear_databases import clear_for_ingestion
+from scripts.utils.db_factory import get_cache_client, get_default_vector_path, get_vector_client
 from scripts.utils.logger import create_module_logger
+import scripts.utils.logger as logger_module
+
+try:
+    from scripts.security.dlp import DLPScanner
+except ImportError:
+    DLPScanner = None  # type: ignore[assignment]
 
 get_logger, audit = create_module_logger("ingest")
 logger = get_logger(log_to_console=True)  # Enable console output by default
@@ -681,8 +687,9 @@ def redact_code_content(
         return text, {}
 
     try:
-        # TODO: move import to top of file
-        from scripts.security.dlp import DLPScanner
+        if DLPScanner is None:
+            logger.debug("DLPScanner not available, skipping redaction")
+            return text, {}
 
         dlp_scanner = DLPScanner()
         matches = dlp_scanner.find(text)
@@ -706,9 +713,6 @@ def redact_code_content(
         )
 
         return redacted, counts
-    except ImportError:
-        logger.debug("DLPScanner not available, skipping redaction")
-        return text, {}
     except Exception as e:
         logger.warning(f"DLP redaction failed for {artifact_path}: {e}")
         return text, {}
@@ -867,15 +871,15 @@ def compute_code_doc_id(file_path: str, repository: str, project_key: str) -> st
 
 
 def compute_file_hash(file_path: str) -> str:
-    """Compute MD5 hash of file contents for change detection.
+    """Compute SHA-256 hash of file contents for change detection.
 
     Args:
         file_path: Path to the file to hash.
 
     Returns:
-        Hexadecimal MD5 hash string.
+        Hexadecimal SHA-256 hash string.
     """
-    h = hashlib.md5()
+    h = hashlib.sha256()
     try:
         with open(file_path, "rb") as f:
             for chunk in iter(lambda: f.read(8192), b""):
@@ -989,7 +993,7 @@ def process_code_file(
 
         # Compute doc ID and hash
         doc_id = compute_code_doc_id(file_path, repo_slug, project_key)
-        file_hash = hashlib.md5(file_content.encode("utf-8")).hexdigest()
+        file_hash = hashlib.sha256(file_content.encode("utf-8")).hexdigest()
 
         if dry_run:
             logger.debug(f"[DRY-RUN] Would process {file_path} (doc_id={doc_id})")
@@ -1209,12 +1213,9 @@ def process_code_file(
 
         # BM25 Keyword Indexing (optional)
         # Uses common indexing utility for chunk-level granularity
-        # TODO: move db_factory import to top of page
         start_bm25_time = time.time()
         if config.bm25_indexing_enabled and not dry_run:
             try:
-                from scripts.utils.db_factory import get_cache_client
-
                 cache_db = get_cache_client(enable_cache=True)
                 total_indexed = index_chunks_in_bm25(
                     doc_id=doc_id,
@@ -1669,10 +1670,7 @@ def main():
         args = parse_arguments()
 
         # Set verbose logging if requested
-        # TODO: move import to top of file
         if getattr(args, "verbose", False):
-            import logging
-
             logging.getLogger().setLevel(logging.DEBUG)
             # Ensure all handlers have DEBUG level
             for handler in logger.handlers:
@@ -1718,16 +1716,10 @@ def main():
                     logger.removeHandler(handler)
 
                 # Clear logger from cache so get_logger creates a fresh instance with file handler
-                # TODO: move import to top of file
-                import scripts.utils.logger as logger_module
-
                 if "ingest" in logger_module._loggers:
                     del logger_module._loggers["ingest"]
 
                 # Recreate logger with fresh handlers
-                # TODO: move import to top of file
-                from scripts.utils.logger import create_module_logger
-
                 get_logger, audit = create_module_logger("ingest")
                 logger = get_logger(log_to_console=True)
                 logger.info("Log files purged, logger recreated")
@@ -1735,9 +1727,6 @@ def main():
 
         # Handle database reset at the start (before ChromaDB init)
         if config.git_reset_repo:
-            # TODO: move import to top of file
-            from scripts.utils.clear_databases import clear_for_ingestion
-
             logger.info("Performing full database reset (--reset flag)")
             print("\n[RESET] Clearing all databases and caches for fresh ingestion...")
             success = clear_for_ingestion(verbose=True, dry_run=False)
@@ -1747,9 +1736,6 @@ def main():
             print()
 
             # Also clear the Git clone directory (only for current provider)
-            # TODO: move import to top of file
-            import shutil
-
             clone_dir = Path(config.provider_clone_dir)
             if clone_dir.exists():
                 logger.info(
@@ -1779,10 +1765,7 @@ def main():
                 print()
 
         # Initialise ChromaDB using factory pattern (consistent with build_consistency_graph)
-        # TODO: move import to top of file
         print("Initialising ChromaDB...")
-        from scripts.utils.db_factory import get_default_vector_path, get_vector_client
-
         PersistentClient_class, using_sqlite = get_vector_client(prefer="chroma")
         chroma_path = get_default_vector_path(Path(config.rag_data_path), using_sqlite)
         chroma_client = PersistentClient_class(path=chroma_path)
@@ -1852,12 +1835,9 @@ def main():
             logger.info("Connected to Git provider")
 
             # Load repository list from file if specified
-            # TODO: move import to top of file
             repos_from_file = set()
             repos_config = {}  # Maps repo_slug -> {"project": str, "branch": str}
             if config.git_repos_file and Path(config.git_repos_file).exists():
-                import json
-
                 repos_file_path = Path(config.git_repos_file)
 
                 # Try loading as JSON first (regardless of first character)
@@ -2188,12 +2168,9 @@ def main():
             print(f"Repositories failed:   {total_repos_failed}")
 
         # Update BM25 corpus statistics (IDF values) after all documents indexed
-        # TODO: move import to top of file
         if config.bm25_indexing_enabled and not getattr(args, "dry_run", False):
             try:
                 logger.info("Computing BM25 corpus statistics (IDF values)...")
-                from scripts.utils.db_factory import get_cache_client
-
                 cache_db = get_cache_client(enable_cache=True)
                 total_docs = cache_db.get_bm25_corpus_size()
 

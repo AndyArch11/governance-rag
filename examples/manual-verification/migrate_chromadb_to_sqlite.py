@@ -6,7 +6,7 @@ Converts existing ChromaDB data to SQLite backend while preserving all data and 
 Safe to run multiple times - performs idempotent migration with validation.
 
 Usage:
-    python migrate_chromadb_to_sqlite.py [--backup] [--validate]
+    python3 migrate_chromadb_to_sqlite.py [--backup] [--validate]
 """
 
 import argparse
@@ -207,8 +207,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python migrate_chromadb_to_sqlite.py --backup --validate
-  python migrate_chromadb_to_sqlite.py \\
+    python3 migrate_chromadb_to_sqlite.py --backup --validate
+    python3 migrate_chromadb_to_sqlite.py \
     --chromadb-path /custom/path/chromadb \\
     --sqlite-path /custom/path/rag.db
         """,

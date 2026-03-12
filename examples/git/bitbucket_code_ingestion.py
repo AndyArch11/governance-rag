@@ -11,7 +11,7 @@ Integrates BitbucketConnector and CodeParser to:
 Standalone code for testing and development.
 
 Usage:
-    python bitbucket_code_ingestion.py \\
+    python3 bitbucket_code_ingestion.py \\
         --host https://bitbucket.company.com \\
         --username user@company.com \\
         --password app-password \\

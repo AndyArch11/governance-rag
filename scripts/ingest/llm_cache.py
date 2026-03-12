@@ -77,7 +77,7 @@ class LLMCache:
         """Retrieve cached LLM output.
 
         Args:
-            doc_hash: MD5 hash of document content.
+            doc_hash: SHA-256 hash of document content.
             operation: Operation type (e.g., 'metadata', 'summary').
 
         Returns:
@@ -142,7 +142,7 @@ class LLMCache:
         """Store LLM output in cache.
 
         Args:
-            doc_hash: MD5 hash of document content.
+            doc_hash: SHA-256 hash of document content.
             operation: Operation type (e.g., 'metadata', 'summary').
             result: LLM output to cache (must be JSON-serialisable).
         """

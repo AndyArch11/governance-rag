@@ -1,11 +1,11 @@
 """CLI for reviewing and curating candidate terms.
 
 Usage examples:
-  python examples/academic/candidate_terms_cli.py list
-  python examples/academic/candidate_terms_cli.py list --status pending --domain legal
-  python examples/academic/candidate_terms_cli.py approve --term "data residency" --category compliance --weight 1.8 --curated-by analyst
-  python examples/academic/candidate_terms_cli.py reject --term "foo" --reason "too generic"
-  python examples/academic/candidate_terms_cli.py export --format csv --out candidate_terms.csv
+    python3 examples/academic/candidate_terms_cli.py list
+    python3 examples/academic/candidate_terms_cli.py list --status pending --domain legal
+    python3 examples/academic/candidate_terms_cli.py approve --term "data residency" --category compliance --weight 1.8 --curated-by analyst
+    python3 examples/academic/candidate_terms_cli.py reject --term "foo" --reason "too generic"
+    python3 examples/academic/candidate_terms_cli.py export --format csv --out candidate_terms.csv
 """
 
 import argparse

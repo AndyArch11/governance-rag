@@ -13,7 +13,7 @@ Implements a learned reranking layer for improving the relevance of retrieved do
 3. **Intelligent Caching**: 
    - In-memory cache for session-level performance
    - Optional persistent JSONL cache at `~/.cache/rag_reranker/scores.jsonl`
-   - MD5-based cache keys for query-document pairs
+    - SHA-256-based cache keys for query-document pairs
 
 4. **Efficient Batch Processing**: 
    - Configurable batch sizes (default: 32)
@@ -76,7 +76,7 @@ Core Methods:
 
 Private Methods:
 - `_load_model()`: Lazy-load cross-encoder from sentence-transformers
-- `_get_cache_key(query, doc_id)`: MD5 hash for cache lookup
+- `_get_cache_key(query, doc_id)`: SHA-256 hash for cache lookup
 - `_load_cache()`: Load persisted scores from JSONL
 - `_save_cache_entry(key, score)`: Append score to cache file
 

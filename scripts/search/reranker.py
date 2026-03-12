@@ -194,9 +194,9 @@ class CrossEncoderReranker:
             raise
 
     def _get_cache_key(self, query: str, doc_id: str) -> str:
-        """Generate MD5 cache key for query-document pair."""
+        """Generate SHA-256 cache key for query-document pair."""
         combined = f"{query}||{doc_id}"
-        return hashlib.md5(combined.encode()).hexdigest()
+        return hashlib.sha256(combined.encode()).hexdigest()
 
     def _load_cache(self) -> None:
         """Load score cache from disk if available."""

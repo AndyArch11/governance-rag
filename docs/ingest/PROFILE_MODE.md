@@ -18,7 +18,7 @@ Profile mode provides a quick validation run that processes a small sample of do
 ### Basic Profile Run
 
 ```bash
-python ingest.py --profile
+python3 ingest.py --profile
 ```
 
 This will:
@@ -30,7 +30,7 @@ This will:
 ### Custom Sample Size
 
 ```bash
-python ingest.py --profile --limit 5
+python3 ingest.py --profile --limit 5
 ```
 
 Process only 5 documents (override default of 10).
@@ -38,7 +38,7 @@ Process only 5 documents (override default of 10).
 ### Profile with Reset
 
 ```bash
-python ingest.py --profile --reset
+python3 ingest.py --profile --reset
 ```
 
 Clear ChromaDB collections and profile with fresh data.
@@ -46,7 +46,7 @@ Clear ChromaDB collections and profile with fresh data.
 ### Profile URL Seeds
 
 ```bash
-python ingest.py --profile --include-url-seeds
+python3 ingest.py --profile --include-url-seeds
 ```
 
 Profile mode with URL seed ingestion included (preview).
@@ -274,7 +274,7 @@ LLM_RATE_LIMIT=10.0        # Affects LLM call throttling
 ```bash
 export OLLAMA_HOST=http://host.docker.internal:11434
 curl $OLLAMA_HOST/api/tags
-python - <<'PY'
+python3 - <<'PY'
 from scripts.ingest.vectors import EMBEDDING_MODEL_NAME
 from langchain_ollama import OllamaEmbeddings
 

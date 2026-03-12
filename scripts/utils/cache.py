@@ -162,15 +162,15 @@ class BaseCache(ABC, Generic[T]):
 
     @staticmethod
     def compute_hash(text: str) -> str:
-        """Compute MD5 hash of text for cache key.
+        """Compute SHA-256 hash of text for cache key.
 
         Args:
             text: Text to hash
 
         Returns:
-            Hexadecimal MD5 hash string
+            Hexadecimal SHA-256 hash string
         """
-        return hashlib.md5(text.encode("utf-8")).hexdigest()
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 class SimpleCache(BaseCache[T]):

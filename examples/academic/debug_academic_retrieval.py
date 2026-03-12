@@ -110,5 +110,5 @@ if academic_count == 0:
 elif academic_count > 0:
     print(f"✅ Found {academic_count} academic chunks")
     print("   → Check if chunk content matches your query topics")
-    print("   → Try running: python scripts/rag/query.py 'What research papers discuss [TOPIC]?'")
+    print("   → Try running: python3 scripts/rag/query.py 'What research papers discuss [TOPIC]?'")
 print("=" * 80)

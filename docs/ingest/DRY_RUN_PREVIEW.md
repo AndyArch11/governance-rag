@@ -121,29 +121,29 @@ To proceed with ingestion, run without --dry-run flag.
 
 #### Basic Dry-Run (Check All Documents)
 ```bash
-python scripts/ingest/ingest.py --dry-run
+python3 scripts/ingest/ingest.py --dry-run
 ```
 
 #### Dry-Run with Limit (Quick Preview)
 ```bash
-python scripts/ingest/ingest.py --dry-run --limit 10
+python3 scripts/ingest/ingest.py --dry-run --limit 10
 ```
 
 #### Dry-Run with Reset (Preview Full Ingestion)
 ```bash
-python scripts/ingest/ingest.py --dry-run --reset
+python3 scripts/ingest/ingest.py --dry-run --reset
 ```
 
 #### Dry-Run with Custom Workers
 ```bash
-python scripts/ingest/ingest.py --dry-run --workers 8
+python3 scripts/ingest/ingest.py --dry-run --workers 8
 ```
 
 ### ingest_git.py (Code Repositories)
 
 #### Basic Dry-Run (Bitbucket)
 ```bash
-python scripts/ingest/ingest_git.py --dry-run \
+python3 scripts/ingest/ingest_git.py --dry-run \
   --provider bitbucket \
   --host https://bitbucket.org/workspace/repo \
   --username user \
@@ -152,7 +152,7 @@ python scripts/ingest/ingest_git.py --dry-run \
 
 #### Dry-Run with GitHub
 ```bash
-python scripts/ingest/ingest_git.py --dry-run \
+python3 scripts/ingest/ingest_git.py --dry-run \
   --provider github \
   --host https://github.com/owner/repo \
   --token ghp_xxxx
@@ -160,7 +160,7 @@ python scripts/ingest/ingest_git.py --dry-run \
 
 #### Dry-Run with File Type Filter
 ```bash
-python scripts/ingest/ingest_git.py --dry-run \
+python3 scripts/ingest/ingest_git.py --dry-run \
   --provider bitbucket \
   --file-types ".py,.js,.ts" \
   --username user --password token
@@ -168,7 +168,7 @@ python scripts/ingest/ingest_git.py --dry-run \
 
 #### Dry-Run with Repo Reset
 ```bash
-python scripts/ingest/ingest_git.py --dry-run --reset-repo \
+python3 scripts/ingest/ingest_git.py --dry-run --reset-repo \
   --provider gitlab --host https://gitlab.com/group/repo
 ```
 
@@ -176,30 +176,30 @@ python scripts/ingest/ingest_git.py --dry-run --reset-repo \
 
 #### Basic Dry-Run (Single Paper)
 ```bash
-python scripts/ingest/ingest_academic.py --dry-run \
+python3 scripts/ingest/ingest_academic.py --dry-run \
   data_raw/academic_papers/paper.pdf
 ```
 
 #### Dry-Run Batch Processing
 ```bash
-python scripts/ingest/ingest_academic.py --dry-run \
+python3 scripts/ingest/ingest_academic.py --dry-run \
   --batch data_raw/academic_references.txt
 ```
 
 #### Dry-Run Papers Directory
 ```bash
-python scripts/ingest/ingest_academic.py --dry-run \
+python3 scripts/ingest/ingest_academic.py --dry-run \
   --papers-dir data_raw/academic_papers/
 ```
 
 #### Dry-Run with Reset
 ```bash
-python scripts/ingest/ingest_academic.py --dry-run --reset
+python3 scripts/ingest/ingest_academic.py --dry-run --reset
 ```
 
 #### Dry-Run Citation Extraction Only
 ```bash
-python scripts/ingest/ingest_academic.py --dry-run \
+python3 scripts/ingest/ingest_academic.py --dry-run \
   --title "Paper Title" \
   --authors "Author1, Author2" \
   paper.pdf

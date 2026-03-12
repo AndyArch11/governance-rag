@@ -173,7 +173,7 @@ class TestComputeFileHash:
             hash2 = compute_file_hash(temp_path)
             assert hash1 == hash2
             # Should be valid hex string
-            assert len(hash1) == 32  # MD5 produces 32 hex chars
+            assert len(hash1) == 64  # SHA-256 produces 64 hex chars
             assert all(c in "0123456789abcdef" for c in hash1)
         finally:
             os.unlink(temp_path)
@@ -282,8 +282,8 @@ class TestUrlSeedCollection:
 
         try:
             file_hash = compute_file_hash(temp_path)
-            # Verify against expected MD5
-            expected = hashlib.md5(content.encode()).hexdigest()
+            # Verify against expected SHA-256
+            expected = hashlib.sha256(content.encode()).hexdigest()
             assert file_hash == expected
         finally:
             os.unlink(temp_path)
@@ -296,7 +296,7 @@ class TestUrlSeedCollection:
         try:
             file_hash = compute_file_hash(temp_path)
             # Empty file should have consistent hash
-            expected = hashlib.md5(b"").hexdigest()
+            expected = hashlib.sha256(b"").hexdigest()
             assert file_hash == expected
         finally:
             os.unlink(temp_path)
@@ -310,7 +310,7 @@ class TestUrlSeedCollection:
 
         try:
             file_hash = compute_file_hash(temp_path)
-            expected = hashlib.md5(binary_data).hexdigest()
+            expected = hashlib.sha256(binary_data).hexdigest()
             assert file_hash == expected
         finally:
             os.unlink(temp_path)
@@ -1004,7 +1004,7 @@ class TestComputeChunkHash:
         hash2 = compute_chunk_hash(text)
 
         assert hash1 == hash2
-        assert len(hash1) == 32  # MD5 hex string
+        assert len(hash1) == 64  # SHA-256 hex string
 
     def test_compute_chunk_hash_different_text(self):
         """Test that different text produces different hash."""
@@ -1022,7 +1022,7 @@ class TestComputeChunkHash:
         text = "Unicode: café, naïve, 中文, العربية"
         hash_val = compute_chunk_hash(text)
 
-        assert len(hash_val) == 32
+        assert len(hash_val) == 64
         assert all(c in "0123456789abcdef" for c in hash_val)
 
 
@@ -1407,7 +1407,7 @@ class TestStageComputeHash:
 
         assert doc_id == "test"
         assert file_hash is not None
-        assert len(file_hash) == 32  # MD5 hash length
+        assert len(file_hash) == 64  # SHA-256 hash length
 
     def test_stage_compute_hash_file_not_found(self):
         """Test hash computation with missing file."""

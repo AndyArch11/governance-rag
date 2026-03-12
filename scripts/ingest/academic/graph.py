@@ -344,7 +344,7 @@ def reference_id_from_metadata(metadata: dict) -> str:
     if doi:
         return f"doi:{doi.lower()}"
     title = metadata.get("title") or metadata.get("citation") or ""
-    digest = hashlib.md5(title.encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(title.encode("utf-8")).hexdigest()
     return f"ref:{digest}"
 
 

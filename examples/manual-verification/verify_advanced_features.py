@@ -8,7 +8,7 @@ This is a manual, runnable example that exercises:
 4. Explainability Features
 
 Run it directly from project root:
-  python examples/manual-verification/verify_advanced_features.py
+    python3 examples/manual-verification/verify_advanced_features.py
 """
 
 import sys

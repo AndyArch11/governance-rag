@@ -221,7 +221,7 @@ class ReferenceCache:
             doi_clean = doi.replace("https://doi.org/", "").replace("http://doi.org/", "")
             return f"doi_{doi_clean}"
 
-        h = hashlib.md5()
+        h = hashlib.sha256()
         if title:
             h.update(title.lower().encode())
         if year:

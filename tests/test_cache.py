@@ -18,13 +18,13 @@ class TestBaseCache:
     """Test BaseCache abstract base class functionality."""
 
     def test_compute_hash(self) -> None:
-        """Test MD5 hash computation."""
+        """Test SHA-256 hash computation."""
         text = "test string"
         hash_value = BaseCache.compute_hash(text)
 
         # Should produce consistent hash
         assert BaseCache.compute_hash(text) == hash_value
-        assert len(hash_value) == 32  # MD5 is 32 hex characters
+        assert len(hash_value) == 64  # SHA-256 is 64 hex characters
 
     def test_compute_hash_different_inputs(self) -> None:
         """Test that different inputs produce different hashes."""

@@ -294,7 +294,7 @@ services:
    nvidia-smi  # Should show GPU
    
    # Test GPU compute works
-   python -c "import torch; print(torch.cuda.is_available())"
+   python3 -c "import torch; print(torch.cuda.is_available())"
    
    # Monitor GPU during operation
    watch -n 1 nvidia-smi
@@ -505,10 +505,10 @@ Some environments restrict outbound traffic:
   # Run monitor on each host
   
   # On RAG VM:
-  python scripts/rag/query.py  # Monitors Python process
+  python3 scripts/rag/query.py  # Monitors Python process
   
   # On Ollama VM:
-  python -c "
+  python3 -c "
   from scripts.utils.resource_monitor import ResourceMonitor
   import time
   with ResourceMonitor('ollama_server', monitor_ollama=True) as m:
@@ -516,7 +516,7 @@ Some environments restrict outbound traffic:
   "
   
   # Aggregate JSON results
-  python scripts/utils/aggregate_resource_stats.py \
+  python3 scripts/utils/aggregate_resource_stats.py \
     logs/resource_stats_query_*.json \
     ollama_vm:logs/resource_stats_ollama_*.json
   ```
@@ -569,7 +569,7 @@ az network nsg show --name myNSG --resource-group myRG
 gcloud compute firewall-rules list --filter="targetTags:my-vm-tag"
 
 # 6. Test network I/O monitoring
-python -c "
+python3 -c "
 from scripts.utils.resource_monitor import ResourceMonitor
 import requests
 with ResourceMonitor('net_test', interval=0.5, enabled=True) as m:
@@ -906,13 +906,13 @@ Compare resource usage across code changes:
 
 ```bash
 # Baseline
-ENABLE_RESOURCE_MONITORING=true python scripts/ingest/ingest.py
+ENABLE_RESOURCE_MONITORING=true python3 scripts/ingest/ingest.py
 
 # After optimisation
-ENABLE_RESOURCE_MONITORING=true python scripts/ingest/ingest.py
+ENABLE_RESOURCE_MONITORING=true python3 scripts/ingest/ingest.py
 
 # Compare
-python -c "
+python3 -c "
 import json
 baseline = json.load(open('logs/resource_stats_ingestion_baseline.json'))
 optimised = json.load(open('logs/resource_stats_ingestion_optimised.json'))

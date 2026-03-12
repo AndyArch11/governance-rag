@@ -96,7 +96,7 @@ Each persona applies different reranking strategies:
 
 ### From Dashboard
 
-1. Start dashboard: `python -m scripts.ui.dashboard`
+1. Start dashboard: `python3 -m scripts.ui.dashboard`
 2. Click "🎓 Assessment" tab
 3. Assessment runs automatically on detected PhD thesis
 
@@ -379,7 +379,7 @@ Summary:
 **Verification**:
 ```bash
 # List available documents
-python -c "
+python3 -c "
 from scripts.utils.db_factory import *
 client = PersistentClient(path='rag_data/chromadb')
 coll = client.get_collection('governance_docs_chunks')

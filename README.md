@@ -40,15 +40,15 @@ rm -rf .venv
 
 # Install dependencies into local environment
 source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+python3 -m pip install --upgrade pip
+python3 -m pip install -r requirements.txt
 
 # Run tests
-python -m pytest tests -q --maxfail=1
+python3 -m pytest tests -q --maxfail=1
 ```
 
 Notes:
-- `make` commands prefer `.venv/bin/python` when `.venv` exists.
+- `make` commands prefer `.venv/bin/python3` when `.venv` exists.
 - Default project paths are workspace-relative, not tied to `/workspaces/governance-rag`.
 - Supported Python versions are `3.10` to `3.13`.
 
@@ -111,7 +111,7 @@ From the dev container:
 ```bash
 export OLLAMA_HOST=http://host.docker.internal:11434
 curl $OLLAMA_HOST/api/tags
-python - <<'PY'
+python3 - <<'PY'
 from scripts.ingest.vectors import EMBEDDING_MODEL_NAME
 from langchain_ollama import OllamaEmbeddings
 
@@ -155,7 +155,7 @@ cd /workspaces/governance-rag
 source .venv/bin/activate
 
 # Run with monitoring
-python scripts/ingest/ingest.py  # Auto-captures stats
+python3 scripts/ingest/ingest.py  # Auto-captures stats
 ```
 **Integration Points:**
 - RAG pipeline: `query.py`, `generate.py`, `retrieve.py` - LLM latency and token tracking
@@ -564,7 +564,7 @@ List of Makefile options (run in this order)
 Otherwise if needed, create the Python environment
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 ```
 Then activate the environment
 
@@ -601,12 +601,12 @@ pytest tests
 Copy files to `data_raw/downloads`
 
 ```bash
-python scripts/ingest/ingest.py --dry-run --limit 10 --verbose
+python3 scripts/ingest/ingest.py --dry-run --limit 10 --verbose
 ```
 or
 
 ```bash
-python scripts/ingest/ingest.py --profile --verbose
+python3 scripts/ingest/ingest.py --profile --verbose
 ```
 
 **CLI Options**:
@@ -623,11 +623,11 @@ python scripts/ingest/ingest.py --profile --verbose
 Run scripts directly:
 
 ```bash
-python scripts/ingest/ingest.py
+python3 scripts/ingest/ingest.py
 ```
 or run scripts as modules (generally a better practice)
 ```bash
-python -m scripts.ingest.ingest
+python3 -m scripts.ingest.ingest
 ```
 or use the Makefile
 ```bash
@@ -637,7 +637,7 @@ make ingest
 ### 7. Confirm that files are loaded and can be queried
 
 ```bash
-python scripts/rag/query.py "natural language query on a topic covered by the loaded documents"
+python3 scripts/rag/query.py "natural language query on a topic covered by the loaded documents"
 ```
 or
 ```bash
@@ -653,7 +653,7 @@ make query QUERY="..."
 ### 8. Build the consistency graph
 
 ```bash
-python scripts/consistency_graph/build_consistency_graph.py
+python3 scripts/consistency_graph/build_consistency_graph.py
 ```
 or
 ```bash
@@ -672,7 +672,7 @@ make graph
 #### Using the main environment (RAG pipeline + Dashboard)
 
 ```bash
-python scripts/ui/dashboard.py
+python3 scripts/ui/dashboard.py
 ```
 or
 ```bash
@@ -777,7 +777,7 @@ The dashboard loads the prebuilt graph from the consistency graph DB on startup.
 Manual rebuild of graph:
 
 ```bash
-python scripts/consistency_graph/build_consistency_graph.py
+python3 scripts/consistency_graph/build_consistency_graph.py
 ```
 or
 ```bash
@@ -827,13 +827,13 @@ You can change the embedding model used across ingestion, retrieval, and the das
    - For a clean reindex:
 
 ```bash
-python scripts/ingest/ingest.py --reset
+python3 scripts/ingest/ingest.py --reset
 ```
 
    - Or incrementally re‑ingest changed docs only:
 
 ```bash
-python scripts/ingest/ingest.py
+python3 scripts/ingest/ingest.py
 ```
 
 3. Clear the embedding cache (optional but recommended)
@@ -841,14 +841,14 @@ python scripts/ingest/ingest.py
 4. Rebuild the consistency graph (if used)
 
 ```bash
-python scripts/consistency_graph/build_consistency_graph.py
+python3 scripts/consistency_graph/build_consistency_graph.py
 ```
 
 5. Verify retrieval uses the new model
    - CLI:
 
 ```bash
-python scripts/rag/query.py "What are our security policies?"
+python3 scripts/rag/query.py "What are our security policies?"
 ```
 
    - Dashboard semantic search and RAG assistant automatically filter by `embedding_model`.
@@ -881,7 +881,7 @@ Examples:
 
 ```bash
 # Exclude tests via CLI flag
-python scripts/ingest/ingest_git.py \
+python3 scripts/ingest/ingest_git.py \
   --provider bitbucket \
   --host https://bitbucket.org \
   --project myproject \
@@ -892,7 +892,7 @@ python scripts/ingest/ingest_git.py \
 
 # Exclude tests via env var
 export GIT_EXCLUDE_TESTS=true
-python scripts/ingest/ingest_git.py \
+python3 scripts/ingest/ingest_git.py \
   --provider bitbucket \
   --host https://bitbucket.org \
   --project myproject \
@@ -906,7 +906,7 @@ During ingestion you'll see a summary like: `Excluded N test files`.
 ### 8. Build the consistency graph following running of ingest_git.py
 
 ```bash
-python scripts/consistency_graph/build_consistency_graph.py
+python3 scripts/consistency_graph/build_consistency_graph.py
 ```
 or
 ```bash
@@ -927,19 +927,19 @@ cd /workspaces/governance-rag
 source .venv/bin/activate
 
 # Ingest a single thesis/paper PDF
-python scripts/ingest/ingest_academic.py data_raw/academic_papers/your_thesis_paper.pdf
+python3 scripts/ingest/ingest_academic.py data_raw/academic_papers/your_thesis_paper.pdf
 
 # Or ingest a batch list of references
-python scripts/ingest/ingest_academic.py --batch data_raw/academic_references.txt
+python3 scripts/ingest/ingest_academic.py --batch data_raw/academic_references.txt
 
 # Preview only (no writes)
-python scripts/ingest/ingest_academic.py --dry-run --batch data_raw/academic_references.txt
+python3 scripts/ingest/ingest_academic.py --dry-run --batch data_raw/academic_references.txt
 ```
 
 ### 8. Build the consistency graph following running of ingest_academic.py
 
 ```bash
-python scripts/consistency_graph/build_consistency_graph.py
+python3 scripts/consistency_graph/build_consistency_graph.py
 ```
 or
 ```bash
@@ -949,11 +949,11 @@ make graph
 **Academic Reference Maintenance:**
 - Staleness check notebook: `notebooks/academic_reference_staleness_check.ipynb`
 - Revalidation commands:
-  - `python scripts/ingest/ingest_academic.py --revalidate stale --staleness-threshold 30`
-  - `python scripts/ingest/ingest_academic.py --revalidate failed`
-  - `python scripts/ingest/ingest_academic.py --revalidate online`
-  - `python scripts/ingest/ingest_academic.py --revalidate all`
-  - `python scripts/ingest/ingest_academic.py --revalidate ids --ref-ids <space separated ref IDs>`
+  - `python3 scripts/ingest/ingest_academic.py --revalidate stale --staleness-threshold 30`
+  - `python3 scripts/ingest/ingest_academic.py --revalidate failed`
+  - `python3 scripts/ingest/ingest_academic.py --revalidate online`
+  - `python3 scripts/ingest/ingest_academic.py --revalidate all`
+  - `python3 scripts/ingest/ingest_academic.py --revalidate ids --ref-ids <space separated ref IDs>`
 
 ## 🧪 Testing
 

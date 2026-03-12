@@ -97,7 +97,7 @@ class AcademicDocument(BaseModel):
 
     # Content
     full_text: str = Field(default="", description="Complete extracted text")
-    file_hash: str = Field(default="", description="MD5 hash of full text for change detection")
+    file_hash: str = Field(default="", description="SHA-256 hash of full text for change detection")
 
     # Metadata
     title: Optional[str] = Field(None, description="Document title")

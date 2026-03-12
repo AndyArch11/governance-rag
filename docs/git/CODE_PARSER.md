@@ -35,7 +35,7 @@ print(result.message_queues)            # ["orders.processed", ...]
 ### Repository Analysis
 
 ```bash
-python examples/git/code_analysis_example.py ~/projects/payment-service analysis.json
+python3 examples/git/code_analysis_example.py ~/projects/payment-service analysis.json
 ```
 
 This generates a comprehensive JSON report showing:
@@ -238,7 +238,7 @@ See `examples/git/code_analysis_example.py` for complete working example that:
 
 Run:
 ```bash
-python examples/git/code_analysis_example.py ~/my-service analysis.json
+python3 examples/git/code_analysis_example.py ~/my-service analysis.json
 ```
 
 Output will show:

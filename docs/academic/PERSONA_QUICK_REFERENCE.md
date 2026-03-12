@@ -333,10 +333,10 @@ sqlite3 rag_data/query_templates.db \
   "SELECT name, k_results, temperature, persona FROM query_templates WHERE category='academic';"
 
 # Run dashboard
-python scripts/ui/dashboard.py
+python3 scripts/ui/dashboard.py
 
 # Test template callback manually
-python -c "
+python3 -c "
 from scripts.ui.query_templates import QueryTemplateManager
 from pathlib import Path
 db = QueryTemplateManager(Path('rag_data/query_templates.db'))

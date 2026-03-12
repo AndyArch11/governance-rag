@@ -93,8 +93,8 @@ class TestComputeCodeDocId:
 class TestComputeFileHash:
     """Tests for file hashing."""
 
-    def test_compute_file_hash_md5(self):
-        """Test MD5 hash computation."""
+    def test_compute_file_hash_sha256(self):
+        """Test SHA-256 hash computation."""
         with tempfile.NamedTemporaryFile(delete=False, mode="w") as f:
             f.write("test content")
             f.flush()
@@ -102,7 +102,7 @@ class TestComputeFileHash:
             hash_value = compute_file_hash(f.name)
 
             # Verify it's valid hex
-            assert len(hash_value) == 32
+            assert len(hash_value) == 64
             assert all(c in "0123456789abcdef" for c in hash_value)
 
             Path(f.name).unlink()
@@ -144,7 +144,7 @@ class TestComputeFileHash:
 
             hash_value = compute_file_hash(f.name)
 
-            assert len(hash_value) == 32
+            assert len(hash_value) == 64
 
             Path(f.name).unlink()
 
@@ -154,7 +154,7 @@ class TestComputeFileHash:
         hash_value = compute_file_hash(fake_path)
 
         # Should produce hash of the path string
-        expected_hash = hashlib.md5(fake_path.encode("utf-8")).hexdigest()
+        expected_hash = hashlib.sha256(fake_path.encode("utf-8")).hexdigest()
         assert hash_value == expected_hash
 
 
@@ -225,7 +225,7 @@ class TestProcessCodeFile:
         """Test that unchanged files are skipped."""
         # Compute actual file hash
         content = "public class Main {}"
-        file_hash = hashlib.md5(content.encode("utf-8")).hexdigest()
+        file_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
 
         # Mock returns the same hash so file appears unchanged
         mock_get_hash.return_value = file_hash

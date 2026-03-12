@@ -142,7 +142,7 @@ def main():
     print("\nExample command:")
     if workspaces:
         ws_example = workspaces[0]["slug"]
-        print(f"  python scripts/ingest/ingest_bitbucket.py \\")
+        print(f"  python3 scripts/ingest/ingest_bitbucket.py \\")
         print(f"    --username myuser --api-username {username} \\")
         print(f"    --project {ws_example} --repo-pattern <pattern> --is-cloud")
     print()

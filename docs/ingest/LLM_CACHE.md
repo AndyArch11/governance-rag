@@ -17,15 +17,15 @@ SHA256(prompt_text) -> content_hash
 Example: `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`
 
 ### Document Hash Algorithm
-Document content hashes use **MD5** for change detection:
-- **File-based documents** (PDF, HTML, etc.): MD5 hash of file content (computed in 8KB chunks)
-- **Chunk-level hashes**: MD5 hash of chunk text (UTF-8 encoded)
+Document content hashes use **SHA-256** for change detection:
+- **File-based documents** (PDF, HTML, etc.): SHA-256 hash of file content (computed in 8KB chunks)
+- **Chunk-level hashes**: SHA-256 hash of chunk text (UTF-8 encoded)
 - **Purpose**: Fast change detection (not cryptographic security)
 
 **Implementation:**
 ```python
 # Document hash (ingest.py)
-h = hashlib.md5()
+h = hashlib.sha256()
 with open(path, "rb") as f:
     for chunk in iter(lambda: f.read(8192), b""):
         h.update(chunk)
@@ -71,7 +71,7 @@ The following LLM operations are cached based on their full prompt text (which t
    - Cache key: SHA256(prompt containing chunk text)
    - Note: Each chunk generates a unique cache entry
 
-**How it works:** When a document's MD5 hash remains unchanged, LLM prompts (which embed that content) produce identical SHA256 cache keys, resulting in cache hits and skipped LLM calls.
+**How it works:** When a document's SHA-256 hash remains unchanged, LLM prompts (which embed that content) produce identical SHA-256 cache keys, resulting in cache hits and skipped LLM calls.
 
 ## Configuration
 
@@ -180,14 +180,14 @@ cache.put_llm_result(
 ## Cache Invalidation
 
 Cache entries are automatically invalidated when:
-1. **Document content changes**: MD5 hash of file content changes, creating new cache key
+1. **Document content changes**: SHA-256 hash of file content changes, creating new cache key
 2. **Cache expiry**: Entry exceeds `LLM_CACHE_MAX_AGE_DAYS` (if age-based cleanup implemented)
 3. **Manual clearing**: Via `clear_llm_cache()` method
 
 **Hash Change Scenarios:**
-- File modification (even whitespace changes trigger new MD5)
+- File modification (even whitespace changes trigger new SHA-256)
 - Re-extraction (same content = same hash = cache hit)
-- Chunk splitting changes (different chunk text = different MD5)
+- Chunk splitting changes (different chunk text = different SHA-256)
 
 ## Best Practices
 
@@ -207,7 +207,7 @@ Cache entries are automatically invalidated when:
 - Check `LLM_CACHE_ENABLED=true` in [.env](../.env)
 - Verify `rag_data/` directory is writable
 - Check logs for cache hits/misses
-- Verify SQLite is available: `python -c "import sqlite3; print(sqlite3.sqlite_version)"`
+- Verify SQLite is available: `python3 -c "import sqlite3; print(sqlite3.sqlite_version)"`
 
 **Cache database too large:**
 - Check database size: `du -h rag_data/cache.db`
@@ -216,7 +216,7 @@ Cache entries are automatically invalidated when:
 - Consider archiving old cache: `mv cache.db cache.db.old && restart ingestion`
 
 **Stale results:**
-- Document MD5 hash should change when content changes
+- Document SHA-256 hash should change when content changes
 - Force re-processing by clearing cache: `cache.clear_llm_cache()`
 - Verify hash calculation: check file content actually changed
 - For debugging: Query cache directly:

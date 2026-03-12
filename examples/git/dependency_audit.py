@@ -6,10 +6,10 @@ SMB/file shares). It illustrates how to craft simple metadata + content
 filters to answer cross-repo dependency questions.
 
 Usage examples (from repo root):
-    python examples/git/dependency_audit.py --profile jdbc
-    python examples/git/dependency_audit.py --profile amqp --verbose
-    python examples/git/dependency_audit.py --profile fileshare --show-samples
-    python examples/git/dependency_audit.py --profile all --limit 20000
+    python3 examples/git/dependency_audit.py --profile jdbc
+    python3 examples/git/dependency_audit.py --profile amqp --verbose
+    python3 examples/git/dependency_audit.py --profile fileshare --show-samples
+    python3 examples/git/dependency_audit.py --profile all --limit 20000
 
 Defaults:
 - Uses the same ChromaDB path and collection name as ingestion (rag_data, chunk_collection).

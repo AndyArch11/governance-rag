@@ -12,7 +12,7 @@ word cloud visualisation on the dashboard alongside the term graph.
 Word frequencies are collected **automatically** during academic document ingestion:
 
 ```bash
-python scripts/ingest/ingest_academic.py --papers ~/thesis.pdf --domain "Leadership"
+python3 scripts/ingest/ingest_academic.py --papers ~/thesis.pdf --domain "Leadership"
 ```
 
 The ingestion will output something like:

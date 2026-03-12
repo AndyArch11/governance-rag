@@ -137,7 +137,7 @@ class TestRerankerModule:
             assert results[1].rank == 2
 
     def test_cache_key_generation(self):
-        """Test MD5 cache key generation."""
+        """Test SHA-256 cache key generation."""
         reranker = CrossEncoderReranker(model_name="test", device="cpu", enable_cache=False)
         key1 = reranker._get_cache_key("query", "1")
         key2 = reranker._get_cache_key("query", "1")
@@ -145,7 +145,7 @@ class TestRerankerModule:
 
         assert key1 == key2  # Same inputs = same key
         assert key1 != key3  # Different inputs = different key
-        assert len(key1) == 32  # MD5 hash length
+        assert len(key1) == 64  # SHA-256 hash length
 
     def test_batch_processing(self):
         """Test that reranker handles batch processing correctly."""

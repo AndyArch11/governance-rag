@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """Date-based code extraction and drift analysis from Bitbucket.
 
 This script demonstrates how to:
@@ -26,7 +26,7 @@ Reference: https://support.atlassian.com/bitbucket-cloud/docs/api-request-limits
 
 Usage:
     cd /workspaces/governance-rag
-    python examples/git/bitbucket_dated_example.py
+    python3 examples/git/bitbucket_dated_example.py
 """
 
 import sys

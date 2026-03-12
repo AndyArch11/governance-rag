@@ -17,7 +17,7 @@ The assistant is available in the **Chat** tab of the dashboard and provides:
    ```bash
    cd /workspaces/governance-rag
    source .venv/bin/activate
-   python -m scripts.ui.dashboard
+   python3 -m scripts.ui.dashboard
    ```
 
 2. **Navigate to the assistant view:**
@@ -196,7 +196,7 @@ If needed, test reranker health directly by running a query and confirming logs 
 **Solution:** Check these components are running:
 1. **ChromaDB:** Documents ingested and available
    ```bash
-   python -c "from chromadb import PersistentClient; c = PersistentClient(path='/workspaces/governance-rag/rag_data/chromadb'); print(c.list_collections())"
+   python3 -c "from chromadb import PersistentClient; c = PersistentClient(path='/workspaces/governance-rag/rag_data/chromadb'); print(c.list_collections())"
    ```
 
 2. **Ollama:** Running with embedding and LLM models
@@ -208,7 +208,7 @@ If needed, test reranker health directly by running a query and confirming logs 
 
 3. **Python paths:** RAG module imports working
    ```bash
-   python -c "from scripts.rag.generate import answer; print('OK')"
+   python3 -c "from scripts.rag.generate import answer; print('OK')"
    ```
 
 ### Issue: Query takes too long

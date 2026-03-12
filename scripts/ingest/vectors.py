@@ -1070,7 +1070,7 @@ def process_and_validate_chunks(
         # Compute chunk hash for caching (using hashlib)
         import hashlib
 
-        chunk_hash = hashlib.md5(chunk.encode("utf-8")).hexdigest()
+        chunk_hash = hashlib.sha256(chunk.encode("utf-8")).hexdigest()
 
         # 1. Structural/schema validation (length, non-empty)
         try:
@@ -1136,7 +1136,7 @@ def process_and_validate_chunks(
                 continue
 
             # Re-run semantic validation (with new hash for repaired chunk)
-            repaired_hash = hashlib.md5(repaired.encode("utf-8")).hexdigest()
+            repaired_hash = hashlib.sha256(repaired.encode("utf-8")).hexdigest()
             is_valid_repaired, reason_repaired = validate_chunk_semantics(
                 repaired, doc_id, repaired_hash, llm_cache
             )
@@ -1744,7 +1744,7 @@ def store_chunks_in_chroma(
 
     Args:
         doc_id: Unique document identifier.
-        file_hash: MD5 hash for change detection.
+        file_hash: SHA-256 hash for change detection.
         source_path: Original file path.
         version: Document version number.
         chunks: List of text chunks from document.
@@ -1759,7 +1759,7 @@ def store_chunks_in_chroma(
         enable_chunk_heuristic: Whether to use chunk quality heuristics.
         embedding_cache: Optional embedding cache for reusing vectors.
         embedding_batch_size: Batch size for embedding generation (default 1 - Ollama concatenates batch into single context).
-        chunk_hashes: Optional list of MD5 hashes for chunks (for idempotency tracking).
+        chunk_hashes: Optional list of SHA-256 hashes for chunks (for idempotency tracking).
 
     Side Effects:
         - Writes chunks to chunk_collection
@@ -2355,7 +2355,7 @@ def get_existing_doc_hash(doc_id: str, chunk_collection: Collection) -> Optional
         chunk_collection: ChromaDB collection containing chunks.
 
     Returns:
-        MD5 hash string if document exists, None otherwise.
+        SHA-256 hash string if document exists, None otherwise.
 
     Note:
         All chunks for a document share the same hash,

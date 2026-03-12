@@ -64,7 +64,7 @@ ollama serve
 ```bash
 cd /workspaces/governance-rag
 source .venv/bin/activate
-python -m scripts.ui.dashboard
+python3 -m scripts.ui.dashboard
 ```
 
 ## Performance Baseline

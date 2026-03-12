@@ -112,7 +112,7 @@ Weighted format (for sizing):
 
 ```bash
 # Word frequencies are collected automatically
-python scripts/ingest/ingest_academic.py --papers ~/thesis.pdf --domain "leadership"
+python3 scripts/ingest/ingest_academic.py --papers ~/thesis.pdf --domain "leadership"
 # Output: "Top 20 words for word cloud:"
 # 1. leadership        freq= 2194, doc_count= 45
 # 2. indigenous        freq= 1028, doc_count= 38

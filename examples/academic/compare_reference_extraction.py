@@ -1,8 +1,8 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """Compare extracted citations against a reference list file.
 
 Usage:
-  python examples/academic/compare_reference_extraction.py \
+    python3 examples/academic/compare_reference_extraction.py \
     --pdf /path/to/document.pdf \
     --reference-file /path/to/academic_references.txt
 """

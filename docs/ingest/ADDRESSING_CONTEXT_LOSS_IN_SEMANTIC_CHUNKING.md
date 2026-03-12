@@ -618,7 +618,7 @@ The following are already implemented, at least partially:
 
 ```bash
 # Monitor cache stats in real-time
-python -c "
+python3 -c "
 from scripts.rag.context_cache import get_context_cache
 import time
 

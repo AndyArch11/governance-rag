@@ -4,7 +4,7 @@ This demonstrates how to use the CodeParser to extract architectural
 information from a codebase for migration planning.
 
 Usage:
-    python examples/git/code_analysis_example.py /path/to/bitbucket/repo
+    python3 examples/git/code_analysis_example.py /path/to/bitbucket/repo
 """
 
 import json
@@ -200,10 +200,10 @@ def save_analysis_json(analysis: dict, output_path: str) -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python examples/git/code_analysis_example.py <repo_path> [output.json]")
+        print("Usage: python3 examples/git/code_analysis_example.py <repo_path> [output.json]")
         print("\nExample:")
-        print("  python examples/git/code_analysis_example.py ~/projects/my-service")
-        print("  python examples/git/code_analysis_example.py ~/projects/my-service analysis.json")
+        print("  python3 examples/git/code_analysis_example.py ~/projects/my-service")
+        print("  python3 examples/git/code_analysis_example.py ~/projects/my-service analysis.json")
         sys.exit(1)
 
     repo_path = sys.argv[1]

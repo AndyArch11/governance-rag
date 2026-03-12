@@ -243,11 +243,11 @@ Use the maintenance notebook at `notebooks/academic_reference_staleness_check.ip
 Recommended re-validation commands:
 
 ```bash
-python scripts/ingest/ingest_academic.py --revalidate stale --staleness-threshold 30
-python scripts/ingest/ingest_academic.py --revalidate failed
-python scripts/ingest/ingest_academic.py --revalidate online
-python scripts/ingest/ingest_academic.py --revalidate all
-python scripts/ingest/ingest_academic.py --revalidate ids --ref-ids <space separated ref IDs>
+python3 scripts/ingest/ingest_academic.py --revalidate stale --staleness-threshold 30
+python3 scripts/ingest/ingest_academic.py --revalidate failed
+python3 scripts/ingest/ingest_academic.py --revalidate online
+python3 scripts/ingest/ingest_academic.py --revalidate all
+python3 scripts/ingest/ingest_academic.py --revalidate ids --ref-ids <space separated ref IDs>
 ```
 
 Operational sequence:
@@ -567,7 +567,7 @@ Verify credentials are loaded correctly:
 
 ```bash
 # Check that credentials are accessible
-python -c "
+python3 -c "
 from scripts.ingest.academic.config import load_config
 config = load_config()
 print(f'Crossref: {config.crossref_email}')
@@ -701,23 +701,23 @@ When invoking the ingestion pipeline, users specify academic documents via CLI a
 
 **Positional arguments:**
 ```bash
-python scripts/ingest/ingest_academic.py /path/to/paper.pdf [/path/to/another.pdf ...]
+python3 scripts/ingest/ingest_academic.py /path/to/paper.pdf [/path/to/another.pdf ...]
 ```
 
 **Named arguments:**
 ```bash
-python scripts/ingest/ingest_academic.py --papers /path/to/paper.pdf --papers /path/to/another.pdf
+python3 scripts/ingest/ingest_academic.py --papers /path/to/paper.pdf --papers /path/to/another.pdf
 ```
 
 **Directory input:**
 ```bash
-python scripts/ingest/ingest_academic.py --papers-dir ./thesis_references/
+python3 scripts/ingest/ingest_academic.py --papers-dir ./thesis_references/
 # Recursively ingest all .pdf files from directory
 ```
 
 **Document metadata (optional):**
 ```bash
-python scripts/ingest/ingest_academic.py \
+python3 scripts/ingest/ingest_academic.py \
   --papers thesis.pdf \
   --domain "machine_learning" \
   --topic "federated learning for healthcare" \
@@ -743,50 +743,50 @@ python scripts/ingest/ingest_academic.py \
   ]
 }
 
-python scripts/ingest/ingest_academic.py --batch docs_manifest.json
+python3 scripts/ingest/ingest_academic.py --batch docs_manifest.json
 ```
 
 ### CLI Usage
 
 ```bash
 # Basic ingestion
-python scripts/ingest/ingest_academic.py thesis.pdf
+python3 scripts/ingest/ingest_academic.py thesis.pdf
 
 # Multiple documents
-python scripts/ingest/ingest_academic.py thesis.pdf related_work.pdf
+python3 scripts/ingest/ingest_academic.py thesis.pdf related_work.pdf
 
 # With domain context
-python scripts/ingest/ingest_academic.py thesis.pdf --domain machine_learning
+python3 scripts/ingest/ingest_academic.py thesis.pdf --domain machine_learning
 
 # Batch ingestion
-python scripts/ingest/ingest_academic.py --batch manifest.json
+python3 scripts/ingest/ingest_academic.py --batch manifest.json
 
 # Dry run (preview without fetching PDFs)
-python scripts/ingest/ingest_academic.py thesis.pdf --dry-run
+python3 scripts/ingest/ingest_academic.py thesis.pdf --dry-run
 
 # Clear cache and start fresh
-python scripts/ingest/ingest_academic.py thesis.pdf --cache-reset
+python3 scripts/ingest/ingest_academic.py thesis.pdf --cache-reset
 
 # Refresh (re-resolve all references, bypass cache)
-python scripts/ingest/ingest_academic.py thesis.pdf --refresh
+python3 scripts/ingest/ingest_academic.py thesis.pdf --refresh
 
 # Update stale references (>30 days)
-python scripts/ingest/ingest_academic.py --revalidate stale --staleness-threshold 30
+python3 scripts/ingest/ingest_academic.py --revalidate stale --staleness-threshold 30
 
 # Update all online content
-python scripts/ingest/ingest_academic.py --revalidate online
+python3 scripts/ingest/ingest_academic.py --revalidate online
 
 # Retry failed references
-python scripts/ingest/ingest_academic.py --revalidate failed
+python3 scripts/ingest/ingest_academic.py --revalidate failed
 
 # Update specific references
-python scripts/ingest/ingest_academic.py --revalidate ids --ref-ids ref_abc123 ref_def456
+python3 scripts/ingest/ingest_academic.py --revalidate ids --ref-ids ref_abc123 ref_def456
 
 # Force refresh all references
-python scripts/ingest/ingest_academic.py --revalidate all
+python3 scripts/ingest/ingest_academic.py --revalidate all
 
 # New ingest reset with additional metadata
-python scripts/ingest/ingest_academic.py --institution "University Name" --authors "John Doe, Jane Smith" --papers-dir /workspaces/governance-rag/data_raw/academic_papers --domain "security" --topic "RBAC for AI" --title "Title of Thesis"  --reset --purge-logs
+python3 scripts/ingest/ingest_academic.py --institution "University Name" --authors "John Doe, Jane Smith" --papers-dir /workspaces/governance-rag/data_raw/academic_papers --domain "security" --topic "RBAC for AI" --title "Title of Thesis"  --reset --purge-logs
 ```
 
 ### Re-validation Process

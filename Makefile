@@ -7,7 +7,7 @@
 .DEFAULT_GOAL := help
 
 # Python executable (prefer local virtual environment when available)
-VENV_PYTHON := .venv/bin/python
+VENV_PYTHON := .venv/bin/python3
 PYTHON := $(if $(wildcard $(VENV_PYTHON)),$(VENV_PYTHON),python3)
 PIP := $(PYTHON) -m pip
 

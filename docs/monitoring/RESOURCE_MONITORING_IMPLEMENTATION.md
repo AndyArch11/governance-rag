@@ -33,7 +33,7 @@ logs/resource_stats/resource_stats_document_ingestion_YYYYMMDD_HHMMSS.json
 
 **Example Usage:**
 ```bash
-ENABLE_RESOURCE_MONITORING=true python scripts/ingest/ingest.py
+ENABLE_RESOURCE_MONITORING=true python3 scripts/ingest/ingest.py
 ```
 
 ---
@@ -65,7 +65,7 @@ logs/resource_stats/resource_stats_rag_query_What_is_multi_factor_YYYYMMDD_HHMMS
 
 **Example Usage:**
 ```bash
-ENABLE_RESOURCE_MONITORING=true python scripts/rag/query.py "What is multi-factor authentication?"
+ENABLE_RESOURCE_MONITORING=true python3 scripts/rag/query.py "What is multi-factor authentication?"
 ```
 
 ---
@@ -98,7 +98,7 @@ logs/resource_stats/resource_stats_consistency_graph_build_YYYYMMDD_HHMMSS.json
 
 **Example Usage:**
 ```bash
-ENABLE_RESOURCE_MONITORING=true python scripts/consistency_graph/build_consistency_graph.py
+ENABLE_RESOURCE_MONITORING=true python3 scripts/consistency_graph/build_consistency_graph.py
 ```
 
 ---
@@ -170,7 +170,7 @@ MONITOR_CHROMADB=true
 
 **Command-line Override:**
 ```bash
-ENABLE_RESOURCE_MONITORING=true RESOURCE_MONITORING_INTERVAL=2.0 python scripts/ingest/ingest.py
+ENABLE_RESOURCE_MONITORING=true RESOURCE_MONITORING_INTERVAL=2.0 python3 scripts/ingest/ingest.py
 ```
 
 ---
@@ -180,10 +180,10 @@ ENABLE_RESOURCE_MONITORING=true RESOURCE_MONITORING_INTERVAL=2.0 python scripts/
 ### 1. Capacity Planning
 ```bash
 # Collect baseline data
-ENABLE_RESOURCE_MONITORING=true python scripts/ingest/ingest.py --limit 50
+ENABLE_RESOURCE_MONITORING=true python3 scripts/ingest/ingest.py --limit 50
 
 # Extract peak values from JSON
-python -c "
+python3 -c "
 import json
 data = json.load(open('logs/resource_stats/resource_stats_document_ingestion_*.json'))
 print(f'Max CPU: {data[\"processes\"][\"python\"][\"cpu_percent_max\"]}%')
@@ -197,10 +197,10 @@ print(f'Max Memory: {data[\"processes\"][\"python\"][\"memory_mb_max\"]} MB')
 ### 2. Performance Optimisation
 ```bash
 # Baseline run
-ENABLE_RESOURCE_MONITORING=true python scripts/ingest/ingest.py
+ENABLE_RESOURCE_MONITORING=true python3 scripts/ingest/ingest.py
 
 # After optimisation
-ENABLE_RESOURCE_MONITORING=true python scripts/ingest/ingest.py
+ENABLE_RESOURCE_MONITORING=true python3 scripts/ingest/ingest.py
 
 # Compare JSON files to measure improvement
 ```
@@ -237,23 +237,23 @@ alert_threshold = observed_max_cpu * 0.8  # 36%
 
 ### Quick Syntax Check
 ```bash
-python -m py_compile scripts/ingest/ingest.py
-python -m py_compile scripts/ingest/ingest_git.py
-python -m py_compile scripts/ingest/ingest_academic.py
-python -m py_compile scripts/rag/query.py
-python -m py_compile scripts/consistency_graph/build_consistency_graph.py
+python3 -m py_compile scripts/ingest/ingest.py
+python3 -m py_compile scripts/ingest/ingest_git.py
+python3 -m py_compile scripts/ingest/ingest_academic.py
+python3 -m py_compile scripts/rag/query.py
+python3 -m py_compile scripts/consistency_graph/build_consistency_graph.py
 ```
 
 ### Test Monitoring Disabled (Default Behaviour)
 ```bash
 # Default: ENABLE_RESOURCE_MONITORING=false
-python scripts/ingest/ingest.py --limit 5
+python3 scripts/ingest/ingest.py --limit 5
 # Should run normally with no monitoring output
 ```
 
 ### Test Monitoring Enabled
 ```bash
-ENABLE_RESOURCE_MONITORING=true python scripts/ingest/ingest.py --limit 5
+ENABLE_RESOURCE_MONITORING=true python3 scripts/ingest/ingest.py --limit 5
 # Should print resource summary and create JSON file in logs/
 ```
 

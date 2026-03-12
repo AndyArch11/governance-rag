@@ -571,6 +571,9 @@ class DomainTermManager:
                 data.get("description", f"Terms for {domain.value}"),
                 data.get("source_url"),
             )
+            # Preserve file metadata so loading does not create a synthetic update timestamp.
+            if data.get("last_updated"):
+                vocab.last_updated = data["last_updated"]
 
             terms_data = data.get("terms", [])
 
@@ -641,8 +644,17 @@ class DomainTermManager:
         if not target_vocab or not source_vocab:
             return False
 
+        # Merging a vocabulary into itself is a no-op and should not rewrite files.
+        if target == source:
+            return True
+
+        original_count = len(target_vocab.terms)
+
         for term in source_vocab.terms.values():
             target_vocab.add_term(term)
+
+        if len(target_vocab.terms) == original_count:
+            return True
 
         return self.save_vocabulary(target_vocab)
 

@@ -103,7 +103,7 @@ if retriever.total_docs > 0:
             print("   2. Verify BM25 indexing logic handles all chunk types consistently")
 else:
     print("\n❌ BM25 index is empty!")
-    print("   → Build index: python scripts/rag/bm25_indexer.py")
+    print("   → Build index: python3 scripts/rag/bm25_indexer.py")
 
 retriever.close()
 print("=" * 80)

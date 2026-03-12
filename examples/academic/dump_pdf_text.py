@@ -6,16 +6,16 @@ Supports single file or batch processing.
 
 Usage:
     # Single PDF to plain text
-    python examples/academic/dump_pdf_text.py input.pdf
+    python3 examples/academic/dump_pdf_text.py input.pdf
 
     # Single PDF to markdown with structure
-    python examples/academic/dump_pdf_text.py input.pdf --markdown --output output.md
+    python3 examples/academic/dump_pdf_text.py input.pdf --markdown --output output.md
 
     # Batch process directory
-    python examples/academic/dump_pdf_text.py --dir data_raw/academic_papers/ --output-dir extracted_text/
+    python3 examples/academic/dump_pdf_text.py --dir data_raw/academic_papers/ --output-dir extracted_text/
 
     # Include metadata
-    python examples/academic/dump_pdf_text.py input.pdf --metadata --markdown
+    python3 examples/academic/dump_pdf_text.py input.pdf --metadata --markdown
 """
 
 from __future__ import annotations

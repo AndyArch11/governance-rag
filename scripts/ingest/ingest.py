@@ -48,7 +48,6 @@ TODO:
     - Implement incremental ingestion for large doc sets with change detection.
     - Include option to estimate LLM and embedding costs during dry-run mode without actual LLM API calls.
     - Extend support for additional document formats (RTF, ODT, ODF, DOCX, PPTX?) with robust parsing and cleaning.
-    - Replace MD5 with SHA256 for better collision resistance in file hashing
 """
 
 # Standard library imports
@@ -78,13 +77,22 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from tqdm import tqdm
 
-from scripts.utils.db_factory import get_default_vector_path, get_vector_client
-from scripts.utils.logger import create_module_logger
+from scripts.utils.clear_databases import clear_for_ingestion
+from scripts.utils.db_factory import get_cache_client, get_default_vector_path, get_vector_client
+from scripts.utils.logger import _loggers, create_module_logger
 from scripts.utils.metrics_export import get_metrics_collector
 from scripts.utils.monitoring import get_perf_metrics, init_monitoring
+from scripts.utils.rate_limiter import init_rate_limiter
 from scripts.utils.resource_monitor import ResourceMonitor
 
 get_logger, audit = create_module_logger("ingest")
+
+try:
+    from scripts.rag.domain_terms import DomainType, get_domain_term_manager, resolve_domain_type
+except ImportError:
+    DomainType = None  # type: ignore[assignment]
+    get_domain_term_manager = None  # type: ignore[assignment]
+    resolve_domain_type = None  # type: ignore[assignment]
 
 # Optional import for error handling compatibility
 try:
@@ -123,9 +131,9 @@ Collection = Union[ChromaDBCollection, ChromaSQLiteCollection, Any]
 # Import IngestConfig from proper location
 try:
     if __package__:
-        from .ingest_config import IngestConfig
+        from .ingest_config import IngestConfig, build_cli_overrides, get_ingest_config
     else:
-        from scripts.ingest.ingest_config import IngestConfig
+        from scripts.ingest.ingest_config import IngestConfig, build_cli_overrides, get_ingest_config
 except ImportError:
     # Fallback should not happen in normal operation
     raise ImportError("Cannot import IngestConfig from ingest_config module")
@@ -134,7 +142,8 @@ except ImportError:
 if __name__ == "__main__" and __package__ is None:
     # Running as script
     from scripts.ingest.bm25_indexing import index_chunks_in_bm25
-    from scripts.ingest.chunk import chunk_text, create_parent_child_chunks
+    from scripts.ingest.chunk import chunk_text, create_parent_child_chunks, extract_technical_entities
+    from scripts.ingest.embedding_cache import EmbeddingCache
     from scripts.ingest.htmlparser import extract_text_from_html
     from scripts.ingest.llm_cache import LLMCache
     from scripts.ingest.pdfparser import extract_text_from_pdf
@@ -153,7 +162,8 @@ else:
     from scripts.utils.retry_utils import retry_chromadb_call
 
     from .bm25_indexing import index_chunks_in_bm25
-    from .chunk import chunk_text, create_parent_child_chunks
+    from .chunk import chunk_text, create_parent_child_chunks, extract_technical_entities
+    from .embedding_cache import EmbeddingCache
     from .htmlparser import extract_text_from_html
     from .llm_cache import LLMCache
     from .pdfparser import extract_text_from_pdf
@@ -1261,8 +1271,6 @@ def stage_determine_category(
     Returns category string or None.
     """
     try:
-        from pathlib import Path
-
         if source_category_override:
             return source_category_override
 
@@ -1363,7 +1371,9 @@ def stage_record_candidate_terms(
     if not key_topics and not extra_terms:
         return
 
-    from scripts.rag.domain_terms import DomainType, get_domain_term_manager, resolve_domain_type
+    if DomainType is None or get_domain_term_manager is None or resolve_domain_type is None:
+        logger.debug("Domain term manager not available, skipping candidate term recording")
+        return
 
     domain_value = getattr(args, "candidate_terms_domain", None) or getattr(
         config, "candidate_terms_domain", None
@@ -1756,7 +1766,7 @@ def compute_doc_id(path: str) -> str:
 
 
 def compute_file_hash(path: str) -> str:
-    """Compute MD5 hash of file contents for change detection.
+    """Compute SHA-256 hash of file contents for change detection.
 
     Calculates a fingerprint of the file to detect modifications
     between ingestion runs. Uses chunked reading for memory efficiency
@@ -1766,13 +1776,12 @@ def compute_file_hash(path: str) -> str:
         path: Path to the file to hash.
 
     Returns:
-        Hexadecimal MD5 hash string.
+        Hexadecimal SHA-256 hash string.
 
     Note:
-        MD5 is used for change detection, not security.
         Reading in 8KB chunks prevents memory issues with large files.
     """
-    h = hashlib.md5()
+    h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(8192), b""):
             h.update(chunk)
@@ -1780,7 +1789,7 @@ def compute_file_hash(path: str) -> str:
 
 
 def compute_chunk_hash(chunk_text: str) -> str:
-    """Compute MD5 hash of chunk content for idempotency checking.
+    """Compute SHA-256 hash of chunk content for idempotency checking.
 
     Enables chunk-level deduplication: skip processing chunks with
     identical content even if document version changed.
@@ -1789,13 +1798,13 @@ def compute_chunk_hash(chunk_text: str) -> str:
         chunk_text: Text content of the chunk.
 
     Returns:
-        Hexadecimal MD5 hash string.
+        Hexadecimal SHA-256 hash string.
 
     Note:
         Used to detect unchanged chunks across versions for efficient
         re-processing (skip LLM validation and re-embedding).
     """
-    h = hashlib.md5()
+    h = hashlib.sha256()
     h.update(chunk_text.encode("utf-8"))
     return h.hexdigest()
 
@@ -1883,7 +1892,7 @@ def download_url_to_file(
         return None, None
 
     os.makedirs(config.url_download_dir, exist_ok=True)
-    filename = f"url_{hashlib.md5(url.encode('utf-8')).hexdigest()}.html"
+    filename = f"url_{hashlib.sha256(url.encode('utf-8')).hexdigest()}.html"
     out_path = os.path.join(config.url_download_dir, filename)
     try:
         with open(out_path, "w", encoding="utf-8") as f:
@@ -2045,8 +2054,6 @@ def process_file(
         extra_terms: Optional[List[str]] = None
         if getattr(args, "record_candidate_terms", False):
             try:
-                from scripts.ingest.chunk import extract_technical_entities
-
                 extra_terms = extract_technical_entities(chunk_data.get("full_text", ""))
             except Exception as e:
                 logger.warning(f"Failed to extract technical entities for candidate terms: {e}")
@@ -2100,8 +2107,6 @@ def process_file(
         start_bm25_time = time.perf_counter()
         if config.bm25_indexing_enabled and not args.dry_run:
             try:
-                from scripts.utils.db_factory import get_cache_client
-
                 cache_db = get_cache_client(enable_cache=True)
                 total_indexed = index_chunks_in_bm25(
                     doc_id=doc_id,
@@ -2214,18 +2219,8 @@ def main() -> None:
         Test with limited files:
             $ python ingest.py --limit 5 --verbose --dry-run
     """
-    import threading
-
     # Get singleton configuration from ingest_config
-    try:
-        if __package__:
-            from .ingest_config import build_cli_overrides, get_ingest_config
-        else:
-            from scripts.ingest.ingest_config import build_cli_overrides, get_ingest_config
-        config = get_ingest_config()
-    except ImportError:
-        # If get_ingest_config doesn't exist, create new instance
-        config = IngestConfig()
+    config = get_ingest_config()
 
     start_time = time.perf_counter()
     args = parse_args(config)
@@ -2285,8 +2280,6 @@ def main() -> None:
                 purge_logs_performed = True
 
                 # Clear the logger cache so get_logger() creates fresh handlers
-                from scripts.utils.logger import _loggers
-
                 _loggers.pop("ingest", None)
 
     # Initialise logger AFTER purging so we don't write to a file we're about to delete
@@ -2343,11 +2336,6 @@ def main() -> None:
     )
 
     # Initialise embedding cache
-    if __package__:
-        from .embedding_cache import EmbeddingCache
-    else:
-        from scripts.ingest.embedding_cache import EmbeddingCache
-
     embedding_cache = EmbeddingCache(
         cache_path=config.embedding_cache_path, enabled=config.embedding_cache_enabled
     )
@@ -2357,11 +2345,6 @@ def main() -> None:
     )
 
     # Initialise rate limiter for LLM calls
-    if __package__:
-        from scripts.utils.rate_limiter import init_rate_limiter
-    else:
-        from scripts.utils.rate_limiter import init_rate_limiter
-
     init_rate_limiter(config.llm_rate_limit)
     logger.info(f"Rate limiter initialised: {config.llm_rate_limit} requests/second")
 
@@ -2404,16 +2387,12 @@ def main() -> None:
         if args.dry_run:
             logger.info("[DRY_RUN] Would reset collections and all caches")
             audit("dry_run_reset", {})
-            from scripts.utils.clear_databases import clear_for_ingestion
-
             clear_for_ingestion(verbose=True, dry_run=True)
         else:
             logger.info(f"[RESET] Collection Reset - deleting existing collections and caches")
             audit("collection_reset", {})
             if args.verbose:
                 print("[RESET] Deleting existing collections and caches...")
-
-            from scripts.utils.clear_databases import clear_for_ingestion
 
             success = clear_for_ingestion(verbose=True, dry_run=False)
 
@@ -2683,8 +2662,6 @@ def main() -> None:
     if config.bm25_indexing_enabled and not args.dry_run:
         try:
             logger.info("Computing BM25 corpus statistics (IDF values)...")
-            from scripts.utils.db_factory import get_cache_client
-
             cache_db = get_cache_client(enable_cache=True)
             total_docs = cache_db.get_bm25_corpus_size()
 

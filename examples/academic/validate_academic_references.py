@@ -8,9 +8,9 @@ Scans academic_reference chunks and flags common extraction issues:
 - Suspicious punctuation/encoding issues
 
 Usage:
-    python examples/academic/validate_academic_references.py --limit 5000
-    python examples/academic/validate_academic_references.py --only-reference-metadata
-    python examples/academic/validate_academic_references.py --output-json rag_data/academic_ref_issues.json
+    python3 examples/academic/validate_academic_references.py --limit 5000
+    python3 examples/academic/validate_academic_references.py --only-reference-metadata
+    python3 examples/academic/validate_academic_references.py --output-json rag_data/academic_ref_issues.json
 """
 
 from __future__ import annotations

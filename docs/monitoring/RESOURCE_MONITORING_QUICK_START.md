@@ -11,7 +11,7 @@ export ENABLE_RESOURCE_MONITORING=true
 Or pass inline:
 
 ```bash
-ENABLE_RESOURCE_MONITORING=true python scripts/ingest/ingest.py
+ENABLE_RESOURCE_MONITORING=true python3 scripts/ingest/ingest.py
 ```
 
 ## Configure Monitoring
@@ -29,25 +29,25 @@ MONITOR_CHROMADB=true               # Track database operations
 
 ### Document Ingestion
 ```bash
-ENABLE_RESOURCE_MONITORING=true python scripts/ingest/ingest.py --reset
+ENABLE_RESOURCE_MONITORING=true python3 scripts/ingest/ingest.py --reset
 # Output: logs/resource_stats_document_ingestion_*.json
 ```
 
 ### Code Ingestion
 ```bash
-ENABLE_RESOURCE_MONITORING=true python scripts/ingest/ingest_git.py --provider bitbucket --host https://bitbucket.org --reset
+ENABLE_RESOURCE_MONITORING=true python3 scripts/ingest/ingest_git.py --provider bitbucket --host https://bitbucket.org --reset
 # Output: logs/resource_stats_git_ingestion_*.json
 ```
 
 ### RAG Query
 ```bash
-ENABLE_RESOURCE_MONITORING=true python scripts/rag/query.py "What is MFA?"
+ENABLE_RESOURCE_MONITORING=true python3 scripts/rag/query.py "What is MFA?"
 # Output: logs/resource_stats_rag_query_What_is_*.json
 ```
 
 ### Consistency Graph Building
 ```bash
-ENABLE_RESOURCE_MONITORING=true python scripts/consistency_graph/build_consistency_graph.py
+ENABLE_RESOURCE_MONITORING=true python3 scripts/consistency_graph/build_consistency_graph.py
 # Output: logs/resource_stats_consistency_graph_build_*.json
 ```
 
@@ -79,7 +79,7 @@ OLLAMA:
 ### Capacity Planning
 ```bash
 # Collect data
-ENABLE_RESOURCE_MONITORING=true python scripts/ingest/ingest.py --limit 100
+ENABLE_RESOURCE_MONITORING=true python3 scripts/ingest/ingest.py --limit 100
 
 # Check peak values in logs/*.json
 # Example: 45% CPU max → need 1 vCPU × 1.5 headroom = 1.5 vCPUs
@@ -88,11 +88,11 @@ ENABLE_RESOURCE_MONITORING=true python scripts/ingest/ingest.py --limit 100
 ### Performance Tuning
 ```bash
 # Before optimisation
-ENABLE_RESOURCE_MONITORING=true python scripts/ingest/ingest.py
+ENABLE_RESOURCE_MONITORING=true python3 scripts/ingest/ingest.py
 ls -lt logs/resource_stats_*.json | head -1
 
 # After optimisation
-ENABLE_RESOURCE_MONITORING=true python scripts/ingest/ingest.py
+ENABLE_RESOURCE_MONITORING=true python3 scripts/ingest/ingest.py
 diff logs/resource_stats_document_ingestion_*.json
 ```
 

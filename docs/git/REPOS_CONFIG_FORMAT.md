@@ -19,7 +19,7 @@ adapter-siras-v1
 
 Usage:
 ```bash
-python -m scripts.ingest.ingest_git \
+python3 -m scripts.ingest.ingest_git \
   --repos-file repos.txt \
   --project myproject \
   --branch main
@@ -65,7 +65,7 @@ Each repository object supports:
 ### Usage
 
 ```bash
-python -m scripts.ingest.ingest_git \
+python3 -m scripts.ingest.ingest_git \
   --repos-file repos_config.json \
   --project myproject  # Default project if not specified per-repo
 ```

@@ -6,9 +6,11 @@ TODO: Incorporate more of utils modules (e.g. resource monitor, retry_utils, etc
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
+import time
 from collections import Counter
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -23,6 +25,7 @@ from scripts.ingest.academic.config import AcademicIngestConfig, get_academic_co
 from scripts.ingest.academic.downloader import download_reference_pdf, download_web_content
 from scripts.ingest.academic.graph import CitationGraph, add_references_to_graph
 from scripts.ingest.academic.parser import extract_citations
+from scripts.ingest.academic.providers.base import Reference
 from scripts.ingest.academic.providers import resolve_reference
 from scripts.ingest.academic.terminology import DomainTerminologyExtractor, DomainTerminologyStore
 from scripts.ingest.bm25_indexing import index_chunks_in_bm25
@@ -42,12 +45,24 @@ from scripts.ingest.vectors import (
 from scripts.ingest.word_frequency import WordFrequencyExtractor
 from scripts.search.bm25_search import BM25Search
 from scripts.utils.config import BaseConfig
-from scripts.utils.db_factory import get_default_vector_path, get_vector_client
-from scripts.utils.logger import create_module_logger
+from scripts.utils.clear_databases import clear_for_ingestion
+from scripts.utils.db_factory import get_cache_client, get_default_vector_path, get_vector_client
+from scripts.utils.logger import _loggers, configure_child_logger_propagation, create_module_logger
 from scripts.utils.resource_monitor import ResourceMonitor
 
 # Use shared "ingest" logger so all ingest activities are in the same log file
 get_logger, audit = create_module_logger("ingest")
+
+try:
+    from scripts.rag.domain_terms import (
+        DomainType,
+        get_domain_term_manager,
+        resolve_domain_type,
+    )
+except ImportError:
+    DomainType = None  # type: ignore[assignment]
+    get_domain_term_manager = None  # type: ignore[assignment]
+    resolve_domain_type = None  # type: ignore[assignment]
 
 
 def _clean_doc_id(text: str, max_length: int = 150) -> str:
@@ -66,8 +81,6 @@ def _clean_doc_id(text: str, max_length: int = 150) -> str:
     Returns:
         Clean doc_id with proper spacing, max 150 chars
     """
-    import re
-
     if not text:
         return "unknown"
 
@@ -330,8 +343,6 @@ def stage_resolve_metadata(
             - oa_available: Whether the reference is openly accessible
             - confidence: The confidence score of the resolution
     """
-    from scripts.ingest.academic.providers.base import Reference
-
     resolved = []
     for cit_idx, citation in enumerate(citations, 1):
         # Show progress every 50 citations or at end
@@ -585,9 +596,7 @@ def stage_chunk_and_store(
         source_path = artifact_path
     else:
         # No artifact - use citation hash
-        import hashlib
-
-        file_hash = hashlib.md5(citation.encode()).hexdigest()
+        file_hash = hashlib.sha256(citation.encode()).hexdigest()
         source_path = f"reference_metadata:{reference.get('doi') or doc_id}"
 
     metadata = {
@@ -722,11 +731,8 @@ def stage_chunk_and_store(
 
         # BM25 Keyword Indexing for chunks (at chunk-level granularity)
         # Uses common indexing utility function for consistency across modules
-        # TODO: move db_factory import to top of page
         if config.bm25_indexing_enabled:
             try:
-                from scripts.utils.db_factory import get_cache_client
-
                 cache_db = get_cache_client(enable_cache=True)
                 total_indexed = index_chunks_in_bm25(
                     doc_id=doc_id,
@@ -754,8 +760,6 @@ def stage_chunk_and_store(
 
 
 def main() -> int:
-    import time
-
     start_time = time.perf_counter()
 
     args = parse_args()
@@ -797,15 +801,11 @@ def main() -> int:
         purge_logs_performed = True
 
         # Clear logger cache so get_logger() creates fresh handlers
-        from scripts.utils.logger import _loggers
-
         _loggers.pop("ingest", None)
 
     logger = get_logger("academic_ingest")
 
     # Configure academic.providers.* loggers to propagate to main logger
-    from scripts.utils.logger import configure_child_logger_propagation
-
     configure_child_logger_propagation("academic_ingest", "academic.providers")
 
     audit(
@@ -829,8 +829,6 @@ def main() -> int:
         if config.dry_run:
             logger.info("[DRY_RUN] Would reset collections and caches")
         else:
-            from scripts.utils.clear_databases import clear_for_ingestion
-
             logger.info("[RESET] Clearing collections and caches for academic ingestion")
             audit("reset_requested", {"dry_run": False})
             success = clear_for_ingestion(verbose=True, dry_run=False)
@@ -898,8 +896,6 @@ def main() -> int:
     # Create collections with no auto-embedding (we provide embeddings manually)
     # This ensures consistent use of EMBEDDING_MODEL_NAME (mxbai-embed-large 1024D)
     # instead of ChromaDB's default 384D model
-    from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
-
     chunk_collection = client.get_or_create_collection(
         name=config.chunk_collection_name,
         embedding_function=None,  # Disable auto-embedding, we provide embeddings
@@ -913,8 +909,6 @@ def main() -> int:
 
     for doc_idx, doc_path in enumerate(documents, 1):
         try:
-            import time
-
             doc_start_time = time.perf_counter()
 
             msg = f"[{doc_idx}/{len(documents)}] Processing: {doc_path.name}"
@@ -1142,11 +1136,8 @@ def main() -> int:
 
         # Record candidate terms for domain term manager
         try:
-            from scripts.rag.domain_terms import (
-                DomainType,
-                get_domain_term_manager,
-                resolve_domain_type,
-            )
+            if DomainType is None or get_domain_term_manager is None or resolve_domain_type is None:
+                raise ImportError("Domain term manager not available")
 
             domain_type = None
             display_name = None
@@ -1202,8 +1193,6 @@ def main() -> int:
             )[:10]
             logger.info(f"[DRY_RUN] Top 10 words: {top_words_preview}")
         else:
-            from scripts.utils.db_factory import get_cache_client
-
             cache_db = get_cache_client(enable_cache=True)
             cache_db.put_word_frequencies(
                 dict(accumulated_word_freqs),
@@ -1235,8 +1224,6 @@ def main() -> int:
     else:
         logger.info("Updating BM25 corpus stats for academic artifacts...")
         try:
-            from scripts.utils.db_factory import get_cache_client
-
             cache_db = get_cache_client(enable_cache=True)
 
             # Update corpus stats (IDF values) now that all chunks are indexed
@@ -1286,8 +1273,6 @@ def main() -> int:
     logger.info(f"Resource statistics exported to {stats_file}")
 
     # Calculate and log total duration
-    import time
-
     total_duration = time.perf_counter() - start_time
     print(f"Total time: {total_duration:.2f}s\n")
 

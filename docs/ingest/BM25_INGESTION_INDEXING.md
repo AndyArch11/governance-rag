@@ -82,24 +82,24 @@ BM25 indexing happens automatically when enabled:
 
 ```bash
 # HTML document ingestion
-python scripts/ingest/ingest.py
+python3 scripts/ingest/ingest.py
 
 # Git code ingestion
-python scripts/ingest/ingest_git.py --provider bitbucket --host https://bitbucket.org --project PROJ --repo my-repo
+python3 scripts/ingest/ingest_git.py --provider bitbucket --host https://bitbucket.org --project PROJ --repo my-repo
 
 # Academic ingestion
-python scripts/ingest/ingest_academic.py --papers-dir data_raw/academic_papers
+python3 scripts/ingest/ingest_academic.py --papers-dir data_raw/academic_papers
 
 # Reset and rebuild all indexes
-python scripts/ingest/ingest.py --reset
+python3 scripts/ingest/ingest.py --reset
 
-python scripts/ingest/ingest_git.py --provider bitbucket --host https://bitbucket.org --project PROJ --repo my-repo --reset
+python3 scripts/ingest/ingest_git.py --provider bitbucket --host https://bitbucket.org --project PROJ --repo my-repo --reset
 
-python scripts/ingest/ingest_academic.py --papers-dir data_raw/academic_papers --reset
+python3 scripts/ingest/ingest_academic.py --papers-dir data_raw/academic_papers --reset
 
 # Academic ingestion with explicit BM25 controls
-python scripts/ingest/ingest_academic.py --papers-dir data_raw/academic_papers --bm25-indexing
-python scripts/ingest/ingest_academic.py --papers-dir data_raw/academic_papers --skip-bm25
+python3 scripts/ingest/ingest_academic.py --papers-dir data_raw/academic_papers --bm25-indexing
+python3 scripts/ingest/ingest_academic.py --papers-dir data_raw/academic_papers --skip-bm25
 ```
 
 ### Academic Ingestion Notes (Parent + Child Indexing)
@@ -321,7 +321,7 @@ LIMIT 10;
 echo "BM25_INDEXING_ENABLED=true" >> .env
 
 # Re-run ingestion
-python scripts/ingest/ingest.py --reset
+python3 scripts/ingest/ingest.py --reset
 ```
 
 ### BM25 Indexing Failed
@@ -350,7 +350,7 @@ python scripts/ingest/ingest.py --reset
 **Solution:**
 ```bash
 # Manually trigger corpus stats update
-python -c "
+python3 -c "
 from scripts.utils.db_factory import get_cache_client
 db = get_cache_client(enable_cache=True)
 total = db.get_bm25_corpus_size()

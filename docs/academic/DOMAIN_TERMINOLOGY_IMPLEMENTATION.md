@@ -117,7 +117,7 @@ Foreign keys to domain_terms(term)
 
 **Basic ingestion with terminology**:
 ```bash
-python scripts/ingest/ingest_academic.py thesis.pdf --domain machine_learning
+python3 scripts/ingest/ingest_academic.py thesis.pdf --domain machine_learning
 ```
 
 **Output includes**:
