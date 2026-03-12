@@ -60,9 +60,9 @@ from scripts.utils.logger import create_module_logger
 import scripts.utils.logger as logger_module
 
 try:
-    from scripts.security.dlp import DLPScanner
+    import scripts.security.dlp as dlp_module
 except ImportError:
-    DLPScanner = None  # type: ignore[assignment]
+    dlp_module = None
 
 get_logger, audit = create_module_logger("ingest")
 logger = get_logger(log_to_console=True)  # Enable console output by default
@@ -149,21 +149,28 @@ class ResourceMonitor(threading.Thread):
         self.interval = interval
         self.stats = stats
         self._running = True
+        self._stop_event = threading.Event()
         self._process = psutil.Process()
+        # Prime CPU counters so subsequent interval=None reads are meaningful.
+        self._process.cpu_percent(interval=None)
 
     def run(self) -> None:
         """Monitor resources until stopped."""
         try:
-            while self._running:
+            while not self._stop_event.is_set():
                 try:
                     memory_info = self._process.memory_info()
                     total_memory = psutil.virtual_memory().total
                     memory_mb = memory_info.rss / 1024 / 1024
                     memory_percent = (memory_mb * 1024 * 1024 / total_memory) * 100
+                    cpu_percent = self._process.cpu_percent(interval=None)
+
+                    if self._stop_event.is_set():
+                        break
 
                     metric = ResourceMetrics(
                         timestamp=time.time(),
-                        cpu_percent=self._process.cpu_percent(interval=0.1),
+                        cpu_percent=cpu_percent,
                         memory_percent=memory_percent,
                         memory_mb=memory_mb,
                         thread_count=threading.active_count(),
@@ -172,7 +179,8 @@ class ResourceMonitor(threading.Thread):
                     if self.stats:
                         self.stats.record_metric(metric)
 
-                    time.sleep(self.interval)
+                    if self._stop_event.wait(self.interval):
+                        break
                 except Exception as e:
                     logger.debug(f"Resource monitor error: {e}")
         except Exception as e:
@@ -181,6 +189,7 @@ class ResourceMonitor(threading.Thread):
     def stop(self) -> None:
         """Stop monitoring."""
         self._running = False
+        self._stop_event.set()
 
 
 class ErrorRecoveryStrategy:
@@ -687,11 +696,11 @@ def redact_code_content(
         return text, {}
 
     try:
-        if DLPScanner is None:
+        if dlp_module is None:
             logger.debug("DLPScanner not available, skipping redaction")
             return text, {}
 
-        dlp_scanner = DLPScanner()
+        dlp_scanner = dlp_module.DLPScanner()
         matches = dlp_scanner.find(text)
 
         if not matches:
