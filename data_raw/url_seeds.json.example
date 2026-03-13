@@ -5,5 +5,35 @@
     "sidebar_selector": "layout-body-menu",
     "max_depth": 2,
     "source_category": "azure_landing_zones"
+  },
+  {
+    "url": "https://internal.example.com/protected-docs",
+    "single_page": true,
+    "source_category": "internal_docs",
+    "auth": {
+      "type": "bearer",
+      "token_env": "INGEST_BEARER_TOKEN"
+    }
+  },
+  {
+    "url": "https://wiki.example.com/governance",
+    "single_page": false,
+    "max_depth": 1,
+    "source_category": "wiki",
+    "auth": {
+      "type": "basic",
+      "username_env": "INGEST_BASIC_USER",
+      "password_env": "INGEST_BASIC_PASSWORD"
+    }
+  },
+  {
+    "url": "https://portal.example.com/reports",
+    "single_page": true,
+    "source_category": "portal",
+    "auth": {
+      "type": "cookie",
+      "cookie_name": "session",
+      "cookie_env": "INGEST_SESSION_COOKIE"
+    }
   }
 ]

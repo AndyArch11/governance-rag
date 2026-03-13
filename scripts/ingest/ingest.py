@@ -85,10 +85,13 @@ from scripts.utils.monitoring import get_perf_metrics, init_monitoring
 from scripts.utils.rate_limiter import init_rate_limiter
 from scripts.utils.resource_monitor import ResourceMonitor
 from scripts.ingest.ingest_utils import (
+    AuthConfig,
+    build_auth_headers,
     check_ollama_availability,
     compute_chunk_hash,
     compute_doc_id,
     compute_file_hash,
+    parse_seed_auth,
 )
 
 get_logger, audit = create_module_logger("ingest")
@@ -1718,12 +1721,7 @@ def stage_store_chunks(
 # =========================
 
 
-def get_auth_headers(url: str) -> Dict[str, str]:
-    """Placeholder for auth headers for protected URLs.
-    Replace with actual token/cookie retrieval when needed.
-    """
-    # TODO: Implement auth (e.g., bearer token, cookies, basic auth)
-    return {}
+# get_auth_headers replaced by build_auth_headers() in ingest_utils
 
 
 def load_url_seeds(path: str, logger) -> List[Dict[str, Any]]:
@@ -1781,13 +1779,24 @@ def extract_sidebar_links(
 
 
 def download_url_to_file(
-    url: str, config: IngestConfig, logger
+    url: str,
+    config: IngestConfig,
+    logger,
+    auth_config: Optional[AuthConfig] = None,
 ) -> Tuple[Optional[str], Optional[str]]:
     """Download a URL to the url_imports directory and return (path, html).
-    Returns (None, None) on failure.
+
+    Args:
+        url: URL to fetch.
+        config: Ingestion configuration.
+        logger: Logger instance.
+        auth_config: Optional auth credentials for protected sources.
+
+    Returns:
+        Tuple of (local file path, HTML text), or (None, None) on failure.
     """
     try:
-        headers = get_auth_headers(url)
+        headers = build_auth_headers(auth_config)
         resp = requests.get(url, headers=headers, timeout=20)
         resp.raise_for_status()
         html = resp.text
@@ -1827,10 +1836,16 @@ def collect_url_files_from_seeds(config: IngestConfig, logger) -> List[Tuple[str
         max_depth = int(seed.get("max_depth", 1))
         source_category = seed.get("source_category")
 
+        try:
+            auth_config = parse_seed_auth(seed.get("auth"))
+        except ValueError as exc:
+            logger.warning(f"Skipping {url}: invalid auth config — {exc}")
+            continue
+
         if url in seen_urls:
             continue
 
-        main_path, main_html = download_url_to_file(url, config, logger)
+        main_path, main_html = download_url_to_file(url, config, logger, auth_config=auth_config)
         if main_path:
             downloaded.append((main_path, source_category))
             seen_urls.add(url)
@@ -1847,7 +1862,7 @@ def collect_url_files_from_seeds(config: IngestConfig, logger) -> List[Tuple[str
             # Only follow links on same domain to avoid unintended crawls
             if urlparse(link).netloc != urlparse(url).netloc:
                 continue
-            path, _ = download_url_to_file(link, config, logger)
+            path, _ = download_url_to_file(link, config, logger, auth_config=auth_config)
             if path:
                 downloaded.append((path, source_category))
                 seen_urls.add(link)

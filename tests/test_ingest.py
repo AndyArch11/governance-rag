@@ -1027,17 +1027,30 @@ class TestComputeChunkHash:
 
 
 class TestGetAuthHeaders:
-    """Tests for get_auth_headers function."""
+    """Tests for the auth headers implementation in ingest_utils."""
 
-    def test_get_auth_headers_placeholder(self):
-        """Test that get_auth_headers returns empty dict (placeholder)."""
-        from scripts.ingest.ingest import get_auth_headers
+    def test_build_auth_headers_returns_empty_for_no_auth(self):
+        """build_auth_headers returns empty dict when no auth config is provided."""
+        from scripts.ingest.ingest_utils import build_auth_headers
 
-        headers = get_auth_headers("https://example.com")
+        headers = build_auth_headers(None)
         assert headers == {}
 
-        headers = get_auth_headers("http://api.example.com/resource")
-        assert headers == {}
+    def test_build_auth_headers_bearer(self):
+        """build_auth_headers returns correct Bearer header."""
+        from scripts.ingest.ingest_utils import AuthConfig, build_auth_headers
+
+        cfg = AuthConfig(auth_type="bearer", token="testtoken")
+        headers = build_auth_headers(cfg)
+        assert headers == {"Authorization": "Bearer testtoken"}
+
+    def test_build_auth_headers_cookie(self):
+        """build_auth_headers returns correct Cookie header."""
+        from scripts.ingest.ingest_utils import AuthConfig, build_auth_headers
+
+        cfg = AuthConfig(auth_type="cookie", cookie_name="sess", cookie_value="abc")
+        headers = build_auth_headers(cfg)
+        assert headers == {"Cookie": "sess=abc"}
 
 
 class TestExtractSidebarLinks:
