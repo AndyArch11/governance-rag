@@ -12,6 +12,7 @@ from unittest.mock import Mock
 import pytest
 
 from scripts.utils.clear_databases import (
+    ResetContext,
     clear_academic_pdf_cache,
     clear_bm25_cache,
     clear_cache_database,
@@ -21,6 +22,9 @@ from scripts.utils.clear_databases import (
     clear_legacy_artifacts,
     clear_reference_cache,
     clear_terminology_database,
+    commit_reset,
+    prepare_reset_workspace,
+    rollback_reset,
     show_current_state,
 )
 
@@ -651,6 +655,373 @@ class TestIntegration:
             assert tmpdir in config.rag_data_path
             assert tmpdir in config.cache_path
             assert tmpdir in config.output_sqlite
+
+
+
+
+# =============================================================================
+# ResetContext / prepare_reset_workspace / commit_reset / rollback_reset
+# =============================================================================
+
+
+def _make_mock_ingest_config(tmpdir: str):
+    """Return a minimal mock IngestConfig-like object for reset tests."""
+    config = MockConfig(tmpdir)
+    return config
+
+
+def _make_reset_context(
+    tmpdir: str,
+    chroma_live: Path,
+    chroma_temp: Path,
+    using_sqlite: bool,
+) -> ResetContext:
+    """Build a ResetContext with BM25 cache paths for tests."""
+    bm25_stage_dir = Path(tmpdir) / "bm25_reset_stage"
+    return ResetContext(
+        chroma_path_live=chroma_live,
+        chroma_path_temp=chroma_temp,
+        bm25_cache_live_db=Path(tmpdir) / "cache.db",
+        bm25_cache_temp_db=bm25_stage_dir / "cache.db",
+        bm25_stage_dir=bm25_stage_dir,
+        using_sqlite=using_sqlite,
+    )
+
+
+class TestResetContext:
+    """Tests for the ResetContext dataclass."""
+
+    def test_fields_are_stored(self) -> None:
+        """ResetContext stores live and temp paths plus backend flag."""
+        live = Path("/tmp/chroma")
+        temp = Path("/tmp/chroma.new")
+        ctx = ResetContext(
+            chroma_path_live=live,
+            chroma_path_temp=temp,
+            bm25_cache_live_db=Path("/tmp/cache.db"),
+            bm25_cache_temp_db=Path("/tmp/bm25_reset_stage/cache.db"),
+            bm25_stage_dir=Path("/tmp/bm25_reset_stage"),
+            using_sqlite=False,
+        )
+        assert ctx.chroma_path_live == live
+        assert ctx.chroma_path_temp == temp
+        assert ctx.bm25_cache_live_db == Path("/tmp/cache.db")
+        assert ctx.bm25_stage_dir == Path("/tmp/bm25_reset_stage")
+        assert ctx.using_sqlite is False
+
+    def test_sqlite_variant(self) -> None:
+        """ResetContext using_sqlite=True stores the flag correctly."""
+        ctx = ResetContext(
+            chroma_path_live=Path("/tmp/c.db"),
+            chroma_path_temp=Path("/tmp/c.db.new"),
+            bm25_cache_live_db=Path("/tmp/cache.db"),
+            bm25_cache_temp_db=Path("/tmp/bm25_reset_stage/cache.db"),
+            bm25_stage_dir=Path("/tmp/bm25_reset_stage"),
+            using_sqlite=True,
+        )
+        assert ctx.using_sqlite is True
+
+
+class TestPrepareResetWorkspace:
+    """Tests for prepare_reset_workspace."""
+
+    def test_returns_reset_context_directory_backend(self) -> None:
+        """Returns ResetContext with .new suffix for directory backend."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = _make_mock_ingest_config(tmpdir)
+            ctx = prepare_reset_workspace(config, using_sqlite=False)
+            assert isinstance(ctx, ResetContext)
+            assert ctx.chroma_path_live == Path(tmpdir) / "chromadb"
+            assert ctx.chroma_path_temp == Path(tmpdir) / "chromadb.new"
+            assert ctx.using_sqlite is False
+
+    def test_returns_reset_context_sqlite_backend(self) -> None:
+        """Returns ResetContext with .db.new suffix for SQLite backend."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = _make_mock_ingest_config(tmpdir)
+            ctx = prepare_reset_workspace(config, using_sqlite=True)
+            assert ctx.chroma_path_live == Path(tmpdir) / "chromadb.db"
+            assert ctx.chroma_path_temp == Path(tmpdir) / "chromadb.db.new"
+            assert ctx.using_sqlite is True
+
+    def test_live_chromadb_is_preserved(self) -> None:
+        """The live ChromaDB directory/file is untouched by prepare_reset_workspace."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = _make_mock_ingest_config(tmpdir)
+            chroma_live = Path(tmpdir) / "chromadb"
+            chroma_live.mkdir()
+            (chroma_live / "sentinel.db").write_text("live data")
+
+            prepare_reset_workspace(config, using_sqlite=False)
+
+            assert chroma_live.exists(), "Live ChromaDB must be preserved"
+            assert (chroma_live / "sentinel.db").read_text() == "live data"
+
+    def test_stale_temp_is_removed(self, capsys) -> None:
+        """A stale temp path left by a previous interrupted reset is cleaned up."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = _make_mock_ingest_config(tmpdir)
+            stale_temp = Path(tmpdir) / "chromadb.new"
+            stale_temp.mkdir()
+            (stale_temp / "stale.db").write_text("stale")
+
+            ctx = prepare_reset_workspace(config, using_sqlite=False)
+
+            assert not stale_temp.exists(), "Stale temp must be removed"
+            assert ctx.chroma_path_temp == stale_temp
+
+    def test_stale_backup_is_removed(self) -> None:
+        """A stale .old backup from a previous interrupted commit is cleaned up."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = _make_mock_ingest_config(tmpdir)
+            stale_backup = Path(tmpdir) / "chromadb.old"
+            stale_backup.mkdir()
+            (stale_backup / "old.db").write_text("old")
+
+            prepare_reset_workspace(config, using_sqlite=False)
+
+            assert not stale_backup.exists(), "Stale backup must be removed"
+
+    def test_live_bm25_is_preserved_and_stage_is_created(self) -> None:
+        """Live BM25 remains available while an isolated stage DB is created."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = _make_mock_ingest_config(tmpdir)
+            live_cache = Path(tmpdir) / "cache.db"
+            with sqlite3.connect(str(live_cache)) as conn:
+                conn.execute(
+                    "CREATE TABLE bm25_doc_metadata (doc_id TEXT PRIMARY KEY, doc_length INTEGER NOT NULL, original_text TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+                )
+                conn.execute(
+                    "INSERT INTO bm25_doc_metadata (doc_id, doc_length, original_text) VALUES ('live-doc', 10, 'text')"
+                )
+                conn.commit()
+
+            ctx = prepare_reset_workspace(config, using_sqlite=False)
+
+            with sqlite3.connect(str(live_cache)) as conn:
+                rows = conn.execute("SELECT COUNT(*) FROM bm25_doc_metadata").fetchone()[0]
+            assert rows == 1, "Live BM25 must stay available during ingestion"
+            assert ctx.bm25_stage_dir.exists()
+            assert ctx.bm25_cache_temp_db.exists()
+
+
+class TestCommitReset:
+    """Tests for commit_reset."""
+
+    def test_moves_temp_to_live(self) -> None:
+        """Temp ChromaDB directory is moved to the live path."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            chroma_live = Path(tmpdir) / "chromadb"
+            chroma_temp = Path(tmpdir) / "chromadb.new"
+            chroma_temp.mkdir()
+            (chroma_temp / "data.db").write_text("new data")
+
+            bm25_stage = Path(tmpdir) / "bm25_reset_stage"
+            bm25_stage.mkdir(parents=True)
+            staged_cache = bm25_stage / "cache.db"
+            with sqlite3.connect(str(staged_cache)) as conn:
+                conn.execute(
+                    "CREATE TABLE bm25_index (term TEXT NOT NULL, doc_id TEXT NOT NULL, term_frequency INTEGER NOT NULL, doc_length INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (term, doc_id))"
+                )
+                conn.execute(
+                    "CREATE TABLE bm25_corpus_stats (term TEXT PRIMARY KEY, document_frequency INTEGER NOT NULL, idf REAL NOT NULL, last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+                )
+                conn.execute(
+                    "CREATE TABLE bm25_doc_metadata (doc_id TEXT PRIMARY KEY, doc_length INTEGER NOT NULL, original_text TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+                )
+                conn.execute(
+                    "INSERT INTO bm25_doc_metadata (doc_id, doc_length, original_text) VALUES ('doc-new', 5, 'hello')"
+                )
+                conn.commit()
+
+            ctx = _make_reset_context(tmpdir, chroma_live, chroma_temp, using_sqlite=False)
+            commit_reset(ctx)
+
+            assert chroma_live.exists()
+            assert (chroma_live / "data.db").read_text() == "new data"
+            assert not chroma_temp.exists()
+            assert not bm25_stage.exists()
+
+            with sqlite3.connect(str(Path(tmpdir) / "cache.db")) as conn:
+                rows = conn.execute("SELECT COUNT(*) FROM bm25_doc_metadata").fetchone()[0]
+            assert rows == 1
+
+    def test_replaces_existing_live(self) -> None:
+        """An existing live ChromaDB is replaced by the new temp on commit."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            chroma_live = Path(tmpdir) / "chromadb"
+            chroma_live.mkdir()
+            (chroma_live / "old.db").write_text("old data")
+
+            chroma_temp = Path(tmpdir) / "chromadb.new"
+            chroma_temp.mkdir()
+            (chroma_temp / "new.db").write_text("new data")
+
+            bm25_stage = Path(tmpdir) / "bm25_reset_stage"
+            bm25_stage.mkdir(parents=True)
+            staged_cache = bm25_stage / "cache.db"
+            with sqlite3.connect(str(staged_cache)) as conn:
+                conn.execute(
+                    "CREATE TABLE bm25_index (term TEXT NOT NULL, doc_id TEXT NOT NULL, term_frequency INTEGER NOT NULL, doc_length INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (term, doc_id))"
+                )
+                conn.execute(
+                    "CREATE TABLE bm25_corpus_stats (term TEXT PRIMARY KEY, document_frequency INTEGER NOT NULL, idf REAL NOT NULL, last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+                )
+                conn.execute(
+                    "CREATE TABLE bm25_doc_metadata (doc_id TEXT PRIMARY KEY, doc_length INTEGER NOT NULL, original_text TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+                )
+                conn.execute(
+                    "INSERT INTO bm25_doc_metadata (doc_id, doc_length, original_text) VALUES ('doc-replaced', 7, 'text')"
+                )
+                conn.commit()
+
+            ctx = _make_reset_context(tmpdir, chroma_live, chroma_temp, using_sqlite=False)
+            commit_reset(ctx)
+
+            assert chroma_live.exists()
+            assert not (chroma_live / "old.db").exists()
+            assert (chroma_live / "new.db").read_text() == "new data"
+            # Backup should be cleaned up
+            assert not Path(str(chroma_live) + ".old").exists()
+
+    def test_raises_when_temp_missing(self) -> None:
+        """Raises FileNotFoundError if temp ChromaDB was never created."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ctx = _make_reset_context(
+                tmpdir,
+                Path(tmpdir) / "chromadb",
+                Path(tmpdir) / "chromadb.new",
+                using_sqlite=False,
+            )
+            with pytest.raises(FileNotFoundError, match="Temp ChromaDB not found"):
+                commit_reset(ctx)
+
+    def test_restores_live_from_backup_on_move_failure(self) -> None:
+        """If the move fails, the backup is restored so live path is never empty."""
+        import unittest.mock as mock
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            chroma_live = Path(tmpdir) / "chromadb"
+            chroma_live.mkdir()
+            (chroma_live / "live.db").write_text("live")
+
+            chroma_temp = Path(tmpdir) / "chromadb.new"
+            chroma_temp.mkdir()
+            (chroma_temp / "new.db").write_text("new")
+
+            bm25_stage = Path(tmpdir) / "bm25_reset_stage"
+            bm25_stage.mkdir(parents=True)
+            staged_cache = bm25_stage / "cache.db"
+            with sqlite3.connect(str(staged_cache)) as conn:
+                conn.execute(
+                    "CREATE TABLE bm25_index (term TEXT NOT NULL, doc_id TEXT NOT NULL, term_frequency INTEGER NOT NULL, doc_length INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (term, doc_id))"
+                )
+                conn.execute(
+                    "CREATE TABLE bm25_corpus_stats (term TEXT PRIMARY KEY, document_frequency INTEGER NOT NULL, idf REAL NOT NULL, last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+                )
+                conn.execute(
+                    "CREATE TABLE bm25_doc_metadata (doc_id TEXT PRIMARY KEY, doc_length INTEGER NOT NULL, original_text TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+                )
+                conn.commit()
+
+            ctx = _make_reset_context(tmpdir, chroma_live, chroma_temp, using_sqlite=False)
+
+            # Patch shutil.move to fail after the backup rename has happened
+            def failing_move(src, dst):
+                raise OSError("simulated move failure")
+
+            with mock.patch("scripts.utils.clear_databases.shutil.move", side_effect=failing_move):
+                with pytest.raises(OSError):
+                    commit_reset(ctx)
+
+            # The live path should have been restored from backup
+            assert chroma_live.exists(), "Live path must be restored after failed commit"
+
+    def test_sqlite_file_swap(self) -> None:
+        """Commit works for the SQLite single-file backend."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            chroma_live = Path(tmpdir) / "chromadb.db"
+            chroma_live.write_text("old db")
+
+            chroma_temp = Path(tmpdir) / "chromadb.db.new"
+            chroma_temp.write_text("new db")
+
+            bm25_stage = Path(tmpdir) / "bm25_reset_stage"
+            bm25_stage.mkdir(parents=True)
+            staged_cache = bm25_stage / "cache.db"
+            with sqlite3.connect(str(staged_cache)) as conn:
+                conn.execute(
+                    "CREATE TABLE bm25_index (term TEXT NOT NULL, doc_id TEXT NOT NULL, term_frequency INTEGER NOT NULL, doc_length INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (term, doc_id))"
+                )
+                conn.execute(
+                    "CREATE TABLE bm25_corpus_stats (term TEXT PRIMARY KEY, document_frequency INTEGER NOT NULL, idf REAL NOT NULL, last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+                )
+                conn.execute(
+                    "CREATE TABLE bm25_doc_metadata (doc_id TEXT PRIMARY KEY, doc_length INTEGER NOT NULL, original_text TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+                )
+                conn.commit()
+
+            ctx = _make_reset_context(tmpdir, chroma_live, chroma_temp, using_sqlite=True)
+            commit_reset(ctx)
+
+            assert chroma_live.read_text() == "new db"
+            assert not chroma_temp.exists()
+
+
+class TestRollbackReset:
+    """Tests for rollback_reset."""
+
+    def test_removes_temp(self) -> None:
+        """Temp ChromaDB is removed, live is untouched."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            chroma_live = Path(tmpdir) / "chromadb"
+            chroma_live.mkdir()
+            (chroma_live / "live.db").write_text("live")
+
+            chroma_temp = Path(tmpdir) / "chromadb.new"
+            chroma_temp.mkdir()
+            (chroma_temp / "partial.db").write_text("partial")
+
+            bm25_stage = Path(tmpdir) / "bm25_reset_stage"
+            bm25_stage.mkdir(parents=True)
+            (bm25_stage / "cache.db").write_text("placeholder")
+
+            ctx = _make_reset_context(tmpdir, chroma_live, chroma_temp, using_sqlite=False)
+            rollback_reset(ctx)
+
+            assert not chroma_temp.exists(), "Temp must be removed on rollback"
+            assert not bm25_stage.exists(), "BM25 stage dir must be removed on rollback"
+            assert chroma_live.exists(), "Live must be preserved on rollback"
+            assert (chroma_live / "live.db").read_text() == "live"
+
+    def test_safe_when_temp_never_created(self) -> None:
+        """rollback_reset is a no-op when the temp path was never created."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ctx = _make_reset_context(
+                tmpdir,
+                Path(tmpdir) / "chromadb",
+                Path(tmpdir) / "chromadb.new",
+                using_sqlite=False,
+            )
+            # Should not raise
+            rollback_reset(ctx)
+
+    def test_verbose_output(self, capsys) -> None:
+        """Verbose mode prints rollback status."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            chroma_temp = Path(tmpdir) / "chromadb.new"
+            chroma_temp.mkdir()
+
+            ctx = _make_reset_context(
+                tmpdir,
+                Path(tmpdir) / "chromadb",
+                chroma_temp,
+                using_sqlite=False,
+            )
+            rollback_reset(ctx, verbose=True)
+
+            captured = capsys.readouterr()
+            assert "Rolled back" in captured.out or "preserved" in captured.out
 
 
 if __name__ == "__main__":

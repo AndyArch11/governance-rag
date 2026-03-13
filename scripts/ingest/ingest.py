@@ -77,7 +77,13 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from tqdm import tqdm
 
-from scripts.utils.clear_databases import clear_for_ingestion
+from scripts.utils.clear_databases import (
+    ResetContext,
+    clear_for_ingestion,
+    commit_reset,
+    prepare_reset_workspace,
+    rollback_reset,
+)
 from scripts.utils.db_factory import get_cache_client, get_default_vector_path, get_vector_client
 from scripts.utils.logger import _loggers, create_module_logger
 from scripts.utils.metrics_export import get_metrics_collector
@@ -1724,6 +1730,39 @@ def stage_store_chunks(
 # get_auth_headers replaced by build_auth_headers() in ingest_utils
 
 
+def _close_chromadb_client(client: Any) -> None:
+    """Close a ChromaDB PersistentClient, releasing all file handles.
+
+    Required before an atomic ChromaDB path swap to avoid file-lock errors
+    on the temp database directory or file.  Uses the internal ``_system``
+    teardown mechanism exposed by the ChromaDB library.
+
+    Args:
+        client: An open PersistentClient (or compatible wrapper) instance.
+    """
+    try:
+        system = getattr(client, "_system", None)
+        stop = getattr(system, "stop", None)
+        if callable(stop):
+            stop()
+    except Exception as exc:  # noqa: BLE001
+        # Non-fatal: log and proceed — the swap will attempt regardless.
+        logger.warning("Could not cleanly close ChromaDB client before swap: %s", exc)
+
+
+def _get_bm25_cache_client(config: IngestConfig) -> Any:
+    """Return cache client for BM25 operations.
+
+    During safe-reset ingestion, BM25 writes are staged to a temporary
+    cache database so live hybrid search remains available.  For normal
+    ingestion, this returns the default live cache client.
+    """
+    staged_path = getattr(config, "bm25_stage_rag_data_path", None)
+    if staged_path:
+        return get_cache_client(rag_data_path=Path(staged_path), enable_cache=True)
+    return get_cache_client(enable_cache=True)
+
+
 def load_url_seeds(path: str, logger) -> List[Dict[str, Any]]:
     """Load URL seed definitions from JSON file.
     Expected schema: list of objects with keys
@@ -2026,7 +2065,7 @@ def process_file(
         start_bm25_time = time.perf_counter()
         if config.bm25_indexing_enabled and not args.dry_run:
             try:
-                cache_db = get_cache_client(enable_cache=True)
+                cache_db = _get_bm25_cache_client(config)
                 total_indexed = index_chunks_in_bm25(
                     doc_id=doc_id,
                     chunks=chunks_to_process,
@@ -2295,32 +2334,34 @@ def main() -> None:
         llm_cache.clear()
         logger.info("LLM cache cleared due to REINITIALISE_CHROMA_STORAGE")
 
-    # Initialise the vector store path using selected backend
-    chroma_path = get_default_vector_path(Path(config.rag_data_path), USING_SQLITE)
-    client = PersistentClient(path=chroma_path)
+    # Determine chroma path and prepare reset workspace BEFORE opening the client so that,
+    # on --reset, ingestion writes to a shadow temp path rather than the live DB.  The live
+    # ChromaDB is left intact until commit_reset() swaps it at the very end of a successful
+    # run which keeps the dashboard readable throughout ingestion.
+    reset_context: Optional[ResetContext] = None
+
+    if args.reset:
+        if args.dry_run:
+            logger.info("[DRY_RUN] Would reset collections and all caches (safe-swap mode)")
+            audit("dry_run_reset", {})
+            clear_for_ingestion(verbose=True, dry_run=True)
+            chroma_path = get_default_vector_path(Path(config.rag_data_path), USING_SQLITE)
+        else:
+            logger.info("[RESET] Preparing safe-swap workspace (live DB preserved during ingest)")
+            audit("collection_reset", {})
+            reset_context = prepare_reset_workspace(config, USING_SQLITE, verbose=args.verbose)
+            config.bm25_stage_rag_data_path = str(reset_context.bm25_stage_dir)
+            chroma_path = str(reset_context.chroma_path_temp)
+            if args.verbose:
+                print("[RESET] Auxiliary data cleared. Ingestion writing to temp ChromaDB.\n")
+    else:
+        chroma_path = get_default_vector_path(Path(config.rag_data_path), USING_SQLITE)
 
     if args.verbose:
         print(f"Begin ingestion")
 
-    if args.reset:
-        if args.dry_run:
-            logger.info("[DRY_RUN] Would reset collections and all caches")
-            audit("dry_run_reset", {})
-            clear_for_ingestion(verbose=True, dry_run=True)
-        else:
-            logger.info(f"[RESET] Collection Reset - deleting existing collections and caches")
-            audit("collection_reset", {})
-            if args.verbose:
-                print("[RESET] Deleting existing collections and caches...")
-
-            success = clear_for_ingestion(verbose=True, dry_run=False)
-
-            if not success:
-                logger.error("Reset failed - aborting ingestion")
-                sys.exit(1)
-
-            if args.verbose:
-                print("[RESET] Reset complete.\n")
+    # Initialise the vector store client (points at temp path when reset_context is set)
+    client = PersistentClient(path=chroma_path)
 
     # Create collections with no auto-embedding (we provide embeddings manually)
     # This ensures consistent use of EMBEDDING_MODEL_NAME instead of ChromaDB's default 384D
@@ -2331,7 +2372,7 @@ def main() -> None:
         name=config.doc_collection_name, embedding_function=None  # Disable auto-embedding
     )
     if args.reset:
-        logger.info(f"[RESET] Collections recreated")
+        logger.info(f"[RESET] Collections created in temp ChromaDB")
     else:
         logger.info(
             f"Chunk Collection retrieved"
@@ -2581,7 +2622,7 @@ def main() -> None:
     if config.bm25_indexing_enabled and not args.dry_run:
         try:
             logger.info("Computing BM25 corpus statistics (IDF values)...")
-            cache_db = get_cache_client(enable_cache=True)
+            cache_db = _get_bm25_cache_client(config)
             total_docs = cache_db.get_bm25_corpus_size()
 
             if total_docs > 0:
@@ -2599,6 +2640,30 @@ def main() -> None:
             audit(
                 "bm25_corpus_stats_failed", {"error": str(e)[:200], "error_type": type(e).__name__}
             )
+
+    # On --reset: atomically swap temp ChromaDB to live now that ingestion succeeded.
+    # Close the ChromaDB client first to release file handles, then commit.
+    # If commit fails, roll back (temp is discarded, live is restored from backup).
+    if reset_context is not None:
+        logger.info("[RESET] Ingestion complete — committing temp ChromaDB to live path")
+        _close_chromadb_client(client)
+        try:
+            commit_reset(reset_context, verbose=args.verbose)
+            audit(
+                "reset_committed",
+                {
+                    "chroma_path": str(reset_context.chroma_path_live),
+                    "duration_seconds": duration,
+                },
+            )
+            logger.info("[RESET] ✓ ChromaDB committed to %s", reset_context.chroma_path_live)
+            if args.verbose:
+                print(f"[RESET] ✓ ChromaDB committed to {reset_context.chroma_path_live}")
+        except Exception as exc:
+            logger.error("[RESET] Commit failed — rolling back: %s", exc)
+            audit("reset_commit_failed", {"error": str(exc)})
+            rollback_reset(reset_context, verbose=args.verbose)
+            raise
 
     logger.info(f"[DONE MAIN] Ingestion completed in {duration:.2f}s")
     audit("done_main", {"duration_seconds": duration})

@@ -16,6 +16,7 @@ import shutil
 import sqlite3
 import sys
 from contextlib import closing
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, Optional
 
@@ -75,15 +76,9 @@ def clear_chromadb(config: "IngestConfig", dry_run: bool = False) -> None:
         config: IngestConfig instance containing ChromaDB path
         dry_run: Show what would be deleted without deleting
 
-    Note: ChromaDB doesn't provide a built-in way to clear collections, so we delete the entire database directory.
-
-    TODO: Consider if on --reset flag, to write to a temp DB during ingestion and only replace the main DB on successful completion.
-    This would allow us to keep the old DB intact until we're sure the new one is good,
-    and avoid partial deletions if something goes wrong during clearing and minimises downtime in the dashboard.
-    On completion of ingestion, we would atomically replace the old DB with the new one as we do with the Consistency Graph DB.
-    However, it adds complexity and we need to ensure all parts of the code can handle the temp DB path correctly and address the cache and BM25 DBs as well.
-    We also need to handle cleanup of the temp DB if ingestion fails.
-    For now, we keep it simple with a direct delete on reset, but this is something to consider for future robustness improvements.
+    Note: On ``--reset`` ingestion runs, prefer :func:`prepare_reset_workspace`
+    which preserves the live ChromaDB during ingestion and swaps it atomically
+    on success, avoiding any window where the dashboard has no data.
     """
     chroma_dir = Path(config.rag_data_path) / "chromadb"
     sqlite_path = Path(config.rag_data_path) / "chromadb.db"
@@ -374,6 +369,329 @@ def clear_legacy_artifacts(config: "IngestConfig", dry_run: bool = False) -> Non
 
     if not dry_run:
         print("✓ Cleared legacy artefacts")
+
+
+# =============================================================================
+# Temp-DB swap helpers (safe reset semantics)
+# =============================================================================
+
+
+@dataclass
+class ResetContext:
+    """Paths used during a safe-reset ingestion run.
+
+    The ingestion pipeline writes the new ChromaDB to ``chroma_path_temp``
+    while leaving ``chroma_path_live`` untouched.  On success, call
+    :func:`commit_reset` to atomically promote the temp path to live.  On
+    failure, call :func:`rollback_reset` to discard the incomplete temp DB.
+
+    Attributes:
+        chroma_path_live: Production ChromaDB path (directory or .db file).
+        chroma_path_temp: Shadow path to write the new ChromaDB during ingest.
+        bm25_cache_live_db: Live cache.db path serving hybrid search.
+        bm25_cache_temp_db: Temp cache.db path used to stage rebuilt BM25 tables.
+        bm25_stage_dir: Temporary rag_data-like directory for staged BM25 writes.
+        using_sqlite: True when the SQLite-backed vector client is active.
+    """
+
+    chroma_path_live: Path
+    chroma_path_temp: Path
+    bm25_cache_live_db: Path
+    bm25_cache_temp_db: Path
+    bm25_stage_dir: Path
+    using_sqlite: bool
+
+
+def _remove_path(path: Path) -> None:
+    """Remove a file or directory tree, ignoring already-absent paths."""
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
+
+
+def _ensure_bm25_tables(conn: sqlite3.Connection) -> None:
+    """Ensure BM25 tables exist in a cache database connection."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS bm25_index (
+            term TEXT NOT NULL,
+            doc_id TEXT NOT NULL,
+            term_frequency INTEGER NOT NULL,
+            doc_length INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (term, doc_id)
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS bm25_corpus_stats (
+            term TEXT PRIMARY KEY,
+            document_frequency INTEGER NOT NULL,
+            idf REAL NOT NULL,
+            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS bm25_doc_metadata (
+            doc_id TEXT PRIMARY KEY,
+            doc_length INTEGER NOT NULL,
+            original_text TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_bm25_term ON bm25_index(term)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_bm25_doc ON bm25_index(doc_id)")
+    conn.commit()
+
+
+def _commit_bm25_tables(live_db: Path, staged_db: Path) -> None:
+    """Replace live BM25 tables with staged BM25 tables in one transaction."""
+    if not staged_db.exists():
+        raise FileNotFoundError(f"Staged BM25 cache DB not found: {staged_db}")
+
+    live_db.parent.mkdir(parents=True, exist_ok=True)
+
+    with closing(sqlite3.connect(str(live_db))) as live_conn:
+        _ensure_bm25_tables(live_conn)
+
+        live_conn.execute("ATTACH DATABASE ? AS staged", (str(staged_db),))
+        try:
+            live_conn.execute("BEGIN IMMEDIATE")
+
+            live_conn.execute("DELETE FROM bm25_index")
+            live_conn.execute("DELETE FROM bm25_corpus_stats")
+            live_conn.execute("DELETE FROM bm25_doc_metadata")
+
+            live_conn.execute(
+                """
+                INSERT INTO bm25_index (term, doc_id, term_frequency, doc_length, created_at)
+                SELECT term, doc_id, term_frequency, doc_length, created_at
+                FROM staged.bm25_index
+                """
+            )
+            live_conn.execute(
+                """
+                INSERT INTO bm25_corpus_stats (term, document_frequency, idf, last_updated)
+                SELECT term, document_frequency, idf, last_updated
+                FROM staged.bm25_corpus_stats
+                """
+            )
+            live_conn.execute(
+                """
+                INSERT INTO bm25_doc_metadata (doc_id, doc_length, original_text, created_at)
+                SELECT doc_id, doc_length, original_text, created_at
+                FROM staged.bm25_doc_metadata
+                """
+            )
+
+            live_conn.commit()
+        except Exception:
+            live_conn.rollback()
+            raise
+        finally:
+            live_conn.execute("DETACH DATABASE staged")
+
+
+def prepare_reset_workspace(
+    config: "IngestConfig",
+    using_sqlite: bool,
+    verbose: bool = False,
+) -> ResetContext:
+    """Clear auxiliary data and set up a shadow ChromaDB path for ingestion.
+
+    Auxiliary databases (caches, BM25 index, reference cache, etc.) are
+    cleared immediately — they are derived data that will be repopulated
+    during the new ingest run and are not user-facing.
+
+    The live ChromaDB is left completely intact so the dashboard remains
+    readable during ingestion.  The ingestion pipeline should write its new
+    ChromaDB to ``context.chroma_path_temp`` and call :func:`commit_reset`
+    when complete.
+
+    Any stale temp path left behind by a previous interrupted reset is
+    cleaned up automatically with a warning.
+
+    Args:
+        config: IngestConfig with ``rag_data_path`` and cache paths.
+        using_sqlite: Pass the same flag used to construct the vector client.
+        verbose: Print progress messages.
+
+    Returns:
+        :class:`ResetContext` containing the live and temp ChromaDB paths.
+    """
+    rag_data_path = Path(config.rag_data_path)
+
+    if using_sqlite:
+        chroma_live = rag_data_path / "chromadb.db"
+        chroma_temp = rag_data_path / "chromadb.db.new"
+    else:
+        chroma_live = rag_data_path / "chromadb"
+        chroma_temp = rag_data_path / "chromadb.new"
+
+    if verbose:
+        print("\n" + "=" * 60)
+        print("PREPARING RESET WORKSPACE (safe swap mode)")
+        print("=" * 60)
+        print(f"  Live ChromaDB : {chroma_live}  (preserved during ingest)")
+        print(f"  Temp ChromaDB : {chroma_temp}  (ingest writes here)")
+        print()
+
+    # Clean up any stale temp from a previous interrupted reset.
+    backup = Path(str(chroma_live) + ".old")
+    for stale in (chroma_temp, backup):
+        if stale.exists():
+            logger.warning(
+                "Removing stale path from previous interrupted reset: %s", stale
+            )
+            if verbose:
+                print(f"  ⚠ Removing stale path: {stale}")
+            _remove_path(stale)
+
+    bm25_stage_dir = rag_data_path / "bm25_reset_stage"
+    bm25_cache_temp_db = bm25_stage_dir / "cache.db"
+    bm25_cache_live_db = Path(config.cache_path)
+
+    # Clear all auxiliary derived data (none of these affect dashboard availability).
+    # IMPORTANT: Do NOT clear live BM25 tables here. They remain available for
+    # hybrid search while ingestion is running. BM25 is rebuilt into a staged DB
+    # and merged on commit.
+    if verbose:
+        print("→ Clearing auxiliary databases and caches...")
+
+    if bm25_stage_dir.exists():
+        logger.warning("Removing stale BM25 stage directory: %s", bm25_stage_dir)
+        if verbose:
+            print(f"  ⚠ Removing stale BM25 stage dir: {bm25_stage_dir}")
+        _remove_path(bm25_stage_dir)
+    bm25_stage_dir.mkdir(parents=True, exist_ok=True)
+
+    # Initialise staged cache DB schema.
+    with closing(sqlite3.connect(str(bm25_cache_temp_db))) as staged_conn:
+        _ensure_bm25_tables(staged_conn)
+
+    clear_reference_cache(config, dry_run=False)
+    clear_terminology_database(config, dry_run=False)
+    clear_semantic_clustering_cache(config, dry_run=False)
+    clear_citation_graph_database(config, dry_run=False)
+    clear_academic_pdf_cache(config, dry_run=False)
+    clear_legacy_artifacts(config, dry_run=False)
+
+    if verbose:
+        print(
+            "\n✓ Auxiliary data cleared. Ingestion will write to temp ChromaDB.\n"
+            "  BM25 writes are staged and live hybrid search remains available.\n"
+            "  Dashboard continues to serve from live ChromaDB until commit.\n"
+        )
+
+    return ResetContext(
+        chroma_path_live=chroma_live,
+        chroma_path_temp=chroma_temp,
+        bm25_cache_live_db=bm25_cache_live_db,
+        bm25_cache_temp_db=bm25_cache_temp_db,
+        bm25_stage_dir=bm25_stage_dir,
+        using_sqlite=using_sqlite,
+    )
+
+
+def commit_reset(context: ResetContext, verbose: bool = False) -> None:
+    """Atomically replace the live ChromaDB with the freshly ingested temp.
+
+    Uses a backup rename (``live → live.old``) before moving ``temp → live``
+    so that a crash during the swap leaves a recoverable state: either the
+    old ``live`` path still exists (rename not yet applied) or the new
+    ``live.old`` path exists and can be restored manually.
+
+    The caller **must** close all open ChromaDB connections pointing at
+    ``context.chroma_path_temp`` before calling this function, otherwise
+    Windows file locks (and some Linux flock users) will prevent the rename.
+
+    Args:
+        context: Reset context returned by :func:`prepare_reset_workspace`.
+        verbose: Print progress messages.
+
+    Raises:
+        FileNotFoundError: If ``chroma_path_temp`` does not exist (ingestion
+            produced no output).
+        OSError: If the filesystem rename fails.
+    """
+    if not context.chroma_path_temp.exists():
+        raise FileNotFoundError(
+            f"Temp ChromaDB not found at {context.chroma_path_temp}. "
+            "Ingestion may not have written any data."
+        )
+
+    if verbose:
+        print("\n[RESET] Committing temp ChromaDB to live path...")
+
+    backup = Path(str(context.chroma_path_live) + ".old")
+
+    # Step 1: move live → live.old so we have a fallback if step 2 fails.
+    if context.chroma_path_live.exists():
+        context.chroma_path_live.rename(backup)
+        logger.debug("Renamed live ChromaDB to backup: %s", backup)
+
+    try:
+        # Step 2: move temp → live (atomic on POSIX, best-effort on Windows).
+        shutil.move(str(context.chroma_path_temp), str(context.chroma_path_live))
+        logger.info(
+            "ChromaDB committed: %s → %s", context.chroma_path_temp, context.chroma_path_live
+        )
+    except Exception:
+        # Restore backup so the live path is not empty.
+        if backup.exists() and not context.chroma_path_live.exists():
+            backup.rename(context.chroma_path_live)
+            logger.warning("Commit failed — original ChromaDB restored from backup")
+        raise
+
+    # Step 3: remove backup now that live is confirmed in place.
+    if backup.exists():
+        _remove_path(backup)
+        logger.debug("Backup removed after successful commit")
+
+    # Step 4: atomically replace live BM25 tables with staged BM25 tables.
+    _commit_bm25_tables(context.bm25_cache_live_db, context.bm25_cache_temp_db)
+
+    # Step 5: remove staged BM25 directory after successful merge.
+    if context.bm25_stage_dir.exists():
+        _remove_path(context.bm25_stage_dir)
+        logger.debug("BM25 stage directory removed after successful commit")
+
+    if verbose:
+        print(f"[RESET] ✓ ChromaDB committed to {context.chroma_path_live}")
+        print(f"[RESET] ✓ BM25 cache committed to {context.bm25_cache_live_db}")
+
+
+def rollback_reset(context: ResetContext, verbose: bool = False) -> None:
+    """Discard the incomplete temp ChromaDB; the live DB is left intact.
+
+    Safe to call even if the temp path was never created (e.g. ingest failed
+    before any data was written).
+
+    Args:
+        context: Reset context returned by :func:`prepare_reset_workspace`.
+        verbose: Print progress messages.
+    """
+    if context.chroma_path_temp.exists():
+        _remove_path(context.chroma_path_temp)
+        logger.info("Rolled back incomplete temp ChromaDB: %s", context.chroma_path_temp)
+        if verbose:
+            print(f"[RESET] Rolled back incomplete temp ChromaDB: {context.chroma_path_temp}")
+
+    if context.bm25_stage_dir.exists():
+        _remove_path(context.bm25_stage_dir)
+        logger.info("Rolled back staged BM25 cache: %s", context.bm25_stage_dir)
+        if verbose:
+            print(f"[RESET] Rolled back staged BM25 cache: {context.bm25_stage_dir}")
+
+    if verbose:
+        print(f"[RESET] ✓ Original ChromaDB preserved at {context.chroma_path_live}")
+        print(f"[RESET] ✓ Original BM25 cache preserved at {context.bm25_cache_live_db}")
 
 
 def clear_for_ingestion(verbose: bool = False, dry_run: bool = False) -> bool:

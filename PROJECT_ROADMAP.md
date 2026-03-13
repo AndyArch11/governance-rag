@@ -20,12 +20,6 @@ This roadmap merges the previous strategic roadmap with all actionable in-repo T
 - **Move late imports to module scope** for maintainability and static analysis hygiene.
   - Effort: `M` | Impact: `High`
   - Refs: `scripts/ingest/ingest_git.py` (lines 684, 1212, 1672, 1721, 1728, 1738, 1750, 1782, 1855, 2191), `scripts/ingest/ingest.py` (2099), `scripts/ingest/ingest_academic.py` (725)
-- **Implement ingestion auth hooks** (bearer/cookie/basic) for protected sources.
-  - Effort: `M` | Impact: `High`
-  - Refs: `scripts/ingest/ingest.py` (1812)
-- **Harden DB reset flow** via temp DB swap-on-success semantics.]
-  - Effort: `M` | Impact: `High`
-  - Refs: `scripts/utils/clear_databases.py` (80)
 
 ### 2) Embedding and chunking quality controls
 - **Tune chunk sizing/truncation** and reduce debug-log noise in vector ingestion.
