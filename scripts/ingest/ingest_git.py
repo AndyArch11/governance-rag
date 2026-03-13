@@ -58,6 +58,7 @@ from scripts.utils.clear_databases import clear_for_ingestion
 from scripts.utils.db_factory import get_cache_client, get_default_vector_path, get_vector_client
 from scripts.utils.logger import create_module_logger
 import scripts.utils.logger as logger_module
+from scripts.ingest.ingest_utils import compute_file_hash
 
 try:
     import scripts.security.dlp as dlp_module
@@ -877,26 +878,6 @@ def compute_code_doc_id(file_path: str, repository: str, project_key: str) -> st
     doc_id = doc_id.replace("/", "_").replace(" ", "_").replace(".", "_").replace("-", "_")
 
     return doc_id
-
-
-def compute_file_hash(file_path: str) -> str:
-    """Compute SHA-256 hash of file contents for change detection.
-
-    Args:
-        file_path: Path to the file to hash.
-
-    Returns:
-        Hexadecimal SHA-256 hash string.
-    """
-    h = hashlib.sha256()
-    try:
-        with open(file_path, "rb") as f:
-            for chunk in iter(lambda: f.read(8192), b""):
-                h.update(chunk)
-    except Exception as e:
-        # For files that can't be read, use path as fallback
-        h.update(file_path.encode("utf-8"))
-    return h.hexdigest()
 
 
 def build_git_file_url(

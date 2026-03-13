@@ -31,7 +31,7 @@ from scripts.ingest.academic.terminology import DomainTerminologyExtractor, Doma
 from scripts.ingest.bm25_indexing import index_chunks_in_bm25
 from scripts.ingest.chunk import chunk_text, create_parent_child_chunks
 from scripts.ingest.htmlparser import extract_text_from_html
-from scripts.ingest.ingest import compute_doc_id, compute_file_hash
+from scripts.ingest.ingest_utils import compute_doc_id, compute_file_hash
 from scripts.ingest.pdfparser import (
     extract_pdf_metadata,
     extract_structure_from_text,

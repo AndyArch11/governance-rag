@@ -84,6 +84,12 @@ from scripts.utils.metrics_export import get_metrics_collector
 from scripts.utils.monitoring import get_perf_metrics, init_monitoring
 from scripts.utils.rate_limiter import init_rate_limiter
 from scripts.utils.resource_monitor import ResourceMonitor
+from scripts.ingest.ingest_utils import (
+    check_ollama_availability,
+    compute_chunk_hash,
+    compute_doc_id,
+    compute_file_hash,
+)
 
 get_logger, audit = create_module_logger("ingest")
 
@@ -778,44 +784,6 @@ def _should_skip_unsupported(
 # =========================
 
 
-def check_ollama_availability(logger, skip_llm: bool = False) -> bool:
-    """Check if Ollama is running and accessible.
-
-    Attempts to connect to Ollama on localhost:11434 and verify it's responding.
-
-    TODO: Move to utils folder and have all modules using LLM calls to check against it
-
-    Args:
-        logger: Logger instance for output.
-        skip_llm: If True, skip this check (user has opted to skip LLM).
-
-    Returns:
-        True if Ollama is available or skip_llm is True, False otherwise.
-    """
-    if skip_llm:
-        logger.info("LLM preprocessing skipped (--skip-llm-preprocess flag set)")
-        return True
-
-    try:
-        response = requests.get("http://localhost:11434/api/tags", timeout=2)
-        if response.status_code == 200:
-            logger.info("✓ Ollama is running and responding")
-            return True
-    except requests.ConnectionError:
-        logger.warning("✗ Ollama not running: Connection refused to localhost:11434")
-        logger.warning("  Start Ollama with: ollama serve")
-        logger.warning("  Or use --skip-llm-preprocess to skip LLM-based preprocessing")
-        return False
-    except requests.Timeout:
-        logger.warning("✗ Ollama not responding: Connection timeout to localhost:11434")
-        logger.warning("  Or use --skip-llm-preprocess to skip LLM-based preprocessing")
-        return False
-    except Exception as e:
-        logger.warning(f"✗ Could not check Ollama availability: {e}")
-        logger.warning("  Or use --skip-llm-preprocess to skip LLM-based preprocessing")
-        return False
-
-
 def parse_args(config: IngestConfig) -> argparse.Namespace:
     """Parse command-line arguments for the ingestion pipeline.
 
@@ -969,6 +937,8 @@ def stage_compute_hash(file_path: str, logger) -> Tuple[Optional[str], Optional[
     Returns (doc_id, file_hash) or (None, None) on failure.
     """
     try:
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File not found: {file_path}")
         doc_id = compute_doc_id(file_path)
         file_hash = compute_file_hash(file_path)
         logger.debug(f"Computed doc_id={doc_id}, hash={file_hash[:8]}...")
@@ -1741,72 +1711,6 @@ def stage_store_chunks(
 # =========================
 #  HELPERS: DOCUMENT ID + HASH
 # =========================
-
-
-def compute_doc_id(path: str) -> str:
-    """Generate a stable document identifier from file path.
-
-    Creates a consistent document ID by extracting the filename
-    without extension. This ID is used throughout the system to
-    track document versions and relationships.
-
-    Args:
-        path: Absolute or relative file path.
-
-    Returns:
-        Document identifier (filename without extension).
-
-    Example:
-        >>> compute_doc_id("/path/to/MyDocument.html")
-        'MyDocument'
-    """
-    base = os.path.basename(path)
-    doc_id, _ = os.path.splitext(base)
-    return doc_id
-
-
-def compute_file_hash(path: str) -> str:
-    """Compute SHA-256 hash of file contents for change detection.
-
-    Calculates a fingerprint of the file to detect modifications
-    between ingestion runs. Uses chunked reading for memory efficiency
-    with large files.
-
-    Args:
-        path: Path to the file to hash.
-
-    Returns:
-        Hexadecimal SHA-256 hash string.
-
-    Note:
-        Reading in 8KB chunks prevents memory issues with large files.
-    """
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def compute_chunk_hash(chunk_text: str) -> str:
-    """Compute SHA-256 hash of chunk content for idempotency checking.
-
-    Enables chunk-level deduplication: skip processing chunks with
-    identical content even if document version changed.
-
-    Args:
-        chunk_text: Text content of the chunk.
-
-    Returns:
-        Hexadecimal SHA-256 hash string.
-
-    Note:
-        Used to detect unchanged chunks across versions for efficient
-        re-processing (skip LLM validation and re-embedding).
-    """
-    h = hashlib.sha256()
-    h.update(chunk_text.encode("utf-8"))
-    return h.hexdigest()
 
 
 # =========================
