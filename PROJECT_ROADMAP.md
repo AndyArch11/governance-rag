@@ -26,7 +26,7 @@ This roadmap merges the previous strategic roadmap with all actionable in-repo T
 - **Centralise shared ingestion utilities** (for example LLM service checks and common helper wiring).
   - Effort: `S` | Impact: `Medium`
   - Refs: `scripts/ingest/ingest.py` (776), `scripts/ingest/ingest_academic.py` (3)
-- **Harden DB reset flow** via temp DB swap-on-success semantics.
+- **Harden DB reset flow** via temp DB swap-on-success semantics.]
   - Effort: `M` | Impact: `High`
   - Refs: `scripts/utils/clear_databases.py` (80)
 

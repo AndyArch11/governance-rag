@@ -99,9 +99,12 @@ class ResourceMonitor:
 
         # Current process
         self.python_process = psutil.Process(os.getpid())
+        # Prime CPU counter so subsequent interval=None reads are meaningful.
+        self.python_process.cpu_percent(interval=None)
 
         # Tracking
         self._monitoring = False
+        self._stop_event = threading.Event()
         self._monitor_thread: Optional[threading.Thread] = None
         self._start_time: Optional[datetime] = None
         self._end_time: Optional[datetime] = None
@@ -292,8 +295,8 @@ class ResourceMonitor:
         stats = self.stats[process_name]
 
         try:
-            # CPU
-            cpu = proc.cpu_percent(interval=0.1)
+            # CPU (non-blocking; caller must prime the process before first call)
+            cpu = proc.cpu_percent(interval=None)
             stats["cpu_percent"]["current"] = cpu
             stats["cpu_percent"]["max"] = max(stats["cpu_percent"]["max"], cpu)
             stats["cpu_percent"]["samples"].append(cpu)
@@ -373,7 +376,7 @@ class ResourceMonitor:
     def _monitor_loop(self):
         """Main monitoring loop running in separate thread."""
         chroma_warned = False
-        while self._monitoring:
+        while not self._stop_event.is_set():
             try:
                 # Monitor Python process
                 self._update_process_stats("python", self.python_process)
@@ -421,11 +424,13 @@ class ResourceMonitor:
                             self.stats["python"]["net_recv_mb"]["max_rate"], recv_rate
                         )
 
-                time.sleep(self.interval)
+                if self._stop_event.wait(self.interval):
+                    break
 
             except Exception as e:
                 self.logger.error(f"Error in monitoring loop: {e}")
-                time.sleep(self.interval)
+                if self._stop_event.wait(self.interval):
+                    break
 
     def _calculate_averages(self):
         """Calculate average values from samples."""
@@ -447,6 +452,7 @@ class ResourceMonitor:
 
         self._start_time = datetime.now()
         self._monitoring = True
+        self._stop_event.clear()
         self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self._monitor_thread.start()
 
@@ -458,6 +464,7 @@ class ResourceMonitor:
             return
 
         self._monitoring = False
+        self._stop_event.set()
         self._end_time = datetime.now()
 
         if self._monitor_thread:

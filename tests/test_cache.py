@@ -8,6 +8,7 @@ import json
 import tempfile
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -181,43 +182,46 @@ class TestTTLCache:
         """Test expired entry is not returned."""
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_path = Path(tmpdir) / "test_cache.json"
-            cache = TTLCache(str(cache_path), default_ttl=1)
+            with patch("scripts.utils.cache.time") as mock_time:
+                mock_time.time.return_value = 1000.0
+                cache = TTLCache(str(cache_path), default_ttl=1)
+                cache.put("key1", "value1")
 
-            cache.put("key1", "value1")
-            time.sleep(1.1)
-
-            assert cache.get("key1") is None
-            assert cache.misses == 1
+                mock_time.time.return_value = 1002.0  # 2s later, past TTL of 1s
+                assert cache.get("key1") is None
+                assert cache.misses == 1
 
     def test_custom_ttl_per_entry(self) -> None:
         """Test custom TTL can be set per entry."""
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_path = Path(tmpdir) / "test_cache.json"
-            cache = TTLCache(str(cache_path), default_ttl=100)
+            with patch("scripts.utils.cache.time") as mock_time:
+                mock_time.time.return_value = 1000.0
+                cache = TTLCache(str(cache_path), default_ttl=100)
+                # Entry with short TTL
+                cache.put("short", "value1", ttl=1)
+                # Entry with long TTL
+                cache.put("long", "value2", ttl=100)
 
-            # Entry with short TTL
-            cache.put("short", "value1", ttl=1)
-            # Entry with long TTL
-            cache.put("long", "value2", ttl=100)
-
-            time.sleep(1.1)
-
-            assert cache.get("short") is None
-            assert cache.get("long") == "value2"
+                mock_time.time.return_value = 1002.0  # 2s later: short expired, long still valid
+                assert cache.get("short") is None
+                assert cache.get("long") == "value2"
 
     def test_ttl_hit_miss_tracking(self) -> None:
         """Test hit/miss tracking with expiration."""
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_path = Path(tmpdir) / "test_cache.json"
-            cache = TTLCache(str(cache_path), default_ttl=1)
+            with patch("scripts.utils.cache.time") as mock_time:
+                mock_time.time.return_value = 1000.0
+                cache = TTLCache(str(cache_path), default_ttl=1)
+                cache.put("key1", "value1")
+                cache.get("key1")  # Hit before expiration
 
-            cache.put("key1", "value1")
-            cache.get("key1")  # Hit before expiration
-            time.sleep(1.1)
-            cache.get("key1")  # Miss after expiration
+                mock_time.time.return_value = 1002.0  # 2s later, past TTL of 1s
+                cache.get("key1")  # Miss after expiration
 
-            assert cache.hits == 1
-            assert cache.misses == 1
+                assert cache.hits == 1
+                assert cache.misses == 1
 
 
 class TestLRUCache:
@@ -267,16 +271,16 @@ class TestLRUCache:
         """Test LRU cache with TTL expiration."""
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_path = Path(tmpdir) / "test_cache.json"
-            cache = LRUCache(str(cache_path), max_entries=10, default_ttl=1)
+            with patch("scripts.utils.cache.time") as mock_time:
+                mock_time.time.return_value = 1000.0
+                cache = LRUCache(str(cache_path), max_entries=10, default_ttl=1)
+                cache.put("key1", "value1")
+                cache.put("key2", "value2")
 
-            cache.put("key1", "value1")
-            cache.put("key2", "value2")
-
-            time.sleep(1.1)
-
-            # Both should be expired
-            assert cache.get("key1") is None
-            assert cache.get("key2") is None
+                mock_time.time.return_value = 1002.0  # 2s later, past TTL of 1s
+                # Both should be expired
+                assert cache.get("key1") is None
+                assert cache.get("key2") is None
 
     def test_lru_no_ttl(self) -> None:
         """Test LRU cache without TTL expiration."""

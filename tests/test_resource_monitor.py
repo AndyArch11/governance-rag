@@ -63,3 +63,26 @@ def test_gpu_memory_prefers_per_process_then_python_fallback(monkeypatch, tmp_pa
     assert monitor._get_gpu_memory(pid=1234) == 256.0
     assert monitor._get_gpu_memory(pid=4321, allow_total_fallback=True) == 500.0
     assert monitor._get_gpu_memory(pid=4321, allow_total_fallback=False) == 0.0
+
+
+def test_stop_halts_collection(tmp_path):
+    """Test that stop() immediately halts metric collection with no extra samples recorded."""
+    monitor = ResourceMonitor(
+        operation_name="test_stop",
+        interval=0.05,
+        output_dir=tmp_path,
+        monitor_ollama=False,
+        monitor_chromadb=False,
+    )
+    monitor.start()
+    import time
+
+    time.sleep(0.15)
+    monitor.stop()
+
+    samples_after_stop = len(monitor.stats["python"]["cpu_percent"]["samples"])
+    # Allow a tiny settling period; confirm no further samples accumulate
+    time.sleep(0.15)
+    assert len(monitor.stats["python"]["cpu_percent"]["samples"]) == samples_after_stop, (
+        "Samples continued to accumulate after stop()"
+    )
