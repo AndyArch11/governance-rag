@@ -25,9 +25,6 @@ This roadmap merges the previous strategic roadmap with all actionable in-repo T
 - **Tune chunk sizing/truncation** and reduce debug-log noise in vector ingestion.
   - Effort: `M` | Impact: `High`
   - Refs: `scripts/ingest/vectors.py` (1395, 1603, 1644, 1645)
-- **Add table size guardrails** to avoid oversized table chunks reaching LLM paths.
-  - Effort: `S` | Impact: `High`
-  - Refs: `scripts/ingest/vectors.py` (616)
 - **Validate semantic drift schema compliance** and clarify doc embedding metadata handling.
   - Effort: `M` | Impact: `Medium`
   - Refs: `scripts/ingest/vectors.py` (1804, 2220)

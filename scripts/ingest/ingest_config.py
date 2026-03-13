@@ -36,6 +36,7 @@ class IngestConfig(BaseConfig):
       - MAX_WORKERS, PROGRESS_LOG_INTERVAL, LLM_RATE_LIMIT
       - INGEST_LLM_MODEL, INGEST_VALIDATOR_LLM_MODEL
       - EMBEDDING_BATCH_SIZE, EMBEDDING_CACHE_ENABLED
+      - TABLE_CHUNK_MAX_LLM_CHARS: Max table chunk size allowed on LLM validation/repair paths
       - PRESERVE_DOMAIN_KEYWORDS: Comma-separated keywords to preserve
       - DOMAIN_KEYWORDS_FILE: JSON file with a list of keywords
       - ENABLE_CANDIDATE_TERMS: Record candidate terms from ingestion (default: false)
@@ -98,6 +99,12 @@ class IngestConfig(BaseConfig):
         self.embedding_cache_path = self.get_str(
             "EMBEDDING_CACHE_PATH",
             str(Path(self.rag_data_path) / "cache" / "embedding_cache.json"),
+        )
+
+        # Table chunk guardrail for semantic LLM validation/repair paths
+        self.table_chunk_max_llm_chars = max(
+            500,
+            self.get_int("TABLE_CHUNK_MAX_LLM_CHARS", 5000),
         )
 
         # BM25 keyword indexing (for hybrid search)

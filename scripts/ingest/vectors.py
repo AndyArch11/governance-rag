@@ -123,8 +123,18 @@ EMBEDDING_USABLE_TOKEN_LIMIT: int = max(100, int(EMBEDDING_MODEL_MAX_TOKEN_LIMIT
 # This gives us: max_chars = (usable_tokens * 3) - margin
 EMBEDDING_CONTEXT_SAFETY_MARGIN: int = 200
 
+# Guardrail for table chunks in LLM validation/repair paths.
+# Large table chunks are preserved for embedding/retrieval, but skipped for
+# semantic LLM validation/repair to avoid oversized prompts and instability.
+TABLE_CHUNK_MAX_LLM_CHARS: int = int(os.environ.get("TABLE_CHUNK_MAX_LLM_CHARS", "5000"))
+
 # Initialise monitoring
 init_monitoring()
+
+
+def _is_table_chunk(text: str) -> bool:
+    """Return True when chunk text appears to represent a table segment."""
+    return "#### TABLE MARKER ####" in text or "[TABLE" in text
 
 
 def _create_embed_model() -> OllamaEmbeddings:
@@ -609,12 +619,10 @@ def filter_and_merge_small_chunks(
         is_small = chunk_size < min_char_threshold
 
         # Check if chunk contains table markers (preserve all tables)
-        is_table_chunk = "#### TABLE MARKER ####" in chunk or "[TABLE" in chunk
+        is_table_chunk = _is_table_chunk(chunk)
 
         if is_table_chunk:
             # Always preserve table chunks regardless of size
-            # TODO: Consider adding a check to ensure table chunks are not excessively large (e.g., > 5000 chars) which could cause LLM issues.
-            # For now, we preserve all tables and rely on later truncation if needed. Consider alternative approaches to addressing table chunks.
             filtered.append(chunk)
             stats["preserved_table_count"] += 1
             logger.debug(f"Preserved table chunk ({chunk_size} chars) with markers")
@@ -1078,6 +1086,27 @@ def process_and_validate_chunks(
         except Exception as e:
             logger.warning(f"Structural chunk validation failed for {chunk_id}: {e}")
             audit("chunk_structural_validation_error", {"doc_id": doc_id, "chunk_id": chunk_id})
+            continue
+
+        # Table chunk guardrail: do not send oversized tables through LLM paths.
+        # Keep the chunk for embedding/retrieval, but bypass semantic validation
+        # and repair prompt construction to prevent oversized LLM inputs.
+        if _is_table_chunk(chunk) and len(chunk) > TABLE_CHUNK_MAX_LLM_CHARS:
+            logger.warning(
+                f"Skipping LLM validation for oversized table chunk {chunk_id}: "
+                f"{len(chunk)} chars exceeds TABLE_CHUNK_MAX_LLM_CHARS={TABLE_CHUNK_MAX_LLM_CHARS}"
+            )
+            audit(
+                "table_chunk_llm_guardrail_applied",
+                {
+                    "doc_id": doc_id,
+                    "chunk_id": chunk_id,
+                    "chunk_length": len(chunk),
+                    "max_llm_chars": TABLE_CHUNK_MAX_LLM_CHARS,
+                },
+            )
+            valid_chunks += 1
+            processed.append((chunk_id, chunk))
             continue
 
         # 1.5. Quality heuristic check (skip semantic validation for clean chunks)

@@ -164,6 +164,45 @@ def test_process_and_validate_chunks_repair_flow(vectors_module, monkeypatch):
     assert failed_count == 0
 
 
+def test_process_and_validate_chunks_table_guardrail_skips_llm(vectors_module, monkeypatch):
+    vectors, _ = vectors_module
+
+    # Structural validation should pass
+    monkeypatch.setattr(vectors, "validate_chunk", lambda *a, **k: True)
+
+    # Track if LLM validation/repair are called (they should not be)
+    llm_validate_called = {"value": False}
+    llm_repair_called = {"value": False}
+
+    def _semantic_should_not_run(*args, **kwargs):
+        llm_validate_called["value"] = True
+        return True, "should_not_run"
+
+    def _repair_should_not_run(*args, **kwargs):
+        llm_repair_called["value"] = True
+        return "should_not_run"
+
+    monkeypatch.setattr(vectors, "validate_chunk_semantics", _semantic_should_not_run)
+    monkeypatch.setattr(vectors, "repair_chunk_with_llm", _repair_should_not_run)
+
+    oversized_table = "#### TABLE MARKER ####\n" + ("cell|" * 2000)
+
+    processed, valid_count, repaired_count, failed_count = vectors.process_and_validate_chunks(
+        [oversized_table],
+        "doc-table",
+        "policy",
+        enable_chunk_heuristic=False,
+        min_chunk_size=10,
+    )
+
+    assert len(processed) == 1
+    assert valid_count == 1
+    assert repaired_count == 0
+    assert failed_count == 0
+    assert llm_validate_called["value"] is False
+    assert llm_repair_called["value"] is False
+
+
 def test_compute_document_health(vectors_module):
     vectors, _ = vectors_module
     health = vectors.compute_document_health(
