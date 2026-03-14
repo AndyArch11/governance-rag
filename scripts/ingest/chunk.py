@@ -277,10 +277,10 @@ def chunk_text(text: str, doc_type: Optional[str] = None, adaptive: bool = True)
 
     Table-Aware Chunking:
         - Detects [TABLE N] markers inserted by HTML parser
-        - Preserves table integrity (never splits table content across chunks)
-        - Groups tables with surrounding context for semantic relevance
+        - Preserves table structure and marker boundaries
+        - Splits oversized tables by row groups while repeating headers/context
+        - Keeps table order aligned with surrounding narrative context
         - Ensures tables with markers are not filtered as "small chunks"
-        - TODO: Does a bad job of handling tables, requires further work
 
     Args:
         text: Cleaned and preprocessed document text.
@@ -383,50 +383,284 @@ def _chunk_text_with_tables(
 ) -> List[str]:
     """Table-aware chunking that preserves table integrity.
 
-    TODO: Improve strategy for handling tables, currently does a poor job
-
     Strategy:
-    1. Split text at [TABLES START] to separate content from tables
-    2. Chunk main content normally
-    3. Group each table with preceding context
-    4. Mark tables so small-chunk filter knows to preserve them
+    1. Parse document into alternating non-table and table segments while
+       preserving original order.
+    2. Chunk non-table segments with standard chunking parameters.
+    3. Chunk each table block by row boundaries when oversized, keeping
+       headers/captions/context in each table part.
+    4. Mark table chunks so downstream filters preserve them.
 
     Internal helper for chunk_text().
     """
-    # Separate main content from tables section
-    if "[TABLES START]" in text:
-        parts = text.split("[TABLES START]")
-        main_content = parts[0]
-        tables_section = "[TABLES START]" + parts[1]
-    else:
-        main_content = text
-        tables_section = ""
+    table_pattern = re.compile(r"\[TABLE (\d+)\](.*?)\[/TABLE \1\]", re.DOTALL)
+    chunks: List[str] = []
+    cursor = 0
 
-    # Chunk main content normally
-    chunks = _chunk_text_standard(main_content, doc_type, adaptive)
+    for match in table_pattern.finditer(text):
+        non_table_segment = text[cursor : match.start()].strip()
+        if non_table_segment:
+            chunks.extend(_chunk_text_standard(non_table_segment, doc_type, adaptive))
 
-    # Process tables to keep them intact
-    if tables_section:
-        # Split tables by [TABLE N] boundaries with proper number matching
-        # Uses backreference \1 to ensure opening [TABLE N] matches closing [/TABLE N]
-        table_pattern = r"\[TABLE (\d+)\](.*?)\[/TABLE \1\]"
-        table_matches = list(re.finditer(table_pattern, tables_section, re.DOTALL))
+        table_block = match.group(0)
+        prefix_context = _extract_table_prefix_context(non_table_segment)
+        chunks.extend(_chunk_single_table_block(table_block, prefix_context, doc_type, adaptive))
+        cursor = match.end()
 
-        # Add table chunks (marked with #### TABLE MARKER #### for preservation)
-        for match in table_matches:
-            table_content = match.group(0)
-            # Mark table with special marker to prevent small-chunk filtering
-            marked_table = f"#### TABLE MARKER ####\n{table_content}\n#### /TABLE MARKER ####"
-            chunks.append(marked_table)
+    trailing_non_table = text[cursor:].strip()
+    if trailing_non_table:
+        chunks.extend(_chunk_text_standard(trailing_non_table, doc_type, adaptive))
 
-        # Add remaining text after tables (e.g., [TABLES END])
-        last_table_end = (
-            table_matches[-1].end() if table_matches else tables_section.find("[TABLES START]")
-        )
-        remaining = tables_section[last_table_end:]
-        if remaining.strip() and remaining.strip() != "[TABLES END]":
-            chunks.append(remaining.strip())
     return chunks
+
+
+def _extract_table_prefix_context(non_table_segment: str, max_chars: int = 240) -> str:
+    """Extract trailing context from non-table text for nearby table chunks."""
+    if not non_table_segment:
+        return ""
+
+    lines = [line.strip() for line in non_table_segment.splitlines() if line.strip()]
+    if not lines:
+        return ""
+
+    # Prefer recent heading/paragraph lines for compact context.
+    selected = "\n".join(lines[-3:])
+    if len(selected) <= max_chars:
+        return selected
+    return selected[-max_chars:]
+
+
+def _chunk_single_table_block(
+    table_block: str,
+    prefix_context: str,
+    doc_type: Optional[str] = None,
+    adaptive: bool = True,
+) -> List[str]:
+    """Chunk one [TABLE N] block, splitting large tables by row boundaries.
+
+    Distinguishes likely cosmetic/layout tables from content tables:
+    - Layout table: no markdown separator row, small row/column footprint,
+      and no nested-table signal. Converted to narrative bullets and chunked
+      with standard text logic.
+    - Content table: preserved with table markers and split by row groups.
+
+    Nested tables (flattened upstream as "[nested: ...]") are treated as
+    content-bearing and keep table markers.
+    """
+    lines = [line.rstrip() for line in table_block.strip().splitlines() if line.strip()]
+    if len(lines) < 2:
+        return [f"#### TABLE MARKER ####\n{table_block}\n#### /TABLE MARKER ####"]
+
+    open_marker = lines[0]
+    close_marker = lines[-1]
+    body_lines = lines[1:-1]
+
+    metadata_lines: List[str] = []
+    table_rows: List[str] = []
+
+    for line in body_lines:
+        stripped = line.strip()
+        is_table_row = stripped.startswith("|") and stripped.endswith("|")
+        if is_table_row:
+            table_rows.append(line)
+        else:
+            metadata_lines.append(line)
+
+    explicit_table_type: Optional[str] = None
+    cleaned_metadata_lines: List[str] = []
+    for meta_line in metadata_lines:
+        match = re.match(r"^Table-Type:\s*(layout|content)\s*$", meta_line.strip(), re.IGNORECASE)
+        if match:
+            explicit_table_type = match.group(1).lower()
+            continue
+        cleaned_metadata_lines.append(meta_line)
+
+    metadata_lines = cleaned_metadata_lines
+
+    separator_idx: Optional[int] = None
+    for idx, row in enumerate(table_rows):
+        if re.fullmatch(r"\|[\s:\-|]+\|", row.strip()):
+            separator_idx = idx
+            break
+
+    if separator_idx is not None:
+        header_lines = table_rows[: separator_idx + 1]
+        data_lines = table_rows[separator_idx + 1 :]
+    else:
+        header_lines = []
+        data_lines = table_rows
+
+    is_nested_table = any("[nested:" in row.lower() for row in table_rows)
+    col_count = max((row.count("|") - 1 for row in table_rows), default=0)
+    row_count = len(table_rows)
+
+    is_likely_layout_table = (
+        separator_idx is None
+        and not is_nested_table
+        and row_count <= 4
+        and col_count <= 2
+        and bool(table_rows)
+    )
+
+    if explicit_table_type == "layout":
+        is_likely_layout_table = True
+    elif explicit_table_type == "content":
+        is_likely_layout_table = False
+
+    if is_likely_layout_table:
+        layout_text = _format_layout_table_as_text(open_marker, prefix_context, metadata_lines, table_rows)
+        return _chunk_text_standard(layout_text, doc_type, adaptive)
+
+    if not data_lines:
+        # Small/metadata-only tables: keep intact.
+        return [
+            _format_table_chunk(
+                open_marker,
+                close_marker,
+                prefix_context,
+                metadata_lines,
+                header_lines,
+                [],
+                None,
+            )
+        ]
+
+    expanded_rows: List[str] = []
+    for row in data_lines:
+        expanded_rows.extend(_split_oversized_table_row(row))
+
+    row_groups: List[List[str]] = []
+    current_group: List[str] = []
+
+    for row in expanded_rows:
+        candidate_group = current_group + [row]
+        candidate_chunk = _format_table_chunk(
+            open_marker,
+            close_marker,
+            prefix_context,
+            metadata_lines,
+            header_lines,
+            candidate_group,
+            None,
+        )
+
+        if current_group and len(candidate_chunk) > MAX_CHUNK_SIZE:
+            row_groups.append(current_group)
+            current_group = [row]
+        else:
+            current_group = candidate_group
+
+    if current_group:
+        row_groups.append(current_group)
+
+    total_parts = len(row_groups)
+    chunks: List[str] = []
+    for idx, row_group in enumerate(row_groups):
+        chunks.append(
+            _format_table_chunk(
+                open_marker,
+                close_marker,
+                prefix_context,
+                metadata_lines,
+                header_lines,
+                row_group,
+                (idx + 1, total_parts),
+            )
+        )
+
+    return chunks
+
+
+def _format_layout_table_as_text(
+    open_marker: str,
+    prefix_context: str,
+    metadata_lines: List[str],
+    table_rows: List[str],
+) -> str:
+    """Convert a likely cosmetic/layout table to narrative text.
+
+    This avoids over-preserving non-semantic layout scaffolding as table chunks.
+    """
+    match = re.search(r"\[TABLE\s+(\d+)\]", open_marker)
+    table_idx = match.group(1) if match else "?"
+
+    lines: List[str] = [f"Layout table {table_idx} (cosmetic structure)"]
+    if prefix_context:
+        lines.append(f"Context: {prefix_context}")
+
+    lines.extend(metadata_lines)
+
+    for row in table_rows:
+        cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
+        cells = [cell for cell in cells if cell]
+        if cells:
+            lines.append(" - " + " | ".join(cells))
+
+    return "\n".join(lines)
+
+
+def _split_oversized_table_row(row: str) -> List[str]:
+    """Split a very long markdown table row into multiple row fragments.
+
+    Preserves cell boundaries by grouping consecutive cells into row-sized
+    fragments that are easier to pack into chunk limits.
+    """
+    if len(row) <= int(MAX_CHUNK_SIZE * 0.7):
+        return [row]
+
+    stripped = row.strip()
+    if not (stripped.startswith("|") and stripped.endswith("|")):
+        return [row]
+
+    cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+    if len(cells) <= 1:
+        return [row]
+
+    fragments: List[str] = []
+    current_cells: List[str] = []
+
+    for cell in cells:
+        candidate_cells = current_cells + [cell]
+        candidate_row = "| " + " | ".join(candidate_cells) + " |"
+
+        if current_cells and len(candidate_row) > int(MAX_CHUNK_SIZE * 0.7):
+            fragments.append("| " + " | ".join(current_cells) + " |")
+            current_cells = [cell]
+        else:
+            current_cells = candidate_cells
+
+    if current_cells:
+        fragments.append("| " + " | ".join(current_cells) + " |")
+
+    return fragments if fragments else [row]
+
+
+def _format_table_chunk(
+    open_marker: str,
+    close_marker: str,
+    prefix_context: str,
+    metadata_lines: List[str],
+    header_lines: List[str],
+    data_lines: List[str],
+    part_info: Optional[Tuple[int, int]],
+) -> str:
+    """Format a single table chunk with marker wrappers and optional part label."""
+    parts: List[str] = ["#### TABLE MARKER ####"]
+    parts.append(open_marker)
+
+    if part_info is not None:
+        part_no, total_parts = part_info
+        parts.append(f"Table Part: {part_no}/{total_parts}")
+
+    if prefix_context:
+        parts.append(f"Context: {prefix_context}")
+
+    parts.extend(metadata_lines)
+    parts.extend(header_lines)
+    parts.extend(data_lines)
+    parts.append(close_marker)
+    parts.append("#### /TABLE MARKER ####")
+    return "\n".join(parts)
 
 
 def extract_technical_entities(text: str) -> List[str]:

@@ -127,12 +127,97 @@ def _extract_table_metadata(table_elem) -> Dict[str, Any]:
         colspan = int(cell.get("colspan", 1))
         col_count += colspan
 
+    nested_table_count = max(0, len(table_elem.find_all("table")) - 1)
+    table_type = _classify_table_type(
+        table_elem=table_elem,
+        rows=rows,
+        row_count=row_count,
+        col_count=col_count,
+        header_row_count=header_row_count,
+        nested_table_count=nested_table_count,
+    )
+
     return {
         "rows": row_count,
         "cols": col_count,
         "has_headers": header_row_count > 0,
         "header_rows": header_row_count,
+        "nested_tables": nested_table_count,
+        "table_type": table_type,
     }
+
+
+def _classify_table_type(
+    table_elem,
+    rows: List[Any],
+    row_count: int,
+    col_count: int,
+    header_row_count: int,
+    nested_table_count: int,
+) -> str:
+    """Classify table as 'content' or 'layout' using structural signals.
+
+    The goal is to prevent cosmetic layout grids from being over-preserved as
+    semantic data tables while keeping true data tables intact.
+    """
+    # Nested tables usually represent embedded data blocks rather than cosmetic layout.
+    if nested_table_count > 0:
+        return "content"
+
+    # Captions, explicit headers, and semantic roles strongly suggest content tables.
+    caption_elem = table_elem.find("caption")
+    if caption_elem and caption_elem.get_text(strip=True):
+        return "content"
+
+    role = str(table_elem.get("role", "")).strip().lower()
+    if role in {"grid", "treegrid"}:
+        return "content"
+
+    if header_row_count > 0 or table_elem.find("thead") is not None:
+        return "content"
+
+    # Gather direct cell content only (avoid nested table duplication).
+    direct_cells = []
+    for row in rows:
+        direct_cells.extend(row.find_all(["td", "th"], recursive=False))
+
+    if not direct_cells:
+        return "layout"
+
+    non_empty_cells = 0
+    short_cell_count = 0
+    long_cell_count = 0
+    token_total = 0
+
+    for cell in direct_cells:
+        cell_text = re.sub(r"\s+", " ", cell.get_text(separator=" ", strip=True)).strip()
+        if not cell_text:
+            continue
+
+        non_empty_cells += 1
+        token_count = len(cell_text.split())
+        token_total += token_count
+
+        if token_count <= 3:
+            short_cell_count += 1
+        if token_count >= 8:
+            long_cell_count += 1
+
+    if non_empty_cells == 0:
+        return "layout"
+
+    short_ratio = short_cell_count / non_empty_cells
+    avg_tokens = token_total / non_empty_cells
+
+    # Compact 2-column (or single-column) grids with terse labels are usually layout scaffolding.
+    if row_count <= 4 and col_count <= 2 and short_ratio >= 0.75 and long_cell_count == 0:
+        return "layout"
+
+    # Very sparse text in tiny tables is often presentational.
+    if row_count <= 3 and col_count <= 3 and avg_tokens <= 2.0:
+        return "layout"
+
+    return "content"
 
 
 def _convert_table_to_text(table_elem, table_index: int) -> str:
@@ -156,6 +241,9 @@ def _convert_table_to_text(table_elem, table_index: int) -> str:
     Returns:
         Formatted table text with boundary markers and context
     """
+    metadata = _extract_table_metadata(table_elem)
+    table_type = metadata.get("table_type", "content")
+
     # Extract table caption if present
     caption = ""
     caption_elem = table_elem.find("caption")
@@ -248,7 +336,7 @@ def _convert_table_to_text(table_elem, table_index: int) -> str:
             row.append("")
 
     # Build markdown-like table with context
-    lines = [f"[TABLE {table_index}]"]
+    lines = [f"[TABLE {table_index}]", f"Table-Type: {table_type}"]
 
     # Add context if available
     if context:

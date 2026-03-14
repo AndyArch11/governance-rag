@@ -496,6 +496,50 @@ class TestTableExtraction:
         assert "A1" in text
         assert "B2" in text
 
+    def test_extract_layout_table_emits_layout_type(self, tmp_path):
+        """Layout-like tables should emit explicit layout type metadata."""
+        from bs4 import BeautifulSoup
+
+        from scripts.ingest.htmlparser import _convert_table_to_text, _extract_table_metadata
+
+        html = """
+        <table>
+            <tr><td>Logo area</td><td>Utility links</td></tr>
+            <tr><td>Left gutter</td><td>Right gutter</td></tr>
+        </table>
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        table = soup.find("table")
+
+        metadata = _extract_table_metadata(table)
+        assert metadata["table_type"] == "layout"
+
+        text = _convert_table_to_text(table, 0)
+        assert "Table-Type: layout" in text
+
+    def test_extract_content_table_emits_content_type(self, tmp_path):
+        """Data tables should emit explicit content type metadata."""
+        from bs4 import BeautifulSoup
+
+        from scripts.ingest.htmlparser import _convert_table_to_text, _extract_table_metadata
+
+        html = """
+        <table>
+            <caption>Monthly costs</caption>
+            <tr><th>Tier</th><th>Cost</th></tr>
+            <tr><td>Basic</td><td>100</td></tr>
+            <tr><td>Pro</td><td>250</td></tr>
+        </table>
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        table = soup.find("table")
+
+        metadata = _extract_table_metadata(table)
+        assert metadata["table_type"] == "content"
+
+        text = _convert_table_to_text(table, 0)
+        assert "Table-Type: content" in text
+
 
 class TestTableMergedCells:
     """Tests for tables with colspan and rowspan."""
@@ -741,12 +785,13 @@ class TestTableMultipleHeaderRows:
         lines = text.split("\n")
 
         # Should have both header rows before separator
-        assert "Performance" in lines[1]
-        assert "CPU" in lines[2]
-        # Separator should be on line 3 (after [TABLE 0] and 2 header rows)
-        assert lines[3].startswith("|---")
-        # Data row should come after separator
-        assert "80%" in lines[4]
+        assert "Table-Type: content" in lines[1]
+        assert "Performance" in lines[2]
+        assert "CPU" in lines[3]
+        # Separator should follow the header rows.
+        assert lines[4].startswith("|---")
+        # Data row should come after separator.
+        assert "80%" in lines[5]
 
     def test_three_header_rows(self, tmp_path):
         """Test table with three consecutive header rows."""
@@ -775,8 +820,9 @@ class TestTableMultipleHeaderRows:
         assert "Annual Report 2025" in text
         assert "Q1-Q2" in text
         assert "Rev" in text
+        assert "Table-Type: content" in lines[1]
         # Separator after 3rd header
-        assert lines[4].startswith("|---")
+        assert lines[5].startswith("|---")
 
     def test_mixed_th_and_td_rows(self, tmp_path):
         """Test that only consecutive TH rows from start are treated as headers."""

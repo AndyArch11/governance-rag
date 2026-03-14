@@ -6,7 +6,7 @@ for vector embedding and RAG retrieval.
 
 import pytest
 
-from scripts.ingest.chunk import chunk_text
+from scripts.ingest.chunk import MAX_CHUNK_SIZE, chunk_text
 
 
 class TestChunkText:
@@ -316,6 +316,133 @@ Never trust, always verify - all access requests are authenticated and authorise
         assert any("<strong>" in chunk for chunk in chunks)
         assert any("<a href=" in chunk for chunk in chunks)
         assert any("<div>" in chunk for chunk in chunks)
+
+    def test_table_chunking_preserves_document_order(self):
+        """Table-aware chunking should keep table position between surrounding text."""
+        text = (
+            "# Intro\n"
+            "Lead paragraph before table.\n\n"
+            "[TABLE 0]\n"
+            "Context: Cost matrix\n"
+            "| Tier | Cost |\n"
+            "|---|---|\n"
+            "| Basic | 100 |\n"
+            "| Pro | 250 |\n"
+            "[/TABLE 0]\n\n"
+            "Tail paragraph after table."
+        )
+
+        chunks = chunk_text(text, doc_type="reference", adaptive=True)
+
+        table_idx = next(i for i, chunk in enumerate(chunks) if "[TABLE 0]" in chunk)
+        before_text_exists = any(
+            "Lead paragraph before table" in chunk for chunk in chunks[: table_idx + 1]
+        )
+        after_text_exists = any("Tail paragraph after table" in chunk for chunk in chunks[table_idx:])
+
+        assert before_text_exists
+        assert after_text_exists
+
+    def test_table_chunking_splits_oversized_tables_by_rows(self):
+        """Oversized tables should be split into multiple table-marked chunks."""
+        rows = "\n".join(
+            [
+                f"| service_{i} | " + ("very long descriptive content " * 8) + "|"
+                for i in range(30)
+            ]
+        )
+        text = (
+            "[TABLE 2]\n"
+            "Context: Large service matrix\n"
+            "| Service | Details |\n"
+            "|---|---|\n"
+            f"{rows}\n"
+            "[/TABLE 2]"
+        )
+
+        chunks = chunk_text(text, doc_type="reference", adaptive=True)
+        table_chunks = [chunk for chunk in chunks if "[TABLE 2]" in chunk]
+
+        assert len(table_chunks) > 1
+        assert all("#### TABLE MARKER ####" in chunk for chunk in table_chunks)
+        assert all("Table Part:" in chunk for chunk in table_chunks)
+        assert all(len(chunk) <= int(MAX_CHUNK_SIZE * 1.35) for chunk in table_chunks)
+
+    def test_table_chunking_handles_nested_table_content(self):
+        """Nested table payloads should be preserved and chunked as content tables."""
+        nested_payload = "[nested: Region A 200K Region B 300K]"
+        rows = "\n".join(
+            [
+                f"| Segment {i} | {nested_payload} " + ("details " * 20) + "|"
+                for i in range(10)
+            ]
+        )
+        text = (
+            "[TABLE 7]\n"
+            "Context: Revenue by region\n"
+            "| Segment | Notes |\n"
+            "|---|---|\n"
+            f"{rows}\n"
+            "[/TABLE 7]"
+        )
+
+        chunks = chunk_text(text, doc_type="reference", adaptive=True)
+        table_chunks = [chunk for chunk in chunks if "[TABLE 7]" in chunk]
+
+        assert table_chunks
+        assert all("#### TABLE MARKER ####" in chunk for chunk in table_chunks)
+        assert any("[nested:" in chunk for chunk in table_chunks)
+
+    def test_table_chunking_distinguishes_layout_tables(self):
+        """Likely layout tables should be converted to narrative, not table markers."""
+        text = (
+            "Before layout table.\n\n"
+            "[TABLE 9]\n"
+            "| Left gutter | Right gutter |\n"
+            "| Logo area | Utility links |\n"
+            "[/TABLE 9]\n\n"
+            "After layout table."
+        )
+
+        chunks = chunk_text(text, doc_type="guide", adaptive=True)
+
+        # Layout tables should be treated as narrative chunks (no strict table marker wrapping).
+        assert any("Layout table 9" in chunk for chunk in chunks)
+        assert not any("#### TABLE MARKER ####" in chunk and "[TABLE 9]" in chunk for chunk in chunks)
+        assert any("Before layout table." in chunk for chunk in chunks)
+        assert any("After layout table." in chunk for chunk in chunks)
+
+    def test_table_chunking_honours_explicit_layout_type(self):
+        """Explicit parser metadata should force layout narrative formatting."""
+        text = (
+            "[TABLE 11]\n"
+            "Table-Type: layout\n"
+            "| KPI | Value |\n"
+            "|---|---|\n"
+            "| Revenue | 100 |\n"
+            "[/TABLE 11]"
+        )
+
+        chunks = chunk_text(text, doc_type="reference", adaptive=True)
+
+        assert any("Layout table 11" in chunk for chunk in chunks)
+        assert not any("#### TABLE MARKER ####" in chunk and "[TABLE 11]" in chunk for chunk in chunks)
+
+    def test_table_chunking_honours_explicit_content_type(self):
+        """Explicit parser metadata should preserve content-table markers."""
+        text = (
+            "[TABLE 12]\n"
+            "Table-Type: content\n"
+            "| Left gutter | Right gutter |\n"
+            "| Logo area | Utility links |\n"
+            "[/TABLE 12]"
+        )
+
+        chunks = chunk_text(text, doc_type="guide", adaptive=True)
+
+        table_chunks = [chunk for chunk in chunks if "[TABLE 12]" in chunk]
+        assert table_chunks
+        assert all("#### TABLE MARKER ####" in chunk for chunk in table_chunks)
 
 
 # =========================
