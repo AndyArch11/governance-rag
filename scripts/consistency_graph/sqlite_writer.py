@@ -64,7 +64,7 @@ class SQLiteGraphWriter:
         """
         self.sqlite_path = str(sqlite_path)
         self._lock = threading.Lock()  # Thread-safe edge insertion
-        self._conn = None
+        self._conn: Optional[sqlite3.Connection] = None
         self._replace = replace
         self._node_count = 0
         self._edge_count = 0
@@ -78,13 +78,22 @@ class SQLiteGraphWriter:
     def _init_db(self) -> None:
         """Create database connection and schema."""
         self._conn = sqlite3.connect(self.sqlite_path, check_same_thread=False)
-        ensure_schema(self._conn, drop_existing=self._replace)
+        conn = self._require_connection()
+        ensure_schema(conn, drop_existing=self._replace)
 
         # Set pragmas for performance
-        self._conn.execute("PRAGMA journal_mode=WAL;")  # Write-ahead logging
-        self._conn.execute("PRAGMA synchronous=NORMAL;")  # Faster writes
-        self._conn.execute("PRAGMA cache_size=-64000;")  # 64MB cache
-        self._conn.commit()
+        # Atomic swaps move only the main database file, so WAL sidecars would
+        # otherwise leave committed data behind at the temporary path.
+        conn.execute("PRAGMA journal_mode=DELETE;")
+        conn.execute("PRAGMA synchronous=NORMAL;")  # Faster writes
+        conn.execute("PRAGMA cache_size=-64000;")  # 64MB cache
+        conn.commit()
+
+    def _require_connection(self) -> sqlite3.Connection:
+        """Return the open writer connection or raise a lifecycle error."""
+        if self._conn is None:
+            raise RuntimeError("Consistency graph writer is closed")
+        return self._conn
 
     def insert_nodes_batch(self, nodes: Dict[str, Dict[str, Any]]) -> int:
         """
@@ -102,10 +111,8 @@ class SQLiteGraphWriter:
         node_insert = """
         INSERT OR REPLACE INTO nodes (
             node_id, doc_id, version, doc_type, timestamp, summary, source_category,
-            repository, health, language, service_name, service_type, dependencies,
-            internal_calls, endpoints, db, queue, exports, conflict_score,
-            topic_clusters, risk_clusters
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            health, conflict_score, topic_clusters, risk_clusters
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
         """
 
         def to_json(v):
@@ -122,27 +129,18 @@ class SQLiteGraphWriter:
                 meta.get("timestamp"),
                 meta.get("summary"),
                 meta.get("source_category"),
-                meta.get("repository"),
                 to_json(meta.get("health")),
-                meta.get("language"),
-                meta.get("service_name") or meta.get("service"),
-                meta.get("service_type"),
-                to_json(meta.get("dependencies")),
-                to_json(meta.get("internal_calls")),
-                to_json(meta.get("endpoints")),
-                to_json(meta.get("db")),
-                to_json(meta.get("queue")),
-                to_json(meta.get("exports")),
                 float(meta.get("conflict_score", 0.0)),
                 to_json(meta.get("topic_clusters")),
                 to_json(meta.get("risk_clusters")),
             )
             rows.append(row)
 
+        conn = self._require_connection()
         with self._lock:
-            cur = self._conn.cursor()
+            cur = conn.cursor()
             cur.executemany(node_insert, rows)
-            self._conn.commit()
+            conn.commit()
             self._node_count = len(nodes)
 
         return len(rows)
@@ -201,10 +199,11 @@ class SQLiteGraphWriter:
             1 if interpolated else 0,
         )
 
+        conn = self._require_connection()
         with self._lock:
-            cur = self._conn.cursor()
+            cur = conn.cursor()
             cur.execute(edge_insert, row)
-            self._conn.commit()
+            conn.commit()
             self._edge_count += 1
 
     def insert_edges_batch(self, edges: List[Dict[str, Any]]) -> int:
@@ -250,10 +249,11 @@ class SQLiteGraphWriter:
             )
             rows.append(row)
 
+        conn = self._require_connection()
         with self._lock:
-            cur = self._conn.cursor()
+            cur = conn.cursor()
             cur.executemany(edge_insert, rows)
-            self._conn.commit()
+            conn.commit()
             self._edge_count += len(rows)
 
         return len(rows)
@@ -280,8 +280,9 @@ class SQLiteGraphWriter:
         WHERE node_id = ?
         """
 
+        conn = self._require_connection()
         with self._lock:
-            cur = self._conn.cursor()
+            cur = conn.cursor()
             cur.execute(
                 update,
                 (
@@ -291,7 +292,7 @@ class SQLiteGraphWriter:
                     node_id,
                 ),
             )
-            self._conn.commit()
+            conn.commit()
 
     def insert_clusters(self, clusters: Dict[str, List[Dict[str, Any]]]) -> None:
         """
@@ -312,8 +313,9 @@ class SQLiteGraphWriter:
         VALUES (?,?,?,?)
         """
 
+        conn = self._require_connection()
         with self._lock:
-            cur = self._conn.cursor()
+            cur = conn.cursor()
 
             for ctype in ("risk", "topic"):
                 for c in clusters.get(ctype, []):
@@ -340,7 +342,7 @@ class SQLiteGraphWriter:
                     for idx, nid in enumerate(c.get("members") or []):
                         cur.execute(node_cluster_insert, (nid, cid, 1.0, 1 if idx == 0 else 0))
 
-            self._conn.commit()
+            conn.commit()
 
     def set_build_metadata(self, key: str, value: Any) -> None:
         """
@@ -350,7 +352,7 @@ class SQLiteGraphWriter:
             key: Metadata key
             value: Value to store (will be converted to string)
         """
-        set_metadata_value(self._conn, key, str(value))
+        set_metadata_value(self._require_connection(), key, str(value))
 
     def get_build_metadata(self, key: str) -> Optional[str]:
         """
@@ -362,7 +364,7 @@ class SQLiteGraphWriter:
         Returns:
             Value string or None if not found
         """
-        return get_metadata_value(self._conn, key)
+        return get_metadata_value(self._require_connection(), key)
 
     def mark_node_processed(self, node_id: str) -> None:
         """

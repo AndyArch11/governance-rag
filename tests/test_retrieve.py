@@ -112,6 +112,38 @@ def retrieve_module(monkeypatch):
 class TestRetrieveValidation:
     """Validation tests for retrieve."""
 
+    def test_query_embedding_retries_audit_each_attempt(self, retrieve_module, monkeypatch):
+        from scripts.utils import llm_instrumentation
+
+        retrieve, _, _ = retrieve_module
+        attempts = [TimeoutError("query embedding timeout"), [0.1, 0.2]]
+        usage_events = []
+
+        class FakeEmbeddings:
+            def embed_query(self, _query):
+                result = attempts.pop(0)
+                if isinstance(result, Exception):
+                    raise result
+                return result
+
+        monkeypatch.setattr("langchain_ollama.OllamaEmbeddings", lambda **_: FakeEmbeddings())
+        monkeypatch.setattr("scripts.utils.retry_utils.time.sleep", lambda _: None)
+        monkeypatch.setattr(
+            llm_instrumentation,
+            "audit",
+            lambda event, data: usage_events.append((event, data)),
+        )
+
+        result = retrieve._embed_query("account security query", "test-embedding")
+
+        records = [data for event, data in usage_events if event == "llm_usage"]
+        assert result == [0.1, 0.2]
+        assert [record["success"] for record in records] == [False, True]
+        assert [record["attempt"] for record in records] == [1, 2]
+        assert all(
+            record["input_tokens"] == len("account security query") // 4 for record in records
+        )
+
     def test_empty_query_raises(self, retrieve_module):
         retrieve, _, _ = retrieve_module
         with pytest.raises(ValueError, match="Query cannot be empty"):
@@ -219,15 +251,15 @@ class TestRetrieveErrors:
         assert retrieve_events[0][1]["retrieved_count"] == 0
 
 
-class TestCodeFilters:
-    """Tests for code-specific filtering in retrieve."""
+class TestExplicitMetadataFilters:
+    """Tests for caller-supplied metadata filters in retrieve."""
 
-    def test_language_filter_passed_to_collection(self, retrieve_module):
-        """Test that language_filter parameter is passed to _query_collection."""
+    def test_explicit_metadata_filter_passed_to_collection(self, retrieve_module):
+        """Test that language metadata is passed to _query_collection."""
         retrieve, _, _ = retrieve_module
         collection = DummyCollection()
 
-        retrieve.retrieve("authentication", collection, language_filter="java", k=3)
+        retrieve.retrieve("authentication", collection, filters={"language": "java"}, k=3)
 
         # Check that query was called with filters in where clause
         assert len(collection.queries) > 0
@@ -236,12 +268,12 @@ class TestCodeFilters:
         where_clause = query_call["where"]
         assert get_where_value(where_clause, "language") == "java"
 
-    def test_source_category_filter_passed_to_collection(self, retrieve_module):
-        """Test that source_category_filter parameter is passed to _query_collection."""
+    def test_source_category_metadata_passed_to_collection(self, retrieve_module):
+        """Test that source-category metadata is passed to _query_collection."""
         retrieve, _, _ = retrieve_module
         collection = DummyCollection()
 
-        retrieve.retrieve("payment API", collection, source_category_filter="code", k=3)
+        retrieve.retrieve("payment API", collection, filters={"source_category": "code"}, k=3)
 
         # Check that query was called with filters in where clause
         assert len(collection.queries) > 0
@@ -258,8 +290,7 @@ class TestCodeFilters:
         retrieve.retrieve(
             "payment service",
             collection,
-            language_filter="java",
-            source_category_filter="code",
+            filters={"language": "java", "source_category": "code"},
             k=3,
         )
 
@@ -272,17 +303,74 @@ class TestCodeFilters:
         # embedding_model should also be in there
         assert get_where_value(where_clause, "embedding_model") is not None
 
-    def test_language_filter_case_insensitive(self, retrieve_module):
-        """Test that language filter is normalised to lowercase."""
+    def test_explicit_filters_are_preserved(self, retrieve_module):
+        """Test that caller-supplied filters survive the retrieve() wrapper."""
         retrieve, _, _ = retrieve_module
         collection = DummyCollection()
 
-        retrieve.retrieve("auth", collection, language_filter="JAVA", k=3)
+        retrieve.retrieve(
+            "thesis methodology",
+            collection,
+            filters={"source_kind": "thesis_document"},
+            k=3,
+        )
 
-        # Check that filter was converted to lowercase
+        assert len(collection.queries) > 0
         query_call = collection.queries[0]
         where_clause = query_call["where"]
-        assert get_where_value(where_clause, "language") == "java"
+        assert get_where_value(where_clause, "source_kind") == "thesis_document"
+        assert get_where_value(where_clause, "embedding_model") is not None
+
+    def test_bm25_results_respect_explicit_filters(self, retrieve_module, monkeypatch):
+        """Test that pre-built BM25 results cannot bypass caller-supplied filters."""
+        retrieve, _, _ = retrieve_module
+
+        class FakeBM25Retriever:
+            def __init__(self, rag_data_path):
+                self.total_docs = 2
+
+            def search(self, query, top_k):
+                return [("reference-chunk", 8.0), ("thesis-chunk", 7.0)]
+
+            def close(self):
+                pass
+
+        class Collection:
+            def get(self, ids=None, include=None):
+                metadata_by_id = {
+                    "reference-chunk": {"source_kind": "crossref"},
+                    "thesis-chunk": {"source_kind": "thesis_document"},
+                }
+                chunk_id = ids[0]
+                return {
+                    "ids": [chunk_id],
+                    "documents": [f"content for {chunk_id}"],
+                    "metadatas": [metadata_by_id[chunk_id]],
+                }
+
+        monkeypatch.setattr(retrieve, "BM25Retriever", FakeBM25Retriever)
+
+        chunks, metadata, chunk_ids = retrieve._bm25_search_with_fallback(
+            "research methodology",
+            Collection(),
+            k=2,
+            filters={"source_kind": "thesis_document"},
+        )
+
+        assert chunks == ["content for thesis-chunk"]
+        assert [item["source_kind"] for item in metadata] == ["thesis_document"]
+        assert chunk_ids == ["thesis-chunk"]
+
+    def test_explicit_metadata_filter_values_are_preserved(self, retrieve_module):
+        """Test that generic metadata filter values are not implicitly rewritten."""
+        retrieve, _, _ = retrieve_module
+        collection = DummyCollection()
+
+        retrieve.retrieve("auth", collection, filters={"language": "JAVA"}, k=3)
+
+        query_call = collection.queries[0]
+        where_clause = query_call["where"]
+        assert get_where_value(where_clause, "language") == "JAVA"
 
     def test_keyword_search_receives_filters(self, retrieve_module, monkeypatch):
         """Test that filters are passed to keyword search."""
@@ -342,7 +430,7 @@ class TestCodeFilters:
         collection.get = mock_get
 
         chunks, metadata = retrieve.retrieve(
-            "authentication", collection, language_filter="java", k=3
+            "authentication", collection, filters={"language": "java"}, k=3
         )
 
         # Verify get was called (keyword search fallback)
@@ -370,38 +458,25 @@ class TestCodeFilters:
 class TestDetectFiltersFromQuery:
     """Tests for detect_filters_from_query function."""
 
-    def test_detect_java_language(self, retrieve_module):
+    def test_code_like_query_does_not_add_code_filters(self, retrieve_module):
         retrieve, _, _ = retrieve_module
 
-        filters = retrieve.detect_filters_from_query("Show me Java services")
-        assert filters.get("language") == "java"
-        assert filters.get("source_category") == "code"
+        for query in (
+            "Show me Java services",
+            "Where are the Groovy gradle builds?",
+            "Show Python Flask endpoints",
+            "Which microservices depend on this library?",
+        ):
+            filters = retrieve.detect_filters_from_query(query)
+            assert "language" not in filters
+            assert filters.get("source_category") != "code"
 
-    def test_detect_groovy_language(self, retrieve_module):
-        retrieve, _, _ = retrieve_module
-
-        filters = retrieve.detect_filters_from_query("Where are the Groovy gradle builds?")
-        assert filters.get("language") == "groovy"
-        assert filters.get("source_category") == "code"
-
-    def test_detect_python_language(self, retrieve_module):
-        retrieve, _, _ = retrieve_module
-
-        filters = retrieve.detect_filters_from_query("Show Python Flask endpoints")
-        assert filters.get("language") == "python"
-        assert filters.get("source_category") == "code"
-
-    def test_detect_api_code_query(self, retrieve_module):
+    def test_detect_api_query_as_documentation(self, retrieve_module):
         retrieve, _, _ = retrieve_module
 
         filters = retrieve.detect_filters_from_query("Find REST API endpoints")
-        assert filters.get("source_category") == "code"
-
-    def test_detect_service_dependency_query(self, retrieve_module):
-        retrieve, _, _ = retrieve_module
-
-        filters = retrieve.detect_filters_from_query("Which microservices depend on this library?")
-        assert filters.get("source_category") == "code"
+        assert filters.get("is_api_reference") is True
+        assert filters.get("source_category") != "code"
 
     def test_no_false_positives_on_governance(self, retrieve_module):
         retrieve, _, _ = retrieve_module
@@ -411,51 +486,29 @@ class TestDetectFiltersFromQuery:
         assert filters.get("source_category") != "code"
         # or at least not auto-detect as code if no language is mentioned
 
-    def test_combined_language_and_service_detection(self, retrieve_module):
+
+class TestGenericMetadataFilterDictionary:
+    """Tests for generic metadata filtering through the public retrieval API."""
+
+    def test_retrieve_preserves_arbitrary_metadata_filters(self, retrieve_module):
+        retrieve, _, _ = retrieve_module
+        collection = DummyCollection()
+        filters = {"source_kind": "thesis_document", "review_status": "approved"}
+
+        retrieve.retrieve("methodology", collection, filters=filters, k=3)
+
+        where_clause = collection.queries[0]["where"]
+        assert get_where_value(where_clause, "source_kind") == "thesis_document"
+        assert get_where_value(where_clause, "review_status") == "approved"
+
+
+class TestRerankScore:
+    def test_code_metadata_does_not_receive_a_reranking_bonus(self, retrieve_module):
         retrieve, _, _ = retrieve_module
 
-        filters = retrieve.detect_filters_from_query("Which Java services use Spring?")
-        assert filters.get("language") == "java"
-        assert filters.get("source_category") == "code"
-
-
-class TestBuildCodeFilters:
-    """Tests for build_code_filters helper function."""
-
-    def test_build_filters_with_language(self, retrieve_module):
-        retrieve, _, _ = retrieve_module
-
-        filters = retrieve.build_code_filters(language="java")
-        assert filters.get("source_category") == "code"
-        assert filters.get("language") == "java"
-
-    def test_build_filters_with_dependencies(self, retrieve_module):
-        retrieve, _, _ = retrieve_module
-
-        filters = retrieve.build_code_filters(include_dependencies=True)
-        assert filters.get("source_category") == "code"
-        assert filters.get("has_dependencies") is True
-
-    def test_build_filters_with_endpoints(self, retrieve_module):
-        retrieve, _, _ = retrieve_module
-
-        filters = retrieve.build_code_filters(include_endpoints=True)
-        assert filters.get("source_category") == "code"
-        assert filters.get("has_endpoints") is True
-
-    def test_build_filters_with_services(self, retrieve_module):
-        retrieve, _, _ = retrieve_module
-
-        filters = retrieve.build_code_filters(include_services=True)
-        assert filters.get("source_category") == "code"
-        assert filters.get("is_service") is True
-
-    def test_build_filters_combined_parameters(self, retrieve_module):
-        retrieve, _, _ = retrieve_module
-
-        filters = retrieve.build_code_filters(
-            language="groovy", include_dependencies=True, include_endpoints=True
+        baseline = retrieve.calculate_rerank_score("code", {}, "code", 1.0)
+        code_metadata_score = retrieve.calculate_rerank_score(
+            "code", {"contains_code": True}, "code", 1.0
         )
-        assert filters.get("language") == "groovy"
-        assert filters.get("has_dependencies") is True
-        assert filters.get("has_endpoints") is True
+
+        assert code_metadata_score == baseline

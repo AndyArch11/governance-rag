@@ -9,7 +9,7 @@ This test suite verifies that:
 
 Background:
 -----------
-Previous bug: ingest_git.py directly passed config.rag_data_path to ChromaDB's
+Previous bug: ingestion passed config.rag_data_path directly to ChromaDB's
 PersistentClient, causing it to create chroma.sqlite3 at the wrong location, while
 build_consistency_graph.py correctly used get_default_vector_path().
 
@@ -121,31 +121,6 @@ class TestPathFactoryPattern:
 class TestModulePathConsistency:
     """Test that all modules use consistent path determination."""
 
-    def test_ingest_git_uses_factory_pattern(self):
-        """Verify ingest_git.py uses factory pattern for path determination."""
-        ingest_git_file = PROJECT_ROOT / "scripts" / "ingest" / "ingest_git.py"
-        content = ingest_git_file.read_text()
-
-        # Should import factory functions (order/extra symbols may vary after formatting)
-        assert "from scripts.utils.db_factory import" in content
-        assert "get_vector_client" in content
-        assert "get_default_vector_path" in content
-
-        # Should use get_vector_client
-        assert "get_vector_client(prefer=" in content
-
-        # Should use get_default_vector_path
-        assert "get_default_vector_path(" in content
-
-        # Should NOT directly pass config.rag_data_path to PersistentClient
-        # (this was the original bug)
-        lines = content.split("\n")
-        for i, line in enumerate(lines):
-            if "PersistentClient(path=" in line and "chroma_path" in line:
-                # Good! Using a computed path variable, not direct config
-                assert "chroma_path" in line or "path=" in line
-                break
-
     def test_ingest_py_uses_factory_pattern(self):
         """Verify ingest.py uses factory pattern for path determination."""
         ingest_file = PROJECT_ROOT / "scripts" / "ingest" / "ingest.py"
@@ -196,7 +171,6 @@ class TestModulePathConsistency:
     def test_no_direct_persistent_client_path_from_config(self):
         """Verify no module directly passes config.rag_data_path to PersistentClient."""
         modules_to_check = [
-            "scripts/ingest/ingest_git.py",
             "scripts/ingest/ingest.py",
             "scripts/consistency_graph/build_consistency_graph.py",
             "scripts/ui/dashboard.py",
@@ -304,14 +278,6 @@ class TestConfigurationInheritance:
         assert config.rag_data_path is not None
         assert isinstance(config.rag_data_path, str) or isinstance(config.rag_data_path, Path)
 
-    def test_git_ingest_config_inherits_rag_data_path(self):
-        """Test that GitIngestConfig inherits rag_data_path from IngestConfig."""
-        from scripts.ingest.git.git_ingest_config import GitIngestConfig
-
-        config = GitIngestConfig()
-        assert hasattr(config, "rag_data_path")
-        assert config.rag_data_path is not None
-
     def test_consistency_config_has_rag_data_path(self):
         """Test that ConsistencyConfig provides rag_data_path property."""
         from scripts.consistency_graph.consistency_config import ConsistencyConfig
@@ -324,19 +290,12 @@ class TestConfigurationInheritance:
     def test_all_configs_default_to_same_rag_data_path(self):
         """Test that all config classes default to the same rag_data_path."""
         from scripts.consistency_graph.consistency_config import ConsistencyConfig
-        from scripts.ingest.git.git_ingest_config import GitIngestConfig
         from scripts.ingest.ingest_config import IngestConfig
 
         ingest_config = IngestConfig()
-        git_config = GitIngestConfig()
         consistency_config = ConsistencyConfig()
 
-        # All should resolve to the same location (or at least the same directory)
-        assert (
-            Path(ingest_config.rag_data_path).name
-            == Path(git_config.rag_data_path).name
-            == "rag_data"
-        )
+        assert Path(ingest_config.rag_data_path).name == "rag_data"
         assert Path(consistency_config.rag_data_path).name == "rag_data"
 
 
@@ -368,50 +327,6 @@ class TestEnvironmentVariableHandling:
         # Should be consistent with the override path
         assert "/tmp/test_rag_data" in path_chroma
         assert "/tmp/test_rag_data" in path_sqlite
-
-
-class TestPathUsagePatterns:
-    """Test common patterns of path usage across modules."""
-
-    def test_factory_called_at_module_init(self):
-        """Test that factory functions are called early in module initialisation."""
-        ingest_git_file = PROJECT_ROOT / "scripts" / "ingest" / "ingest_git.py"
-        content = ingest_git_file.read_text()
-
-        # The factory functions should be used to initialise module-level variables
-        lines = content.split("\n")
-
-        # Find where imports happen (early in file)
-        import_section_end = None
-        for i, line in enumerate(lines):
-            if "from scripts.utils.db_factory import" in line:
-                import_section_end = i
-                break
-
-        assert import_section_end is not None, "Factory imports not found"
-
-    def test_path_computation_before_chromadb_init(self):
-        """Test that paths are computed before passing to PersistentClient."""
-        ingest_git_file = PROJECT_ROOT / "scripts" / "ingest" / "ingest_git.py"
-        content = ingest_git_file.read_text()
-
-        # Find get_default_vector_path call
-        vector_path_match = None
-        for match in re.finditer(r"chroma_path\s*=\s*get_default_vector_path\(", content):
-            vector_path_match = match
-            break
-
-        # Find PersistentClient initialisation with chroma_path
-        persistent_client_match = None
-        for match in re.finditer(r"PersistentClient\s*\(\s*path\s*=\s*chroma_path", content):
-            persistent_client_match = match
-            break
-
-        if vector_path_match and persistent_client_match:
-            # Path computation should happen before PersistentClient usage
-            assert (
-                vector_path_match.start() < persistent_client_match.start()
-            ), "Path computation must happen before PersistentClient initialisation"
 
 
 class TestPathEdgeCases:
@@ -473,11 +388,11 @@ class TestIntegrationPathFlow:
         """Test that config -> factory -> client initialisation works correctly."""
         from pathlib import Path
 
-        from scripts.ingest.git.git_ingest_config import GitIngestConfig
+        from scripts.ingest.ingest_config import IngestConfig
         from scripts.utils.db_factory import get_default_vector_path, get_vector_client
 
         # Create config
-        config = GitIngestConfig()
+        config = IngestConfig()
 
         # Get factory client
         PersistentClient_class, using_sqlite = get_vector_client(prefer="chroma")
@@ -495,24 +410,24 @@ class TestIntegrationPathFlow:
         from pathlib import Path
 
         from scripts.consistency_graph.consistency_config import ConsistencyConfig
-        from scripts.ingest.git.git_ingest_config import GitIngestConfig
+        from scripts.ingest.ingest_config import IngestConfig
         from scripts.utils.db_factory import get_default_vector_path, get_vector_client
 
         # Get configs
-        git_config = GitIngestConfig()
+        ingest_config = IngestConfig()
         consistency_config = ConsistencyConfig()
 
         # Get client info
         _, using_sqlite = get_vector_client(prefer="chroma")
 
         # Compute paths
-        git_path = get_default_vector_path(Path(git_config.rag_data_path), using_sqlite)
+        ingest_path = get_default_vector_path(Path(ingest_config.rag_data_path), using_sqlite)
         consistency_path = get_default_vector_path(
             Path(consistency_config.rag_data_path), using_sqlite
         )
 
         # Should be the same (assuming same default rag_data_path)
-        assert git_path == consistency_path
+        assert ingest_path == consistency_path
 
     def test_backend_consistency_across_modules(self):
         """Test that all modules will use the same backend preference."""

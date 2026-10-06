@@ -18,7 +18,7 @@ import sys
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, Optional
+from typing import TYPE_CHECKING, Any, Iterable, Optional
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -413,8 +413,7 @@ def _remove_path(path: Path) -> None:
 def _ensure_bm25_tables(conn: sqlite3.Connection) -> None:
     """Ensure BM25 tables exist in a cache database connection."""
     cursor = conn.cursor()
-    cursor.execute(
-        """
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS bm25_index (
             term TEXT NOT NULL,
             doc_id TEXT NOT NULL,
@@ -423,28 +422,23 @@ def _ensure_bm25_tables(conn: sqlite3.Connection) -> None:
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (term, doc_id)
         )
-        """
-    )
-    cursor.execute(
-        """
+        """)
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS bm25_corpus_stats (
             term TEXT PRIMARY KEY,
             document_frequency INTEGER NOT NULL,
             idf REAL NOT NULL,
             last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-        """
-    )
-    cursor.execute(
-        """
+        """)
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS bm25_doc_metadata (
             doc_id TEXT PRIMARY KEY,
             doc_length INTEGER NOT NULL,
             original_text TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-        """
-    )
+        """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_bm25_term ON bm25_index(term)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_bm25_doc ON bm25_index(doc_id)")
     conn.commit()
@@ -468,27 +462,21 @@ def _commit_bm25_tables(live_db: Path, staged_db: Path) -> None:
             live_conn.execute("DELETE FROM bm25_corpus_stats")
             live_conn.execute("DELETE FROM bm25_doc_metadata")
 
-            live_conn.execute(
-                """
+            live_conn.execute("""
                 INSERT INTO bm25_index (term, doc_id, term_frequency, doc_length, created_at)
                 SELECT term, doc_id, term_frequency, doc_length, created_at
                 FROM staged.bm25_index
-                """
-            )
-            live_conn.execute(
-                """
+                """)
+            live_conn.execute("""
                 INSERT INTO bm25_corpus_stats (term, document_frequency, idf, last_updated)
                 SELECT term, document_frequency, idf, last_updated
                 FROM staged.bm25_corpus_stats
-                """
-            )
-            live_conn.execute(
-                """
+                """)
+            live_conn.execute("""
                 INSERT INTO bm25_doc_metadata (doc_id, doc_length, original_text, created_at)
                 SELECT doc_id, doc_length, original_text, created_at
                 FROM staged.bm25_doc_metadata
-                """
-            )
+                """)
 
             live_conn.commit()
         except Exception:
@@ -546,9 +534,7 @@ def prepare_reset_workspace(
     backup = Path(str(chroma_live) + ".old")
     for stale in (chroma_temp, backup):
         if stale.exists():
-            logger.warning(
-                "Removing stale path from previous interrupted reset: %s", stale
-            )
+            logger.warning("Removing stale path from previous interrupted reset: %s", stale)
             if verbose:
                 print(f"  ⚠ Removing stale path: {stale}")
             _remove_path(stale)
@@ -694,7 +680,11 @@ def rollback_reset(context: ResetContext, verbose: bool = False) -> None:
         print(f"[RESET] ✓ Original BM25 cache preserved at {context.bm25_cache_live_db}")
 
 
-def clear_for_ingestion(verbose: bool = False, dry_run: bool = False) -> bool:
+def clear_for_ingestion(
+    verbose: bool = False,
+    dry_run: bool = False,
+    config: Optional[Any] = None,
+) -> bool:
     """
     Clear databases and caches for a fresh ingestion.
 
@@ -718,12 +708,14 @@ def clear_for_ingestion(verbose: bool = False, dry_run: bool = False) -> bool:
     Args:
         verbose: Print status messages
         dry_run: Show what would be deleted without deleting
+        config: Active ingestion configuration. Uses the standard ingestion
+            configuration when omitted for backwards compatibility.
 
     Returns:
         True if successful, False if any errors occurred
     """
     try:
-        ingest_config = get_ingest_config()
+        ingest_config = config if config is not None else get_ingest_config()
 
         if verbose:
             print("\n" + "=" * 60)

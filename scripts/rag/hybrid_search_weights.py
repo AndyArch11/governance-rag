@@ -7,6 +7,7 @@ Supports both static configuration and adaptive learning from relevancy ratings.
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from math import floor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -27,17 +28,19 @@ class HybridSearchWeights:
 
     # Whether to normalise weights to sum to 1.0
     normalise_weights: bool = True
+    graph_weight: float = 0.15  # Weight for graph-proximity results (0.0-1.0)
 
     def __post_init__(self):
         """Validate and normalise weights after initialisation."""
-        if self.vector_weight < 0 or self.keyword_weight < 0:
+        if self.vector_weight < 0 or self.keyword_weight < 0 or self.graph_weight < 0:
             raise ValueError("Weights must be non-negative")
 
         if self.normalise_weights:
-            total = self.vector_weight + self.keyword_weight
+            total = self.vector_weight + self.keyword_weight + self.graph_weight
             if total > 0:
                 self.vector_weight /= total
                 self.keyword_weight /= total
+                self.graph_weight /= total
 
         if self.combination_strategy not in ["sum", "rank_fusion", "top_k"]:
             raise ValueError(f"Unknown combination strategy: {self.combination_strategy}")
@@ -47,6 +50,7 @@ class HybridSearchWeights:
         return {
             "vector_weight": self.vector_weight,
             "keyword_weight": self.keyword_weight,
+            "graph_weight": self.graph_weight,
             "combination_strategy": self.combination_strategy,
             "normalise_weights": self.normalise_weights,
             "timestamp": datetime.now().isoformat(),
@@ -58,6 +62,7 @@ class HybridSearchWeights:
         return cls(
             vector_weight=data.get("vector_weight", 0.6),
             keyword_weight=data.get("keyword_weight", 0.4),
+            graph_weight=data.get("graph_weight", 0.15),
             combination_strategy=data.get("combination_strategy", "sum"),
             normalise_weights=data.get("normalise_weights", True),
         )
@@ -126,6 +131,7 @@ class HybridSearchWeightManager:
         vector_weight: Optional[float] = None,
         keyword_weight: Optional[float] = None,
         strategy: Optional[str] = None,
+        graph_weight: Optional[float] = None,
     ) -> bool:
         """Update and persist weights.
 
@@ -133,6 +139,7 @@ class HybridSearchWeightManager:
             vector_weight: New vector search weight
             keyword_weight: New keyword search weight
             strategy: New combination strategy
+            graph_weight: New graph search weight
 
         Returns:
             True if successful
@@ -142,6 +149,8 @@ class HybridSearchWeightManager:
                 self.weights.vector_weight = vector_weight
             if keyword_weight is not None:
                 self.weights.keyword_weight = keyword_weight
+            if graph_weight is not None:
+                self.weights.graph_weight = graph_weight
             if strategy is not None:
                 self.weights.combination_strategy = strategy
 
@@ -149,6 +158,7 @@ class HybridSearchWeightManager:
             updated = HybridSearchWeights(
                 vector_weight=self.weights.vector_weight,
                 keyword_weight=self.weights.keyword_weight,
+                graph_weight=self.weights.graph_weight,
                 combination_strategy=self.weights.combination_strategy,
                 normalise_weights=self.weights.normalise_weights,
             )
@@ -168,6 +178,9 @@ class HybridSearchWeightManager:
         keyword_metadata: List[Dict],
         keyword_scores: List[float],
         k: int = 5,
+        graph_chunks: Optional[List[str]] = None,
+        graph_metadata: Optional[List[Dict]] = None,
+        graph_scores: Optional[List[float]] = None,
     ) -> Tuple[List[str], List[Dict], List[float]]:
         """Combine vector and keyword results using configured weights.
 
@@ -179,6 +192,9 @@ class HybridSearchWeightManager:
             keyword_metadata: Metadata for keyword chunks
             keyword_scores: Normalised scores (0-1) for keyword chunks
             k: Number of final results to return
+            graph_chunks: List of chunks from graph search
+            graph_metadata: Metadata for graph chunks
+            graph_scores: Normalised scores (0-1) for graph chunks
 
         Returns:
             Tuple of (combined_chunks, combined_metadata, combined_scores)
@@ -192,6 +208,9 @@ class HybridSearchWeightManager:
                 keyword_metadata,
                 keyword_scores,
                 k,
+                graph_chunks or [],
+                graph_metadata or [],
+                graph_scores or [],
             )
         elif self.weights.combination_strategy == "rank_fusion":
             return self._combine_rank_fusion(
@@ -202,6 +221,9 @@ class HybridSearchWeightManager:
                 keyword_metadata,
                 keyword_scores,
                 k,
+                graph_chunks or [],
+                graph_metadata or [],
+                graph_scores or [],
             )
         else:  # top_k
             return self._combine_top_k(
@@ -212,6 +234,9 @@ class HybridSearchWeightManager:
                 keyword_metadata,
                 keyword_scores,
                 k,
+                graph_chunks or [],
+                graph_metadata or [],
+                graph_scores or [],
             )
 
     def _combine_weighted_sum(
@@ -223,8 +248,26 @@ class HybridSearchWeightManager:
         keyword_metadata: List[Dict],
         keyword_scores: List[float],
         k: int,
+        graph_chunks: List[str],
+        graph_metadata: List[Dict],
+        graph_scores: List[float],
     ) -> Tuple[List[str], List[Dict], List[float]]:
-        """Combine using weighted sum strategy."""
+        """Combine using weighted sum strategy.
+        Args:
+            vector_chunks (List[str]): List of chunks retrieved via vector search.
+            vector_metadata (List[Dict]): Corresponding metadata for vector chunks.
+            vector_scores (List[float]): Normalised scores (0-1) for vector chunks.
+            keyword_chunks (List[str]): List of chunks retrieved via keyword search.
+            keyword_metadata (List[Dict]): Corresponding metadata for keyword chunks.
+            keyword_scores (List[float]): Normalised scores (0-1) for keyword chunks.
+            k (int): Maximum number of chunks to return.
+            graph_chunks (List[str]): List of chunks retrieved from the graph.
+            graph_metadata (List[Dict]): Corresponding metadata for graph chunks.
+            graph_scores (List[float]): Normalised scores (0-1) for graph chunks.
+
+        Returns:
+            Tuple[List[str], List[Dict], List[float]]: Combined chunks, their metadata, and combined scores.
+        """
         combined: Dict[str, Tuple[str, Dict, float]] = {}
 
         # Add vector results
@@ -248,6 +291,23 @@ class HybridSearchWeightManager:
                 # New chunk from keyword search
                 combined[chunk] = (chunk, {**meta, "retrieval_method": "keyword"}, weighted_score)
 
+        for chunk, meta, score in zip(graph_chunks, graph_metadata, graph_scores):
+            weighted_score = score * self.weights.graph_weight
+            graph_meta = {**meta, "graph_proximity_score": score}
+            if chunk in combined:
+                _, existing_meta, existing_score = combined[chunk]
+                combined[chunk] = (
+                    chunk,
+                    {**existing_meta, **graph_meta, "retrieval_method": "hybrid"},
+                    existing_score + weighted_score,
+                )
+            else:
+                combined[chunk] = (
+                    chunk,
+                    {**graph_meta, "retrieval_method": "thesis_graph"},
+                    weighted_score,
+                )
+
         # Sort by combined score descending
         sorted_results = sorted(combined.values(), key=lambda x: x[2], reverse=True)
 
@@ -267,11 +327,29 @@ class HybridSearchWeightManager:
         keyword_metadata: List[Dict],
         keyword_scores: List[float],
         k: int,
+        graph_chunks: List[str],
+        graph_metadata: List[Dict],
+        graph_scores: List[float],
     ) -> Tuple[List[str], List[Dict], List[float]]:
         """Combine using Reciprocal Rank Fusion (RRF).
 
         RRF formula: score = 1 / (60 + rank)
         Gives equal importance to ranking position vs absolute scores.
+
+        Args:
+            vector_chunks (List[str]): List of chunks retrieved via vector search.
+            vector_metadata (List[Dict]): Corresponding metadata for vector chunks.
+            vector_scores (List[float]): Normalised scores (0-1) for vector chunks.
+            keyword_chunks (List[str]): List of chunks retrieved via keyword search.
+            keyword_metadata (List[Dict]): Corresponding metadata for keyword chunks.
+            keyword_scores (List[float]): Normalised scores (0-1) for keyword chunks.
+            k (int): Maximum number of chunks to return.
+            graph_chunks (List[str]): List of chunks retrieved from the graph.
+            graph_metadata (List[Dict]): Corresponding metadata for graph chunks.
+            graph_scores (List[float]): Normalised scores (0-1) for graph chunks.
+
+        Returns:
+            Tuple[List[str], List[Dict], List[float]]: Combined chunks, their metadata, and combined scores.
         """
         combined: Dict[str, Tuple[str, Dict, float]] = {}
 
@@ -296,6 +374,23 @@ class HybridSearchWeightManager:
             else:
                 combined[chunk] = (chunk, {**meta, "retrieval_method": "keyword"}, rrf_score)
 
+        for rank, (chunk, meta, _) in enumerate(zip(graph_chunks, graph_metadata, graph_scores)):
+            rrf_score = (1.0 / (60 + rank + 1)) * self.weights.graph_weight
+            graph_meta = {**meta, "graph_proximity_score": 1.0 / (rank + 1)}
+            if chunk in combined:
+                _, existing_meta, existing_score = combined[chunk]
+                combined[chunk] = (
+                    chunk,
+                    {**existing_meta, **graph_meta, "retrieval_method": "hybrid"},
+                    existing_score + rrf_score,
+                )
+            else:
+                combined[chunk] = (
+                    chunk,
+                    {**graph_meta, "retrieval_method": "thesis_graph"},
+                    rrf_score,
+                )
+
         # Sort by RRF score descending
         sorted_results = sorted(combined.values(), key=lambda x: x[2], reverse=True)
 
@@ -314,37 +409,118 @@ class HybridSearchWeightManager:
         keyword_metadata: List[Dict],
         keyword_scores: List[float],
         k: int,
+        graph_chunks: List[str],
+        graph_metadata: List[Dict],
+        graph_scores: List[float],
     ) -> Tuple[List[str], List[Dict], List[float]]:
         """Combine using top-k from each method.
 
-        Takes proportional top results from vector and keyword based on weights.
-        Example: vector_weight=0.6, keyword_weight=0.4 with k=5 takes 3 from vector, 2 from keyword.
+        Takes proportional top results from each available source based on weights.
+
+        Args:
+            vector_chunks (List[str]): List of chunks retrieved via vector search.
+            vector_metadata (List[Dict]): Corresponding metadata for vector chunks.
+            vector_scores (List[float]): Normalised scores (0-1) for vector chunks.
+            keyword_chunks (List[str]): List of chunks retrieved via keyword search.
+            keyword_metadata (List[Dict]): Corresponding metadata for keyword chunks.
+            keyword_scores (List[float]): Normalised scores (0-1) for keyword chunks.
+            k (int): Maximum number of chunks to return.
+            graph_chunks (List[str]): List of chunks retrieved from the graph.
+            graph_metadata (List[Dict]): Corresponding metadata for graph chunks.
+            graph_scores (List[float]): Normalised scores (0-1) for graph chunks.
+
+        Returns:
+            Tuple[List[str], List[Dict], List[float]]: Combined chunks, their metadata, and combined scores.
         """
-        combined_chunks = []
-        combined_metadata = []
-        combined_scores = []
-        seen = set()
+        sources = [
+            (vector_chunks, vector_metadata, vector_scores, self.weights.vector_weight, "vector"),
+            (
+                keyword_chunks,
+                keyword_metadata,
+                keyword_scores,
+                self.weights.keyword_weight,
+                "keyword",
+            ),
+            (graph_chunks, graph_metadata, graph_scores, self.weights.graph_weight, "thesis_graph"),
+        ]
+        available = [
+            index
+            for index, (chunks, _, _, weight, _) in enumerate(sources)
+            if chunks and weight > 0
+        ]
+        combined_chunks: List[str] = []
+        combined_metadata: List[Dict] = []
+        combined_scores: List[float] = []
+        selected_counts = [0] * len(sources)
 
-        # Calculate how many to take from each method
-        vector_k = max(1, int(k * self.weights.vector_weight))
-        keyword_k = max(1, int(k * self.weights.keyword_weight))
+        if available:
+            total_weight = sum(sources[index][3] for index in available)
+            targets = [
+                (k * sources[index][3] / total_weight) if index in available else 0.0
+                for index in range(len(sources))
+            ]
+            for index in available:
+                selected_counts[index] = min(len(sources[index][0]), floor(targets[index]))
 
-        # Add vector results
-        for chunk, meta, score in zip(
-            vector_chunks[:vector_k], vector_metadata[:vector_k], vector_scores[:vector_k]
-        ):
-            combined_chunks.append(chunk)
-            combined_metadata.append({**meta, "retrieval_method": "vector"})
-            combined_scores.append(score * self.weights.vector_weight)
-            seen.add(chunk)
+            slots_remaining = min(k, sum(len(sources[index][0]) for index in available)) - sum(
+                selected_counts
+            )
+            while slots_remaining > 0:
+                eligible = [
+                    index for index in available if selected_counts[index] < len(sources[index][0])
+                ]
+                if not eligible:
+                    break
+                selected = max(
+                    eligible,
+                    key=lambda index: (targets[index] - selected_counts[index], -index),
+                )
+                selected_counts[selected] += 1
+                slots_remaining -= 1
 
-        # Add keyword results (avoiding duplicates)
-        for chunk, meta, score in zip(keyword_chunks, keyword_metadata, keyword_scores):
-            if chunk not in seen and len(combined_chunks) < k:
+        selected_by_chunk: Dict[str, int] = {}
+        for index, (chunks, metadata, scores, weight, method) in enumerate(sources):
+            for chunk, meta, score in zip(
+                chunks[: selected_counts[index]],
+                metadata[: selected_counts[index]],
+                scores[: selected_counts[index]],
+            ):
+                graph_score = score if method == "thesis_graph" else None
+                if chunk in selected_by_chunk:
+                    existing_index = selected_by_chunk[chunk]
+                    combined_metadata[existing_index]["retrieval_method"] = "hybrid"
+                    if graph_score is not None:
+                        combined_metadata[existing_index]["graph_proximity_score"] = graph_score
+                        combined_scores[existing_index] += graph_score * weight
+                    continue
+
+                result_metadata = {**meta, "retrieval_method": method}
+                if graph_score is not None:
+                    result_metadata["graph_proximity_score"] = graph_score
+                selected_by_chunk[chunk] = len(combined_chunks)
                 combined_chunks.append(chunk)
-                combined_metadata.append({**meta, "retrieval_method": "keyword"})
-                combined_scores.append(score * self.weights.keyword_weight)
-                seen.add(chunk)
+                combined_metadata.append(result_metadata)
+                combined_scores.append(score * weight)
+
+        if len(combined_chunks) < k:
+            remaining_candidates = []
+            for chunks, metadata, scores, weight, method in sources:
+                for chunk, meta, score in zip(chunks, metadata, scores):
+                    if chunk not in selected_by_chunk:
+                        remaining_candidates.append((score * weight, chunk, meta, score, method))
+            remaining_candidates.sort(key=lambda item: item[0], reverse=True)
+            for weighted_score, chunk, meta, score, method in remaining_candidates:
+                if len(combined_chunks) >= k:
+                    break
+                if chunk in selected_by_chunk:
+                    continue
+                result_metadata = {**meta, "retrieval_method": method}
+                if method == "thesis_graph":
+                    result_metadata["graph_proximity_score"] = score
+                selected_by_chunk[chunk] = len(combined_chunks)
+                combined_chunks.append(chunk)
+                combined_metadata.append(result_metadata)
+                combined_scores.append(weighted_score)
 
         return combined_chunks, combined_metadata, combined_scores
 

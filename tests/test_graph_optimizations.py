@@ -72,7 +72,7 @@ def test_heuristic_filtering():
     print("TEST: Heuristic pre-filtering")
     print("=" * 80)
 
-    # Test case 1: Different languages (should filter - only for code docs)
+    # Test case 1: Language metadata does not control comparison eligibility.
     doc1_python = {
         "source_category": "code",
         "language": "python",
@@ -85,9 +85,9 @@ def test_heuristic_filtering():
     }
     result1 = should_validate_with_llm(doc1_python, doc2_java, 0.75, enable_heuristic=True)
     print(f"Different languages (Python vs Java): {result1}")
-    assert result1 is False, "Should filter different languages"
+    assert result1 is True, "Language metadata should not filter document comparisons"
 
-    # Test case 2: No shared dependencies (should filter - only for code docs)
+    # Test case 2: Shared dependency metadata does not control comparison eligibility.
     doc3_python = {
         "source_category": "code",
         "language": "python",
@@ -100,7 +100,7 @@ def test_heuristic_filtering():
     }
     result2 = should_validate_with_llm(doc3_python, doc4_python, 0.75, enable_heuristic=True)
     print(f"Same language, no shared deps: {result2}")
-    assert result2 is False, "Should filter no shared dependencies"
+    assert result2 is True, "Dependency metadata should not filter document comparisons"
 
     # Test case 3: Very high similarity (should filter)
     doc5 = {"source_category": "code", "language": "python", "dependencies": ["flask"]}

@@ -6,6 +6,7 @@ Centralises configuration with BaseConfig getters and CLI override support.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from scripts.utils.config import BaseConfig
@@ -39,6 +40,10 @@ class AcademicIngestConfig(BaseConfig):
         self.dry_run = self.get_bool("ACADEMIC_INGEST_DRY_RUN", False)
         self.log_level = self.get_str("ACADEMIC_INGEST_LOG_LEVEL", "info")
 
+        # Shared reset utilities clear ingestion cache tables through this
+        # path, which must follow the active academic RAG data directory.
+        self.cache_path = Path(self.rag_data_path) / "cache.db"
+
         # BM25 keyword indexing (for hybrid search)
         self.bm25_indexing_enabled = self.get_bool("BM25_INDEXING_ENABLED", True)
         self.bm25_index_original_text = self.get_bool("BM25_INDEX_ORIGINAL_TEXT", True)
@@ -46,6 +51,17 @@ class AcademicIngestConfig(BaseConfig):
         # Parent-child chunking (for better context preservation)
         self.enable_parent_child_chunking = self.get_bool(
             "ACADEMIC_INGEST_ENABLE_PARENT_CHILD_CHUNKING", True
+        )
+        self.thesis_structure_min_coverage = self.get_float(
+            "ACADEMIC_INGEST_THESIS_STRUCTURE_MIN_COVERAGE", 0.95
+        )
+        self.thesis_toc_min_coverage = self.get_float("ACADEMIC_INGEST_TOC_MIN_COVERAGE", 0.95)
+        self.figure_assessment_enabled = self.get_bool("ACADEMIC_INGEST_FIGURE_ASSESSMENT", True)
+        self.vision_model_name = self.get_str("VISION_LLM_MODEL", "qwen3.6:27b")
+        self.ollama_host = self.get_str("OLLAMA_HOST", "http://localhost:11434")
+        self.vision_assessment_timeout = self.get_int("VISION_LLM_TIMEOUT", 240)
+        self.replace_existing_thesis = self.get_bool(
+            "ACADEMIC_INGEST_REPLACE_EXISTING_THESIS", False
         )
 
 

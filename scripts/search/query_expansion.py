@@ -198,14 +198,14 @@ class QueryExpander:
             tokens = query.lower().split()
 
         # Expand each token
-        all_terms = []
+        all_terms: List[str] = []
         for token in tokens:
             expanded = self.expand_term(token)
             all_terms.extend(expanded)
 
         # Join into expanded query (removing duplicates while preserving order)
-        seen = set()
-        unique_terms = []
+        seen: Set[str] = set()
+        unique_terms: List[str] = []
         for term in all_terms:
             if term not in seen:
                 seen.add(term)
@@ -259,7 +259,6 @@ def load_domain_synonyms(domain: str = "technical") -> Dict[str, List[str]]:
     technical_synonyms = {
         "algorithm": ["method", "procedure", "process", "technique"],
         "data": ["information", "records", "dataset"],
-        "code": ["source", "program", "script"],
         "bug": ["error", "defect", "issue", "problem"],
         "feature": ["functionality", "capability", "function"],
         "deploy": ["release", "publish", "launch"],
@@ -323,8 +322,8 @@ if __name__ == "__main__":
         expander_extended = QueryExpander(config_extended)
 
         term = "dog"
-        expanded = expander_extended.expand_term(term)
-        print(f"  '{term}' → {expanded}")
+        expanded_terms = expander_extended.expand_term(term)
+        print(f"  '{term}' → {expanded_terms}")
     else:
         print("\n⚠️  WordNet not available. Install NLTK and download wordnet.")
 

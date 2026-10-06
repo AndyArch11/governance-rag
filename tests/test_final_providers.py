@@ -324,6 +324,69 @@ class TestURLFetchProvider:
         assert ref.oa_available is True
         assert ref.quality_score == 0.40  # Low quality for PDF
 
+    def test_resolve_preserves_citation_title_after_lookup_failure(self, monkeypatch):
+        from scripts.ingest.academic.providers.base import FatalError
+
+        provider = URLFetchProvider()
+        monkeypatch.setattr(
+            provider,
+            "_request_with_retry",
+            Mock(side_effect=FatalError("Not found: https://example.com/paper")),
+        )
+        citation = "Smith, J. (2020). Original paper title. Journal of Testing."
+
+        reference = provider.resolve(f"{citation} https://example.com/paper")
+
+        assert reference.resolved is False
+        assert reference.status == ReferenceStatus.UNRESOLVED
+        assert reference.title == "Original paper title"
+        assert reference.raw_citation.startswith(citation)
+        assert reference.link_status == "unresolved"
+
+    def test_resolve_follows_relative_redirect_and_records_final_page(self, monkeypatch):
+        provider = URLFetchProvider()
+        redirect_response = Mock(
+            status_code=302,
+            headers={"Location": "/final/paper"},
+            url="https://example.com/start",
+        )
+        final_response = Mock(
+            status_code=200,
+            headers={"Content-Type": "text/html"},
+            text="<html><head><title>Final Paper Title</title></head></html>",
+            url="https://example.com/final/paper",
+        )
+        request = Mock(side_effect=[redirect_response, final_response])
+        monkeypatch.setattr(provider, "_request_with_retry", request)
+
+        reference = provider.resolve("Smith, J. (2020). Original title. https://example.com/start")
+
+        assert reference.resolved is True
+        assert reference.title == "Final Paper Title"
+        assert reference.oa_url == "https://example.com/final/paper"
+        assert request.call_count == 2
+        assert request.call_args_list[0].kwargs["allow_redirects"] is False
+        assert request.call_args_list[1].args[1] == "https://example.com/final/paper"
+
+    def test_resolve_rejects_redirect_loop_and_preserves_title(self, monkeypatch):
+        provider = URLFetchProvider()
+        redirect_response = Mock(
+            status_code=302,
+            headers={"Location": "/start"},
+            url="https://example.com/start",
+        )
+        request = Mock(return_value=redirect_response)
+        monkeypatch.setattr(provider, "_request_with_retry", request)
+
+        reference = provider.resolve(
+            "Smith, J. (2020). Original paper title. https://example.com/start"
+        )
+
+        assert reference.resolved is False
+        assert reference.status == ReferenceStatus.UNRESOLVED
+        assert reference.title == "Original paper title"
+        assert request.call_count == 1
+
     def test_determine_type_from_url(self):
         """Test reference type determination from URL."""
         provider = URLFetchProvider()

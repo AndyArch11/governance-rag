@@ -236,11 +236,15 @@ class ArxivProvider(BaseProvider):
 
         # Extract arXiv ID
         arxiv_id_elem = entry.find("atom:id", ns)
-        arxiv_id = arxiv_id_elem.text.split("/")[-1] if arxiv_id_elem is not None else ""
+        arxiv_id = (
+            arxiv_id_elem.text.split("/")[-1]
+            if arxiv_id_elem is not None and arxiv_id_elem.text
+            else ""
+        )
 
         # Extract title
         title_elem = entry.find("atom:title", ns)
-        title = title_elem.text.strip() if title_elem is not None else ""
+        title = title_elem.text.strip() if title_elem is not None and title_elem.text else ""
 
         # Extract authors
         authors = []
@@ -251,7 +255,9 @@ class ArxivProvider(BaseProvider):
 
         # Extract abstract
         summary_elem = entry.find("atom:summary", ns)
-        abstract = summary_elem.text.strip() if summary_elem is not None else ""
+        abstract = (
+            summary_elem.text.strip() if summary_elem is not None and summary_elem.text else ""
+        )
 
         # Extract publication date
         published_elem = entry.find("atom:published", ns)

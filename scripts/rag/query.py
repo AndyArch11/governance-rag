@@ -26,9 +26,7 @@ from scripts.utils.db_factory import get_default_vector_path, get_vector_client
 
 # Optional typing helpers
 try:
-    from chromadb.api.models.Collection import (  # type: ignore  # noqa: WPS433,E402
-        Collection as ChromaDBCollection,
-    )
+    from chromadb.api.models.Collection import Collection as ChromaDBCollection  # noqa: WPS433,E402
 except Exception:
     ChromaDBCollection = Any  # type: ignore
 

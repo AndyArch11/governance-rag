@@ -8,6 +8,10 @@ For production deployments, set environment variables before launching the servi
 from typing import Optional
 
 from scripts.utils.config import BaseConfig
+from scripts.utils.llm_model_config import (
+    get_configured_context_window,
+    get_configured_llm_model,
+)
 
 
 class RAGConfig(BaseConfig):
@@ -24,8 +28,9 @@ class RAGConfig(BaseConfig):
         k_results (int): Default number of chunks to retrieve per query.
         model_name (str): LLM model name (passed to OllamaLLM).
         temperature (float): LLM temperature for generation (0.0-1.0).
-        max_prompt_tokens (int): Maximum tokens for entire prompt (<=0 disables budgeting; default: 0).
-        max_context_chars (Optional[int]): Maximum characters for context chunk (4x tokens) when budgeting is enabled.
+        context_window_tokens (int): Requested Ollama context window, capped by the model limit.
+        max_prompt_tokens (int): Maximum token budget for prompt input.
+        max_context_chars (int): Character budget for retrieved context within prompt input.
         logs_dir (Path): Directory for log files (created if missing).
 
     Environment Variables (with defaults):
@@ -33,17 +38,19 @@ class RAGConfig(BaseConfig):
         CHUNK_COLLECTION_NAME: Chunk collection name (default: governance_docs_chunks)
         DOC_COLLECTION_NAME: Document collection name (default: governance_docs_documents)
         RAG_K_RESULTS: Chunks to retrieve (default: 5, must be >= 1)
-        RAG_MODEL: LLM model name (default: mistral)
+        RAG_MODEL: Supported Ollama LLM model name (default: qwen2.5:14b-instruct-q4_K_M)
         RAG_TEMPERATURE: LLM temperature (default: 0.3, range 0.0-1.0)
-        RAG_MAX_PROMPT_TOKENS: Max prompt size in tokens (<=0 disables; default: 0)
+        RAG_CONTEXT_WINDOW_TOKENS: Requested Ollama context window (default: 8192)
+        RAG_RESPONSE_TOKEN_RESERVE: Tokens reserved for generation (default: 1024)
+        RAG_MAX_PROMPT_TOKENS: Optional lower cap for prompt input (default: model-aware)
 
     Example:
         >>> config = RAGConfig()  # Reads env vars
-        >>> print(config.model_name)  # 'mistral' unless RAG_MODEL set
+        >>> print(config.model_name)  # qwen2.5:14b-instruct-q4_K_M unless RAG_MODEL set
         >>> config.k_results
         5
-        >>> config.max_context_chars  # None when budgeting disabled
-        None
+        >>> config.context_window_tokens
+        8192
 
     Note: Temperature parameter is loaded but not currently applied by generate.py
     due to LLM being initialised at module import. This is a known limitation.
@@ -68,15 +75,32 @@ class RAGConfig(BaseConfig):
         self.k_results = self.get_int("RAG_K_RESULTS", 5)
 
         # LLM configuration
-        self.model_name = self.get_str("RAG_MODEL", "mistral")
+        self.model_name = get_configured_llm_model(self, "RAG_MODEL")
         self.temperature = self.get_float("RAG_TEMPERATURE", 0.3)
 
-        # Prompt budgeting: set to 0 or negative to disable budgeting
-        # Approximate tokens (1 token ~ 4 chars); adjust based on your LLM
-        self.max_prompt_tokens = self.get_int("RAG_MAX_PROMPT_TOKENS", 0)
-        self.max_context_chars: Optional[int] = (
-            self.max_prompt_tokens * 4 if self.max_prompt_tokens > 0 else None
+        # Context budgeting is limited by verified model capabilities. The
+        # requested runtime window remains deliberately conservative by default.
+        self.context_window_tokens = get_configured_context_window(
+            self,
+            self.model_name,
+            "RAG_CONTEXT_WINDOW_TOKENS",
         )
+        self.response_token_reserve = min(
+            max(256, self.get_int("RAG_RESPONSE_TOKEN_RESERVE", 1024)),
+            self.context_window_tokens - 1,
+        )
+        available_prompt_tokens = self.context_window_tokens - self.response_token_reserve
+        configured_prompt_tokens = self.get_int("RAG_MAX_PROMPT_TOKENS", 0)
+        self.max_prompt_tokens = (
+            min(configured_prompt_tokens, available_prompt_tokens)
+            if configured_prompt_tokens > 0
+            else available_prompt_tokens
+        )
+
+        # Prompt assembly includes labelled and raw context representations.
+        # Reserve the other half of the input budget for that duplication,
+        # prompts, and the user question. One token is conservatively four chars.
+        self.max_context_chars = (self.max_prompt_tokens * 4) // 2
 
         # Phase 3 Enhancement Features
         # Enable context caching for hot entities (100x faster retrieval)
@@ -106,6 +130,9 @@ class RAGConfig(BaseConfig):
             "RAG_GRAPH_SQLITE_PATH",
             str(Path(self.rag_data_path) / "consistency_graphs" / "consistency_graph.sqlite"),
         )
+        self.enable_thesis_graph = self.get_bool("RAG_ENABLE_THESIS_GRAPH", False)
+        self.thesis_graphs_dir = self.get_path("RAG_THESIS_GRAPHS_DIR", "rag_data/thesis_graphs")
+        self.thesis_graph_max_chunks = self.get_int("RAG_THESIS_GRAPH_MAX_CHUNKS", 3)
 
         # ross-encoder reranking for improved relevance
         self.enable_learned_reranking = self.get_bool("RAG_ENABLE_LEARNED_RERANKING", True)

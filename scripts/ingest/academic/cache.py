@@ -12,13 +12,20 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
 
 class ReferenceStatus:
-    """Status constants for references."""
+    """Status constants for references.
+
+    Attributes:
+        RESOLVED: Reference has been successfully resolved.
+        UNRESOLVED: Reference could not be resolved.
+        PARTIALLY_RESOLVED: Reference has been partially resolved.
+        CACHED: Reference is cached but not necessarily resolved.
+    """
 
     RESOLVED = "resolved"
     UNRESOLVED = "unresolved"
@@ -27,7 +34,34 @@ class ReferenceStatus:
 
 
 class Reference:
-    """Resolved academic reference."""
+    """Resolved academic reference.
+
+    Attributes:
+        ref_id: Unique identifier for the reference.
+        raw_citation: Raw citation string.
+        doi: Digital Object Identifier.
+        title: Title of the reference.
+        authors: List of authors.
+        year: Publication year.
+        abstract: Abstract of the reference.
+        venue: Venue of publication.
+        venue_type: Type of the venue (e.g., journal, conference).
+        volume: Volume number.
+        issue: Issue number.
+        pages: Page range.
+        reference_type: Type of reference (e.g., online, academic).
+        resolved: Whether the reference has been resolved.
+        status: Resolution status.
+        quality_score: Quality score of the reference.
+        metadata_provider: Provider of the metadata.
+        oa_available: Whether open access is available.
+        oa_url: URL for open access version.
+        link_status: Status of the link (e.g., available, stale_404).
+        citation_count: Number of citations.
+        doc_ids: List of document IDs where the reference appears.
+        resolved_at: Timestamp when the reference was resolved.
+        cached: Whether the reference is cached.
+    """
 
     def __init__(
         self,
@@ -83,7 +117,11 @@ class Reference:
 
 
 class ReferenceCache:
-    """SQLite-based cache for resolved references."""
+    """SQLite-based cache for resolved references.
+
+    Attributes:
+        db_path: Path to the SQLite database file.
+    """
 
     def __init__(self, db_path: Optional[str] = None):
         """
@@ -216,6 +254,15 @@ class ReferenceCache:
         Generate deterministic cache key.
 
         Priority: DOI > (title, year, first_author_hash)
+
+        Args:
+            doi: Digital Object Identifier of the reference.
+            title: Title of the reference.
+            year: Publication year of the reference.
+            authors: List of authors of the reference.
+
+        Returns:
+            Deterministic cache key based on the provided metadata.
         """
         if doi:
             doi_clean = doi.replace("https://doi.org/", "").replace("http://doi.org/", "")
@@ -234,6 +281,12 @@ class ReferenceCache:
     def get(self, cache_key: str) -> Optional[Reference]:
         """
         Retrieve reference from cache.
+
+        Args:
+            cache_key: The cache key of the reference to retrieve.
+
+        Returns:
+            The cached reference if found and not expired, otherwise None.
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
@@ -255,9 +308,111 @@ class ReferenceCache:
             logging.debug(f"Cache hit for {cache_key}")
             return ref
 
+    def select_for_revalidation(
+        self,
+        mode: str,
+        staleness_threshold_days: int = 30,
+        ref_ids: List[str] | None = None,
+        thesis_id: str | None = None,
+    ) -> List[tuple[str, Reference]]:
+        """Select cached references for a standalone metadata refresh.
+
+        Args:
+            mode: One of ``stale``, ``online``, ``all``, ``failed`` or ``ids``.
+            staleness_threshold_days: Maximum cache age for ``stale`` mode.
+            ref_ids: Reference IDs required for ``ids`` mode.
+            thesis_id: Optional document ID used to scope candidates to one thesis.
+
+        Returns:
+            Pairs of cache keys and cached references, ordered by reference ID.
+
+        Raises:
+            ValueError: If the mode, threshold or reference IDs are invalid.
+        """
+        supported_modes = {"stale", "online", "all", "failed", "ids"}
+        if mode not in supported_modes:
+            raise ValueError(f"Unsupported revalidation mode: {mode}")
+        if (
+            isinstance(staleness_threshold_days, bool)
+            or not isinstance(staleness_threshold_days, int)
+            or not 1 <= staleness_threshold_days <= 3650
+        ):
+            raise ValueError("staleness_threshold_days must be between 1 and 3650")
+
+        selected_ref_ids = ref_ids or []
+        if any(not isinstance(ref_id, str) or not ref_id.strip() for ref_id in selected_ref_ids):
+            raise ValueError("ref_ids must contain non-empty strings")
+        if mode == "ids" and not selected_ref_ids:
+            raise ValueError("ref_ids are required for ids mode")
+        if mode != "ids" and selected_ref_ids:
+            raise ValueError("ref_ids can only be used with ids mode")
+        if thesis_id is not None and (not isinstance(thesis_id, str) or not thesis_id.strip()):
+            raise ValueError("thesis_id must be a non-empty string")
+
+        online_types = ("news", "blog", "online")
+        parameters: tuple[Any, ...]
+        if mode == "stale":
+            query = """
+                SELECT * FROM cached_references
+                WHERE lower(COALESCE(reference_type, 'online')) IN (?, ?, ?)
+                  AND (
+                      (expires_at IS NOT NULL AND datetime(expires_at) <= datetime('now'))
+                      OR (cached_at IS NOT NULL AND datetime(cached_at) <= datetime('now', ?))
+                      OR lower(COALESCE(link_status, '')) LIKE 'stale_%'
+                  )
+                ORDER BY ref_id
+            """
+            parameters = (*online_types, f"-{staleness_threshold_days} days")
+        elif mode == "online":
+            query = """
+                SELECT * FROM cached_references
+                WHERE lower(COALESCE(reference_type, '')) IN (?, ?, ?)
+                ORDER BY ref_id
+            """
+            parameters = online_types
+        elif mode == "all":
+            query = "SELECT * FROM cached_references WHERE resolved = 1 ORDER BY ref_id"
+            parameters = ()
+        elif mode == "failed":
+            query = """
+                SELECT * FROM cached_references
+                WHERE resolved = 0 OR lower(COALESCE(status, '')) IN ('failed', 'unresolved')
+                ORDER BY ref_id
+            """
+            parameters = ()
+        else:
+            placeholders = ", ".join("?" for _ in selected_ref_ids)
+            query = (
+                "SELECT * FROM cached_references WHERE ref_id IN ("
+                f"{placeholders}) ORDER BY ref_id"
+            )
+            parameters = tuple(selected_ref_ids)
+
+        if thesis_id is not None:
+            selection, order_clause = query.rsplit("ORDER BY ref_id", 1)
+            query_start, predicate = selection.split("WHERE", 1)
+            query = (
+                f"{query_start}WHERE ({predicate.strip()}) "
+                "AND ref_id IN (SELECT ref_id FROM document_citations WHERE doc_id = ?) "
+                f"ORDER BY ref_id{order_clause}"
+            )
+            parameters = (*parameters, thesis_id)
+
+        with self._get_connection() as connection:
+            rows = connection.execute(query, parameters).fetchall()
+        return [(row["cache_key"], self._row_to_reference(row)) for row in rows]
+
     def put(self, cache_key: str, reference: Reference, expires_in_days: int = 365):
         """
         Store reference in cache.
+
+        Args:
+            cache_key: The cache key under which to store the reference.
+            reference: The reference object to store in the cache.
+            expires_in_days: Number of days after which the cache entry should expire.
+
+        Returns:
+            None.
         """
         expires_at = (datetime.now(timezone.utc) + timedelta(days=expires_in_days)).isoformat()
 
@@ -309,6 +464,14 @@ class ReferenceCache:
     def add_citation(self, doc_id: str, ref_id: str, raw_citation: str):
         """
         Record that a document cites a reference.
+
+        Args:
+            doc_id: The ID of the document making the citation.
+            ref_id: The ID of the referenced work.
+            raw_citation: The raw citation string as it appears in the document.
+
+        Returns:
+            None.
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
@@ -323,13 +486,39 @@ class ReferenceCache:
 
             conn.commit()
 
+    def clear(self) -> None:
+        """Remove all cached references, citation links, and cache statistics."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM document_citations")
+            cursor.execute("DELETE FROM cached_references")
+            cursor.execute("DELETE FROM cache_stats")
+            conn.commit()
+
     def _row_to_reference(self, row: sqlite3.Row) -> Reference:
         """
         Reconstruct Reference object from database row.
+
+        Args:
+            row: A sqlite3.Row object containing the cached reference data.
+
+        Returns:
+            A Reference object populated with the data from the row.
         """
 
         # Handle backward compatibility with existing caches missing link_status/citation_count
         def get_row_value(row, key, default=None):
+            """
+            Helper function to safely retrieve a value from a sqlite3.Row object.
+
+            Args:
+                row: The sqlite3.Row object.
+                key: The key to retrieve from the row.
+                default: The default value to return if the key is not found.
+
+            Returns:
+                The value from the row if it exists, otherwise the default value.
+            """
             try:
                 return row[key]
             except IndexError:

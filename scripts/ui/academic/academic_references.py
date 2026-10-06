@@ -20,7 +20,7 @@ from __future__ import annotations
 import re
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import dash
 import plotly.express as px
@@ -61,7 +61,7 @@ class AcademicReferences:
         """Enter context manager scope."""
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+    def __exit__(self, exc_type, exc_val, exc_tb) -> Literal[False]:
         """Ensure connection is closed on context manager exit."""
         self.close()
         return False

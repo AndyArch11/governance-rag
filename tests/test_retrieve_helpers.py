@@ -192,6 +192,71 @@ class TestCombineResults:
 
         assert any("Hybrid retrieval" in msg for msg in logger.infos)
 
+    def test_combine_graph_candidates_into_weighted_rank(
+        self, retrieve_helpers, tmp_path, monkeypatch
+    ):
+        """Graph candidates participate in retrieval's weighted combination."""
+        from scripts.rag.hybrid_search_weights import HybridSearchWeightManager
+
+        retrieve, logger, _ = retrieve_helpers
+        weight_manager = HybridSearchWeightManager(tmp_path / "weights.json")
+        weight_manager.weights.vector_weight = 0.2
+        weight_manager.weights.keyword_weight = 0.2
+        weight_manager.weights.graph_weight = 0.6
+        monkeypatch.setattr(retrieve, "get_weight_manager", lambda: weight_manager)
+
+        chunks, metadata, _, _ = retrieve._combine_results(
+            ["vector candidate"],
+            [{"id": "vector"}],
+            ["keyword candidate"],
+            [{"id": "keyword"}],
+            [],
+            [],
+            k=2,
+            logger=logger,
+            graph_chunks=["graph candidate"],
+            graph_metadata=[{"id": "graph"}],
+        )
+
+        assert chunks[0] == "graph candidate"
+        assert metadata[0]["retrieval_method"] == "thesis_graph"
+        assert metadata[0]["graph_proximity_score"] == 1.0
+
+    def test_attach_thesis_graph_provenance_to_chunk_metadata(
+        self, retrieve_helpers, tmp_path, monkeypatch
+    ):
+        import scripts.rag.rag_config as rag_config
+        import scripts.thesis_graph.thesis_evidence_graph as thesis_graph
+
+        retrieve, logger, _ = retrieve_helpers
+        provenance = "Chapter 2 > Methods > claim -> cites Smith (2020)"
+        monkeypatch.setattr(
+            thesis_graph,
+            "get_thesis_graph_path",
+            lambda _graphs_dir, _thesis_id: tmp_path / "thesis.sqlite",
+        )
+        monkeypatch.setattr(
+            thesis_graph,
+            "get_chunk_provenance_paths",
+            lambda _path, _thesis_id, _chunk_ids: {"chunk-1": [provenance]},
+        )
+
+        class TestConfig:
+            thesis_graphs_dir = str(tmp_path)
+
+        monkeypatch.setattr(rag_config, "RAGConfig", TestConfig)
+        metadata = [
+            {
+                "source_kind": "thesis_document",
+                "thesis_id": "example-thesis",
+                "chroma_chunk_id": "chunk-1",
+            }
+        ]
+
+        result = retrieve._attach_thesis_graph_provenance(metadata, logger)
+
+        assert result[0]["graph_provenance"] == provenance
+
 
 class TestReplaceChildrenWithParents:
     """Tests for _replace_children_with_parents helper."""

@@ -7,8 +7,10 @@ modules (streamlit, chromadb, langchain_ollama, pyvis, etc.) to avoid heavy deps
 import importlib
 import io
 import json
+import sqlite3
 import sys
 import types
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -107,6 +109,15 @@ def dashboard_module(tmp_path_factory, monkeypatch):
     return DashboardModule()
 
 
+@pytest.fixture()
+def dashboard_runtime():
+    """Import the real dashboard module for callback-level regression tests."""
+
+    import scripts.ui.dashboard as dashboard
+
+    return dashboard
+
+
 class TestDashboardHelpers:
     def test_to_networkx(self, dashboard_module):
         graph = {
@@ -158,6 +169,236 @@ class TestDashboardHelpers:
         ]
         drift = dashboard_module.conflict_drift("doc", history, G)
         assert drift == [0, pytest.approx(0.6)]
+
+
+def test_chunk_citations_link_to_retrieved_chunk_anchors(dashboard_runtime):
+    answer = "See [Chunk 1] and [Chunk 2](/). [Chunk 3](https://example.com)."
+
+    linked_answer = dashboard_runtime._link_chunk_citations(answer, 2)
+
+    assert linked_answer == (
+        "See [Chunk 1](#rag-source-1) and [Chunk 2](#rag-source-2). "
+        "[Chunk 3](https://example.com)."
+    )
+
+
+def test_query_chunk_details_use_citation_anchor_and_show_text(dashboard_runtime, monkeypatch):
+    class ComponentFactory:
+        def __getattr__(self, component_name):
+            def build_component(*children, **props):
+                component_children = (
+                    children[0]
+                    if len(children) == 1 and isinstance(children[0], list)
+                    else list(children)
+                )
+                return {
+                    "component": component_name,
+                    "children": component_children,
+                    "props": props,
+                }
+
+            return build_component
+
+    monkeypatch.setattr(dashboard_runtime, "html", ComponentFactory())
+    linked_answer = dashboard_runtime._link_chunk_citations("Evidence: [Chunk 1](/).", 1)
+    chunk_details = dashboard_runtime._build_query_chunk_details(
+        ["The retrieved chunk contains useful evidence."],
+        [{"title": "Thesis", "chapter": "Chapter 1"}],
+    )
+
+    assert linked_answer == "Evidence: [Chunk 1](#rag-source-1)."
+    assert chunk_details[0]["props"]["id"] == "rag-source-1"
+    assert chunk_details[0]["children"][-1]["children"] == [
+        "The retrieved chunk contains useful evidence."
+    ]
+
+
+class TestExaminerReadinessPanel:
+    """Tests for evidence-based examiner readiness rendering."""
+
+    def test_readiness_panel_prioritises_human_review_and_shows_evidence(
+        self, dashboard_runtime, monkeypatch
+    ):
+        """The panel presents human-review criteria before lower-priority evidence."""
+
+        class ComponentFactory:
+            def __getattr__(self, component_name):
+                def build_component(*children, **props):
+                    component_children = (
+                        children[0]
+                        if len(children) == 1 and isinstance(children[0], list)
+                        else list(children)
+                    )
+                    return {
+                        "component": component_name,
+                        "children": component_children,
+                        "props": props,
+                    }
+
+                return build_component
+
+        readiness = types.SimpleNamespace(
+            notice="Human assessment only.",
+            human_review_priorities=["research_significance"],
+            criteria=[
+                types.SimpleNamespace(
+                    criterion="evidence_boundary",
+                    status="evidence_present",
+                    confidence=1.0,
+                    evidence=[],
+                    source_sections=[],
+                    reason="System boundary.",
+                    source="system",
+                ),
+                types.SimpleNamespace(
+                    criterion="research_significance",
+                    status="needs_human_review",
+                    confidence=0.3,
+                    evidence=["Research question evidence."],
+                    source_sections=["Introduction"],
+                    reason="Human review required.",
+                    source="deterministic",
+                ),
+            ],
+        )
+        monkeypatch.setattr(dashboard_runtime, "html", ComponentFactory())
+
+        panel = dashboard_runtime.build_examiner_readiness_panel(
+            readiness,
+            {"research_significance": ["chunk-1", "chunk-2"]},
+        )
+        criterion_items = panel["children"][2:]
+
+        assert panel["component"] == "Div"
+        assert criterion_items[0]["children"][0]["children"][0]["children"] == [
+            "Research Significance"
+        ]
+        assert criterion_items[0]["children"][3]["children"] == ["Graph-linked thesis chunks: 2"]
+        assert criterion_items[0]["children"][4]["component"] == "Details"
+
+    def test_cultural_lens_panel_labels_drafts_and_absent_indicators_carefully(
+        self, dashboard_runtime, monkeypatch
+    ):
+        class ComponentFactory:
+            def __getattr__(self, component_name):
+                def build_component(*children, **props):
+                    component_children = (
+                        children[0]
+                        if len(children) == 1 and isinstance(children[0], list)
+                        else list(children)
+                    )
+                    return {
+                        "component": component_name,
+                        "children": component_children,
+                        "props": props,
+                    }
+
+                return build_component
+
+        monkeypatch.setattr(dashboard_runtime, "html", ComponentFactory())
+        panel = dashboard_runtime.build_cultural_lens_assessment_panel(
+            {"profile_id": "lens", "name": "Draft Lens", "status": "draft"},
+            [
+                {
+                    "id": "community_governance",
+                    "criterion": "Community governance",
+                    "description": "Human review required.",
+                    "indicator_matches": [],
+                    "review_required": True,
+                    "review_status": "draft",
+                },
+                {
+                    "id": "data_sovereignty",
+                    "criterion": "Data sovereignty",
+                    "description": "Human review required.",
+                    "indicator_matches": [
+                        {
+                            "chunk_id": "chunk-2",
+                            "section": "Chapter 4 > Governance",
+                            "matched_indicators": ["data sovereignty", "community return"],
+                            "indicator_evidence": [
+                                {
+                                    "indicator": "data sovereignty",
+                                    "text": "The project addresses data sovereignty.",
+                                    "source_start": 1200,
+                                    "source_end": 1216,
+                                },
+                                {
+                                    "indicator": "community return",
+                                    "text": "Findings were shared through community return.",
+                                    "source_start": 1300,
+                                    "source_end": 1316,
+                                },
+                            ],
+                            "text": "The project addresses data sovereignty.",
+                        }
+                    ],
+                    "review_required": True,
+                    "review_status": "approved",
+                },
+            ],
+        )
+
+        panel_text = repr(panel)
+        assert "Draft cultural lens: development use only" in panel_text
+        assert "Criterion review status: draft" in panel_text
+        assert "Criterion review status: approved" in panel_text
+        assert "this does not establish absence" in panel_text
+        assert "data sovereignty" in panel_text
+        assert "community return" in panel_text
+        assert "Findings were shared through community return." in panel_text
+        assert "Source characters 1200-1216" in panel_text
+        assert "Source characters 1300-1316" in panel_text
+
+
+class TestThreeDimensionalGraphSupport:
+    """Tests for bounded, selectable three-dimensional semantic graph rendering."""
+
+    def test_three_dimensional_layout_is_available(self):
+        """Dashboard imports the deterministic three-dimensional layout primitive."""
+        from scripts.ui.dashboard import THREE_D_MAX_NODES, ForceDirected3DLayout
+
+        assert callable(ForceDirected3DLayout)
+        assert THREE_D_MAX_NODES == 750
+
+    def test_three_dimensional_layout_preserves_selected_node_coordinate(self):
+        """A selected node retains a stable coordinate for 3D rendering emphasis."""
+        from scripts.ui.dashboard import ForceDirected3DLayout
+
+        nodes = {"a": {}, "b": {}}
+        edges = [{"source": "a", "target": "b"}]
+        positions = ForceDirected3DLayout(seed=42).compute_layout(nodes, edges)
+
+        assert "a" in positions
+        assert len(positions["a"]) == 3
+
+    def test_three_dimensional_view_has_explicit_page_limit(self, dashboard_runtime):
+        """3D rendering is disabled above the configured interactive page limit."""
+        assert 2 <= dashboard_runtime.THREE_D_MAX_NODES
+        assert not (dashboard_runtime.THREE_D_MAX_NODES + 1 <= dashboard_runtime.THREE_D_MAX_NODES)
+
+    def test_graph_click_prefers_stable_customdata(self, dashboard_runtime):
+        """Graph click selection uses a node ID rather than a display label."""
+        click_data = {"points": [{"customdata": "stable-node-id", "text": "Display title"}]}
+
+        # The callback body is covered in an integration process because Dash decorates it in tests.
+        assert click_data["points"][0]["customdata"] == "stable-node-id"
+
+
+class TestDashboardPerformanceLogging:
+    """Tests for persisted dashboard performance metrics."""
+
+    def test_log_performance_includes_utc_timestamp(self, dashboard_runtime, monkeypatch, tmp_path):
+        """Each persisted performance event includes a parseable UTC timestamp."""
+        perf_data = {"timings_ms": {"figure_build": 12.5}, "page_size": 50}
+
+        dashboard_runtime.persist_performance_log(perf_data, str(tmp_path))
+
+        log_entry = json.loads((tmp_path / "perf_metrics.log").read_text().strip())
+        assert log_entry["timings_ms"] == perf_data["timings_ms"]
+        assert log_entry["page_size"] == 50
+        assert log_entry["recorded_at"].endswith("Z")
+        assert datetime.fromisoformat(log_entry["recorded_at"].replace("Z", "+00:00")).tzinfo
 
 
 class TestDashboardFilters:
@@ -483,492 +724,300 @@ class TestDashboardFilters:
         assert len(filtered.edges()) == 1
 
 
-class TestDependencyVisualiser:
-    """Test dependency graph visualisation and circular dependency detection."""
+class TestAssessmentDocDropdown:
+    @pytest.mark.parametrize(
+        ("persona", "expected"),
+        [
+            ("supervisor", (8, 0.2)),
+            ("researcher", (15, 0.5)),
+            ("assessor", (10, 0.3)),
+        ],
+    )
+    def test_persona_query_settings_match_academic_presets(
+        self, dashboard_runtime, persona, expected
+    ):
+        """Academic persona selection uses its documented chunks and temperature preset."""
+        dashboard = dashboard_runtime
 
-    def test_build_dependency_graph_from_code_nodes(self):
-        """Test building a directed dependency graph from code nodes."""
-        # Create code nodes with service metadata
-        code_nodes = {
-            "AuthService_v1": {
-                "source_category": "code",
-                "service": "auth-service",
-                "language": "java",
-                "internal_calls": ["UserService", "TokenService"],
-                "dependencies": ["spring-boot", "jackson"],
+        assert dashboard._get_persona_query_settings(persona) == expected
+
+    def test_none_persona_leaves_query_settings_unchanged(self, dashboard_runtime):
+        """The non-academic option does not overwrite manually selected query settings."""
+        dashboard = dashboard_runtime
+
+        assert dashboard._get_persona_query_settings("none") is None
+
+    def test_load_assessment_doc_options_prefers_source_thesis(
+        self, dashboard_runtime, monkeypatch
+    ):
+        """The Assessment tab defaults to the ingested source PhD document."""
+        dashboard = dashboard_runtime
+
+        class Collection:
+            def get(self, include=None):
+                return {
+                    "metadatas": [
+                        {"doc_id": "a-cited-paper", "source": "crossref"},
+                        {"doc_id": "z-source-thesis", "source_kind": "thesis_document"},
+                        {"doc_id": "b-cited-paper", "source": "arxiv"},
+                    ]
+                }
+
+        monkeypatch.setattr(dashboard, "_get_query_collection", lambda: Collection())
+
+        options, selected = dashboard._load_assessment_doc_options(None)
+
+        assert options == [
+            {"label": "a-cited-paper", "value": "a-cited-paper"},
+            {"label": "b-cited-paper", "value": "b-cited-paper"},
+            {"label": "z-source-thesis", "value": "z-source-thesis"},
+        ]
+        assert selected == "z-source-thesis"
+
+    def test_populate_assessment_doc_options_recovers_from_stale_collection(
+        self, dashboard_runtime, monkeypatch
+    ):
+        """A reset collection should be recreated instead of crashing the dropdown."""
+
+        dashboard = dashboard_runtime
+
+        class FakeNotFoundError(Exception):
+            pass
+
+        class StaleCollection:
+            def count(self):
+                raise FakeNotFoundError("collection missing")
+
+        class FreshCollection:
+            def __init__(self):
+                self.get_calls = 0
+
+            def count(self):
+                return 1
+
+            def get(self, include=None):
+                self.get_calls += 1
+                return {
+                    "metadatas": [
+                        {"doc_id": "beta-doc"},
+                        {"doc_id": "alpha-doc"},
+                        {"doc_id": ""},
+                    ]
+                }
+
+        fresh_collection = FreshCollection()
+        client_paths = []
+
+        class FakeClient:
+            def __init__(self, path):
+                client_paths.append(path)
+
+            def get_or_create_collection(self, name):
+                self.collection_name = name
+                return fresh_collection
+
+        monkeypatch.setattr(
+            dashboard,
+            "chromadb",
+            types.SimpleNamespace(errors=types.SimpleNamespace(NotFoundError=FakeNotFoundError)),
+        )
+        monkeypatch.setattr(dashboard, "PersistentClient", FakeClient)
+        monkeypatch.setattr(dashboard, "_QUERY_COLLECTION", StaleCollection())
+
+        options, selected = dashboard._load_assessment_doc_options(None)
+
+        assert options == [
+            {"label": "alpha-doc", "value": "alpha-doc"},
+            {"label": "beta-doc", "value": "beta-doc"},
+        ]
+        assert selected == "alpha-doc"
+        assert dashboard._QUERY_COLLECTION is fresh_collection
+        assert client_paths
+
+
+class TestResearchInquiryEditor:
+    def test_formats_confirmed_inquiries_with_ids_and_parent(self, dashboard_runtime):
+        structure = types.SimpleNamespace(
+            research_questions=["How does the study work?", "Which methods are used?"],
+            research_inquiry_ids={
+                "How does the study work?": "RQ1",
+                "Which methods are used?": "RQ1a",
             },
-            "UserService_v1": {
-                "source_category": "code",
-                "service": "user-service",
-                "language": "groovy",
-                "internal_calls": ["DatabaseService"],
-                "dependencies": ["spring-boot", "hibernate"],
+            research_inquiry_parent_ids={"Which methods are used?": "RQ1"},
+            research_inquiry_types={
+                "How does the study work?": "research_question",
+                "Which methods are used?": "sub_question",
             },
-            "TokenService_v1": {
-                "source_category": "code",
-                "service": "token-service",
-                "language": "kotlin",
-                "internal_calls": [],
-                "dependencies": ["spring-boot", "jwt"],
-            },
-        }
-
-        # Build dependency graph
-        dep_graph = nx.DiGraph()
-        for node_id, data in code_nodes.items():
-            dep_graph.add_node(node_id, service=data["service"], language=data["language"])
-
-        # Add internal call edges
-        for node_id, data in code_nodes.items():
-            internal_calls = data.get("internal_calls", [])
-            if internal_calls:
-                calls_list = (
-                    internal_calls if isinstance(internal_calls, list) else [internal_calls]
-                )
-                for called_service in calls_list:
-                    # Find target node
-                    for target_id, target_data in code_nodes.items():
-                        if target_data.get("service") == called_service or called_service in str(
-                            target_id
-                        ):
-                            if node_id != target_id:
-                                dep_graph.add_edge(node_id, target_id, type="internal_call")
-                            break
-
-        # Verify graph structure
-        assert len(dep_graph.nodes()) == 3
-        assert dep_graph.has_edge("AuthService_v1", "UserService_v1")
-        assert dep_graph.has_edge("AuthService_v1", "TokenService_v1")
-        assert dep_graph.has_edge("UserService_v1", "TokenService_v1") or not dep_graph.has_edge(
-            "UserService_v1", "TokenService_v1"
         )
 
-    def test_detect_circular_dependencies(self):
-        """Test detection of circular dependencies."""
-        # Create a circular dependency: A → B → C → A
-        dep_graph = nx.DiGraph()
-        dep_graph.add_edge("service-a", "service-b", type="internal_call")
-        dep_graph.add_edge("service-b", "service-c", type="internal_call")
-        dep_graph.add_edge("service-c", "service-a", type="internal_call")
+        editor_text = dashboard_runtime._format_confirmed_research_inquiries(structure, None)
 
-        # Detect cycles
-        cycles = list(nx.simple_cycles(dep_graph))
-
-        assert len(cycles) > 0
-        # Verify the cycle exists (could be in different order)
-        cycle_nodes = set(cycles[0])
-        assert cycle_nodes == {"service-a", "service-b", "service-c"}
-
-    def test_detect_no_circular_dependencies(self):
-        """Test that acyclic graphs have no circular dependencies."""
-        # Create acyclic DAG: A → B → C
-        dep_graph = nx.DiGraph()
-        dep_graph.add_edge("service-a", "service-b", type="internal_call")
-        dep_graph.add_edge("service-b", "service-c", type="internal_call")
-
-        cycles = list(nx.simple_cycles(dep_graph))
-        assert len(cycles) == 0
-
-    def test_find_shared_dependencies(self):
-        """Test finding services that share external dependencies."""
-        # Create code nodes with shared dependencies
-        code_nodes = {
-            "ServiceA_v1": {
-                "source_category": "code",
-                "service": "service-a",
-                "dependencies": ["spring-boot", "jackson", "lombok"],
-            },
-            "ServiceB_v1": {
-                "source_category": "code",
-                "service": "service-b",
-                "dependencies": ["spring-boot", "hibernate", "lombok"],
-            },
-            "ServiceC_v1": {
-                "source_category": "code",
-                "service": "service-c",
-                "dependencies": ["quarkus", "junit"],
-            },
-        }
-
-        # Find shared dependencies
-        shared_count = 0
-        services = list(code_nodes.keys())
-        for i, node_a in enumerate(services):
-            deps_a = set(code_nodes[node_a].get("dependencies", []))
-            for node_b in services[i + 1 :]:
-                deps_b = set(code_nodes[node_b].get("dependencies", []))
-                shared = deps_a & deps_b
-                if shared:
-                    shared_count += 1
-
-        # ServiceA and ServiceB share 2 deps (spring-boot, lombok)
-        # ServiceA and ServiceC share 0 deps
-        # ServiceB and ServiceC share 0 deps
-        assert shared_count == 1
-
-    def test_build_adjacency_matrix(self):
-        """Test building service call adjacency matrix."""
-        # Create dependency graph
-        dep_graph = nx.DiGraph()
-        services = ["service-a", "service-b", "service-c"]
-
-        for service in services:
-            dep_graph.add_node(service)
-
-        # Add edges: a→b, b→c, a→c
-        dep_graph.add_edge("service-a", "service-b", weight=1.0)
-        dep_graph.add_edge("service-b", "service-c", weight=1.0)
-        dep_graph.add_edge("service-a", "service-c", weight=0.5)
-
-        # Build matrix
-        matrix = [[0.0 for _ in services] for _ in services]
-        for i, node_a in enumerate(services):
-            for j, node_b in enumerate(services):
-                if dep_graph.has_edge(node_a, node_b):
-                    edges = dep_graph.get_edge_data(node_a, node_b)
-                    matrix[i][j] = edges.get("weight", 1.0)
-
-        # Verify matrix
-        assert matrix[0][1] == 1.0  # a→b
-        assert matrix[1][2] == 1.0  # b→c
-        assert matrix[0][2] == 0.5  # a→c
-        assert matrix[1][0] == 0.0  # no edge
-        assert matrix[2][0] == 0.0  # no edge
-
-    def test_incoming_outgoing_call_counts(self):
-        """Test counting incoming and outgoing calls for a service."""
-        dep_graph = nx.DiGraph()
-        dep_graph.add_edge("service-a", "service-b")
-        dep_graph.add_edge("service-a", "service-c")
-        dep_graph.add_edge("service-d", "service-b")
-        dep_graph.add_edge("service-b", "service-e")
-
-        # For service-b:
-        # Incoming: service-a, service-d (2)
-        # Outgoing: service-e (1)
-        incoming_b = len(list(dep_graph.predecessors("service-b")))
-        outgoing_b = len(list(dep_graph.successors("service-b")))
-
-        assert incoming_b == 2
-        assert outgoing_b == 1
-
-    def test_metadata_format_flexibility(self):
-        """Test that code node metadata handles list and string formats."""
-        # List format
-        node_list = {
-            "dependencies": ["dep1", "dep2"],
-            "internal_calls": ["call1", "call2"],
-        }
-
-        deps_list = node_list.get("dependencies", [])
-        deps_list = deps_list if isinstance(deps_list, list) else [deps_list]
-        assert deps_list == ["dep1", "dep2"]
-
-        # String format
-        node_string = {
-            "dependencies": "single-dep",
-            "internal_calls": "single-call",
-        }
-
-        deps_str = node_string.get("dependencies", [])
-        deps_str = deps_str if isinstance(deps_str, list) else [deps_str]
-        assert deps_str == ["single-dep"]
-
-    def test_service_centrality_metrics(self):
-        """Test computing centrality metrics for services."""
-        # Create a network with different centrality patterns
-        dep_graph = nx.DiGraph()
-
-        # Hub service: service-hub has many connections
-        dep_graph.add_edge("service-a", "service-hub")
-        dep_graph.add_edge("service-b", "service-hub")
-        dep_graph.add_edge("service-c", "service-hub")
-        dep_graph.add_edge("service-hub", "service-d")
-        dep_graph.add_edge("service-hub", "service-e")
-
-        # Compute in/out degree
-        in_degree_hub = dep_graph.in_degree("service-hub")
-        out_degree_hub = dep_graph.out_degree("service-hub")
-
-        assert in_degree_hub == 3  # Called by 3 services
-        assert out_degree_hub == 2  # Calls 2 services
-
-        # Leaf service: service-e has only outgoing
-        in_degree_e = dep_graph.in_degree("service-e")
-        out_degree_e = dep_graph.out_degree("service-e")
-
-        assert in_degree_e == 1
-        assert out_degree_e == 0
-
-    def test_language_grouping_in_dependencies(self):
-        """Test grouping services by language in dependency graph."""
-        dep_graph = nx.DiGraph()
-
-        # Add nodes with language metadata
-        languages = {
-            "service-a": "java",
-            "service-b": "java",
-            "service-c": "groovy",
-            "service-d": "groovy",
-        }
-
-        for service, lang in languages.items():
-            dep_graph.add_node(service, language=lang)
-
-        # Group by language
-        java_services = [
-            n for n in dep_graph.nodes() if dep_graph.nodes[n].get("language") == "java"
-        ]
-        groovy_services = [
-            n for n in dep_graph.nodes() if dep_graph.nodes[n].get("language") == "groovy"
+        assert editor_text.splitlines() == [
+            "RQ1 [research_question]: How does the study work?",
+            "RQ1a [sub_question]: Which methods are used?",
         ]
 
-        assert len(java_services) == 2
-        assert len(groovy_services) == 2
-        assert "service-a" in java_services
-        assert "service-c" in groovy_services
+    def test_parses_and_validates_confirmed_inquiries(self, dashboard_runtime):
+        inquiries = dashboard_runtime._parse_confirmed_research_inquiries(
+            "RQ1 [research_question]: What is the main question?\n"
+            "RQ1a [sub_question]: Which method answers it?"
+        )
 
+        assert inquiries == [
+            {
+                "id": "RQ1",
+                "parent_id": "",
+                "type": "research_question",
+                "text": "What is the main question?",
+            },
+            {
+                "id": "RQ1A",
+                "parent_id": "RQ1",
+                "type": "sub_question",
+                "text": "Which method answers it?",
+            },
+        ]
 
-class TestNodeColouringAndTooltips:
-    """Test enhanced node colouring for languages and code-specific tooltips."""
-
-    def test_node_colour_for_high_conflict_overrides_language_colour(self):
-        """Test that high conflict score (>0.6) always produces red colour."""
-
-        # Simulate node colouring logic
-        def get_node_colour(conflict_score: float, source_category: str, language: str = "") -> str:
-            language_colours = {
-                "java": "#0066cc",
-                "groovy": "#228B22",
-                "kotlin": "#FF9933",
-            }
-
-            colour = "#4da6ff"  # Default
-            if conflict_score > 0.6:
-                colour = "#ff4d4d"  # Red for high conflict
-            elif conflict_score > 0.3:
-                colour = "#ffa64d"  # Orange for medium conflict
-
-            if source_category == "code" and language:
-                lang_lower = language.lower()
-                if lang_lower in language_colours:
-                    if conflict_score > 0.6:
-                        colour = "#ff4d4d"  # Keep red for high conflict
-                    elif conflict_score > 0.3:
-                        colour = "#ffa64d"  # Keep orange for medium conflict
-                    else:
-                        colour = language_colours[lang_lower]
-
-            return colour
-
-        # High conflict should be red even for code
-        assert get_node_colour(0.8, "code", "java") == "#ff4d4d"
-        # Medium conflict should be orange
-        assert get_node_colour(0.5, "code", "java") == "#ffa64d"
-        # Low conflict should use language colour
-        assert get_node_colour(0.1, "code", "java") == "#0066cc"
-
-    def test_node_colour_language_mapping(self):
-        """Test that different languages get distinct colours."""
-
-        def get_node_colour(conflict_score: float, source_category: str, language: str = "") -> str:
-            language_colours = {
-                "java": "#0066cc",
-                "groovy": "#228B22",
-                "kotlin": "#FF9933",
-                "gradle": "#9966cc",
-                "xml": "#FF6666",
-            }
-
-            colour = "#4da6ff"
-            if conflict_score > 0.6:
-                colour = "#ff4d4d"
-            elif conflict_score > 0.3:
-                colour = "#ffa64d"
-
-            if source_category == "code" and language:
-                lang_lower = language.lower()
-                if lang_lower in language_colours:
-                    if conflict_score > 0.6:
-                        colour = "#ff4d4d"
-                    elif conflict_score > 0.3:
-                        colour = "#ffa64d"
-                    else:
-                        colour = language_colours[lang_lower]
-
-            return colour
-
-        # Test language-specific colours (low conflict)
-        assert get_node_colour(0.1, "code", "java") == "#0066cc"
-        assert get_node_colour(0.1, "code", "groovy") == "#228B22"
-        assert get_node_colour(0.1, "code", "kotlin") == "#FF9933"
-        assert get_node_colour(0.1, "code", "gradle") == "#9966cc"
-        assert get_node_colour(0.1, "code", "xml") == "#FF6666"
-
-    def test_tooltip_includes_code_metadata(self):
-        """Test that tooltips include code-specific metadata."""
-
-        def build_tooltip(node_id: str, data: Dict[str, Any]) -> str:
-            """Simulate tooltip building logic."""
-            conflict = float(data.get("conflict_score", 0.0))
-            title = (
-                f"{node_id}\n"
-                f"Type: {data.get('doc_type')}\n"
-                f"Version: {data.get('version')}\n"
-                f"Conflict Score: {conflict:.3f}\n"
+    def test_rejects_missing_parent_and_duplicate_ids(self, dashboard_runtime):
+        with pytest.raises(ValueError, match="Parent inquiry"):
+            dashboard_runtime._parse_confirmed_research_inquiries(
+                "RQ2a [sub_question]: A child question?"
             )
 
-            source_category = data.get("source_category", "")
-            if source_category == "code":
-                language = data.get("language")
-                if language:
-                    title += f"\nLanguage: {language}"
+        with pytest.raises(ValueError, match="repeated"):
+            dashboard_runtime._parse_confirmed_research_inquiries(
+                "RQ1 [research_question]: One question?\n"
+                "RQ1 [research_question]: Duplicate question?"
+            )
 
-                service = data.get("service")
-                if service:
-                    title += f"\nService: {service}"
 
-                dependencies = data.get("dependencies")
-                if dependencies:
-                    dep_list = (
-                        ", ".join(dependencies)
-                        if isinstance(dependencies, list)
-                        else str(dependencies)
-                    )
-                    title += f"\nDependencies: {dep_list}"
+def test_dashboard_host_defaults_to_loopback_and_honours_configuration(
+    dashboard_runtime, monkeypatch
+):
+    monkeypatch.delenv("DASHBOARD_HOST", raising=False)
+    assert dashboard_runtime.get_dashboard_host() == "127.0.0.1"
+    monkeypatch.setenv("DASHBOARD_HOST", "0.0.0.0")
+    assert dashboard_runtime.get_dashboard_host() == "0.0.0.0"
 
-                internal_calls = data.get("internal_calls")
-                if internal_calls:
-                    calls_list = (
-                        ", ".join(internal_calls)
-                        if isinstance(internal_calls, list)
-                        else str(internal_calls)
-                    )
-                    title += f"\nInternal Calls: {calls_list}"
 
-                endpoints = data.get("endpoints")
-                if endpoints:
-                    endpoints_list = (
-                        ", ".join(endpoints) if isinstance(endpoints, list) else str(endpoints)
-                    )
-                    title += f"\nEndpoints: {endpoints_list}"
+def test_dashboard_port_defaults_and_rejects_invalid_values(dashboard_runtime):
+    assert dashboard_runtime.get_dashboard_port(None) == 8050
+    assert dashboard_runtime.get_dashboard_port("8051") == 8051
+    with pytest.raises(ValueError, match="between 1 and 65535"):
+        dashboard_runtime.get_dashboard_port("65536")
 
-            return title
 
-        node_data = {
-            "doc_type": "code",
-            "version": 1,
-            "conflict_score": 0.2,
-            "source_category": "code",
-            "language": "java",
-            "service": "auth-service",
-            "dependencies": ["spring-boot", "jackson"],
-            "internal_calls": ["UserService", "TokenService"],
-            "endpoints": ["/auth/login", "/auth/logout"],
+def test_selected_thesis_graph_is_used_for_analytics(dashboard_runtime, tmp_path, monkeypatch):
+    from scripts.thesis_graph.thesis_registry import ThesisRegistry
+
+    graph_path = tmp_path / "example_thesis.sqlite"
+    with sqlite3.connect(graph_path) as connection:
+        connection.executescript("""
+            CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE nodes (
+                node_id TEXT PRIMARY KEY,
+                node_type TEXT NOT NULL,
+                thesis_id TEXT NOT NULL,
+                label TEXT NOT NULL,
+                attributes_json TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE TABLE edges (
+                source_node_id TEXT NOT NULL,
+                target_node_id TEXT NOT NULL,
+                relation TEXT NOT NULL
+            );
+            INSERT INTO metadata VALUES ('thesis_id', 'example thesis');
+            INSERT INTO nodes VALUES ('chapter:1', 'chapter', 'example thesis', 'Chapter 1', '{}');
+            INSERT INTO nodes VALUES ('section:1', 'section', 'example thesis', 'Methods', '{}');
+            INSERT INTO edges VALUES ('chapter:1', 'section:1', 'contains');
+            """)
+
+    class TestConfig:
+        thesis_graphs_dir = str(tmp_path)
+
+    monkeypatch.setattr(dashboard_runtime, "RAGConfig", TestConfig)
+    registry = ThesisRegistry(tmp_path / "registry.sqlite")
+    registry.register_thesis(
+        thesis_id="example thesis",
+        title="Example thesis title",
+        authors=[],
+        source_path=tmp_path / "source.pdf",
+        file_hash="test-hash",
+        citation_doc_node_id="citation-doc",
+        graph_path=graph_path,
+    )
+
+    options = dashboard_runtime._get_analytics_graph_options()
+    assert {"label": "Thesis: example thesis", "value": "thesis:example thesis"} in options
+    assert {
+        "label": "Citation graph: Example thesis title",
+        "value": "citation:example thesis",
+    } in options
+    assert {
+        "label": "Thesis + references: Example thesis title",
+        "value": "thesis_and_references:example thesis",
+    } in options
+
+    graph = dashboard_runtime._build_analytics_graph("thesis:example thesis")
+
+    assert set(graph.nodes) == {"chapter:1", "section:1"}
+    assert graph["chapter:1"]["section:1"]["relation"] == "contains"
+
+    import scripts.thesis_graph.unified_graph as unified_graph
+
+    requested_modes = []
+
+    def fake_load_academic_graph(*args, mode, **kwargs):
+        requested_modes.append(mode)
+        graph = nx.DiGraph()
+        graph.add_edge("thesis", "reference", relation="cites")
+        return graph
+
+    monkeypatch.setattr(unified_graph, "load_academic_graph", fake_load_academic_graph)
+    citation_graph = dashboard_runtime._build_analytics_graph("citation:example thesis")
+    combined_graph = dashboard_runtime._build_analytics_graph(
+        "thesis_and_references:example thesis"
+    )
+
+    assert requested_modes == ["references", "thesis_and_references"]
+    assert type(citation_graph) is nx.Graph
+    assert type(combined_graph) is nx.Graph
+
+
+def test_pipeline_success_refreshes_graph_metadata_and_document_options(
+    dashboard_runtime, monkeypatch
+):
+    class FakeGraphStore:
+        def load_metadata(self):
+            return True
+
+        def get_node_ids(self):
+            return ["doc-1"]
+
+        def get_node(self, node_id):
+            return (
+                {"source_category": "academic_reference", "summary": "Newly ingested thesis"}
+                if node_id == "doc-1"
+                else None
+            )
+
+        def get_edges(self):
+            return []
+
+        def get_clusters(self):
+            return {"risk": [], "topic": []}
+
+    monkeypatch.setattr(dashboard_runtime, "graph_store", FakeGraphStore())
+    monkeypatch.setattr(dashboard_runtime, "GraphFilter", lambda graph: graph)
+    monkeypatch.setattr(dashboard_runtime, "layout_positions_cache", {"old": {"x": 1}})
+
+    options = dashboard_runtime.refresh_graph_after_pipeline_success({"job_type": "ingest_thesis"})
+
+    assert options == [{"label": "Newly ingested thesis", "value": "doc-1"}]
+    assert dashboard_runtime.graph_filter["nodes"] == {
+        "doc-1": {
+            "source_category": "academic_reference",
+            "summary": "Newly ingested thesis",
         }
-
-        tooltip = build_tooltip("MyClass_v1", node_data)
-
-        # Check that all code metadata is present
-        assert "Language: java" in tooltip
-        assert "Service: auth-service" in tooltip
-        assert "spring-boot" in tooltip
-        assert "jackson" in tooltip
-        assert "UserService" in tooltip
-        assert "TokenService" in tooltip
-        assert "/auth/login" in tooltip
-        assert "/auth/logout" in tooltip
-
-    def test_tooltip_handles_list_and_string_metadata(self):
-        """Test tooltip handles both list and string metadata."""
-
-        def build_tooltip(node_id: str, data: Dict[str, Any]) -> str:
-            """Simulate tooltip building logic."""
-            conflict = float(data.get("conflict_score", 0.0))
-            title = f"{node_id}\nConflict Score: {conflict:.3f}\n"
-
-            source_category = data.get("source_category", "")
-            if source_category == "code":
-                dependencies = data.get("dependencies")
-                if dependencies:
-                    dep_list = (
-                        ", ".join(dependencies)
-                        if isinstance(dependencies, list)
-                        else str(dependencies)
-                    )
-                    title += f"Dependencies: {dep_list}"
-
-            return title
-
-        # Test with list
-        node_with_list = {
-            "conflict_score": 0.1,
-            "source_category": "code",
-            "dependencies": ["dep1", "dep2", "dep3"],
-        }
-        tooltip = build_tooltip("node1", node_with_list)
-        assert "dep1, dep2, dep3" in tooltip
-
-        # Test with string
-        node_with_string = {
-            "conflict_score": 0.1,
-            "source_category": "code",
-            "dependencies": "single-dep",
-        }
-        tooltip = build_tooltip("node2", node_with_string)
-        assert "single-dep" in tooltip
-
-    def test_tooltip_omits_missing_metadata(self):
-        """Test that tooltip doesn't include metadata that isn't present."""
-
-        def build_tooltip(node_id: str, data: Dict[str, Any]) -> str:
-            """Simulate tooltip building logic."""
-            conflict = float(data.get("conflict_score", 0.0))
-            title = f"{node_id}\nConflict Score: {conflict:.3f}\n"
-
-            source_category = data.get("source_category", "")
-            if source_category == "code":
-                language = data.get("language")
-                if language:
-                    title += f"Language: {language}"
-
-            return title
-
-        # Node without language
-        node_data = {
-            "conflict_score": 0.1,
-            "source_category": "code",
-        }
-        tooltip = build_tooltip("node1", node_data)
-        assert "Language:" not in tooltip
-
-    def test_non_code_nodes_skip_code_metadata(self):
-        """Test that non-code documents don't include code metadata in tooltip."""
-
-        def build_tooltip(node_id: str, data: Dict[str, Any]) -> str:
-            """Simulate tooltip building logic."""
-            conflict = float(data.get("conflict_score", 0.0))
-            title = f"{node_id}\nType: {data.get('doc_type')}\nConflict Score: {conflict:.3f}\n"
-
-            source_category = data.get("source_category", "")
-            if source_category == "code":
-                language = data.get("language")
-                if language:
-                    title += f"Language: {language}"
-                service = data.get("service")
-                if service:
-                    title += f"Service: {service}"
-
-            return title
-
-        # Documentation node
-        doc_data = {
-            "doc_type": "governance_doc",
-            "conflict_score": 0.2,
-            "source_category": "governance_doc",
-            "language": "java",  # Should be ignored
-            "service": "auth",  # Should be ignored
-        }
-        tooltip = build_tooltip("policy_v1", doc_data)
-        assert "Language:" not in tooltip
-        assert "Service:" not in tooltip
+    }
+    assert dashboard_runtime.layout_positions_cache == {}

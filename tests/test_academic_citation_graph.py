@@ -219,6 +219,16 @@ class TestCitationGraph:
         node = graph.nodes["ref_002"]
         assert node.title == "Some Paper"
 
+    def test_add_reference_handles_missing_citation_and_string_authors(self):
+        """Incomplete provider metadata cannot break citation graph construction."""
+        graph = CitationGraph()
+
+        graph.add_reference("ref_003", {"authors": "Smith, J., Doe, A."})
+
+        node = graph.nodes["ref_003"]
+        assert node.authors == ["Smith", "J.", "Doe", "A."]
+        assert node.year is None
+
     def test_reference_quality_score_computed(self):
         """Quality score should be computed when not provided."""
         graph = CitationGraph()

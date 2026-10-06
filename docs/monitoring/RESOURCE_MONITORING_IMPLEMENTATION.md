@@ -238,7 +238,6 @@ alert_threshold = observed_max_cpu * 0.8  # 36%
 ### Quick Syntax Check
 ```bash
 python3 -m py_compile scripts/ingest/ingest.py
-python3 -m py_compile scripts/ingest/ingest_git.py
 python3 -m py_compile scripts/ingest/ingest_academic.py
 python3 -m py_compile scripts/rag/query.py
 python3 -m py_compile scripts/consistency_graph/build_consistency_graph.py

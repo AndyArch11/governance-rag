@@ -117,6 +117,41 @@ def generate_module(monkeypatch):
 class TestAnswer:
     """Tests for answer function."""
 
+    def test_generation_retry_attempts_audit_estimated_tokens(self, monkeypatch, generate_module):
+        from scripts.utils import llm_instrumentation
+
+        generate, _, _, audit_events = generate_module
+        attempts = []
+
+        class FlakyLLM:
+            model = "test-model"
+
+            def invoke(self, _prompt):
+                attempts.append(None)
+                if len(attempts) < 3:
+                    raise TimeoutError("request timed out")
+                return "a generated answer"
+
+        monkeypatch.setattr(generate, "_get_llm", lambda **_: FlakyLLM())
+        monkeypatch.setattr("scripts.utils.retry_utils.time.sleep", lambda _: None)
+        monkeypatch.setattr(
+            llm_instrumentation,
+            "audit",
+            lambda event, data: audit_events.append((event, data)),
+        )
+
+        prompt = "A compact prompt for retry accounting."
+        result = generate._invoke_llm_with_retry(prompt)
+
+        usage_events = [data for event, data in audit_events if event == "llm_usage"]
+        assert result == "a generated answer"
+        assert len(usage_events) == 3
+        assert [event["success"] for event in usage_events] == [False, False, True]
+        assert all(event["input_tokens"] == len(prompt) // 4 for event in usage_events)
+        assert [event["output_tokens"] for event in usage_events] == [0, 0, 4]
+        assert [event["attempt"] for event in usage_events] == [1, 2, 3]
+        assert all(event["token_source"] == "estimated" for event in usage_events)
+
     def test_empty_query_raises(self, generate_module):
         generate, _, _, _ = generate_module
         with pytest.raises(ValueError, match="Query cannot be empty"):
@@ -189,6 +224,50 @@ class TestAnswer:
         assert any("Retrieving" in msg for msg in logger.infos)
         assert any("Generating answer" in msg for msg in logger.infos)
 
+    def test_academic_answer_passes_assigned_lens_guidance_to_prompt(
+        self, monkeypatch, generate_module
+    ):
+        generate, _, dummy_llm, _ = generate_module
+        chunks = ["The thesis discusses healing through relationships with Country and kin."]
+        sources = [
+            {
+                "source_category": "academic_reference",
+                "source_kind": "thesis_document",
+                "thesis_id": "thesis-one",
+            }
+        ]
+        monkeypatch.setattr(
+            generate,
+            "retrieve",
+            lambda *args, **kwargs: (chunks, sources),
+        )
+        guidance_calls = []
+        monkeypatch.setattr(
+            generate,
+            "get_cultural_lens_guidance_for_sources",
+            lambda retrieved_sources, **kwargs: guidance_calls.append((retrieved_sources, kwargs))
+            or "Use the assigned cultural lens.",
+        )
+        prompts_built = []
+        monkeypatch.setattr(
+            generate,
+            "build_academic_aware_prompt",
+            lambda query, context, **kwargs: prompts_built.append(kwargs) or "ACADEMIC PROMPT",
+        )
+        dummy_llm.set_responses("Grounded answer.")
+
+        result = generate.answer(
+            "How does the thesis describe healing?",
+            collection=None,
+            persona="assessor",
+            custom_role="Custom academic role.",
+        )
+
+        assert result["answer"] == "Grounded answer."
+        assert guidance_calls[0][0] == sources
+        assert prompts_built[0]["custom_role"] == "Custom academic role."
+        assert prompts_built[0]["additional_system_guidance"] == "Use the assigned cultural lens."
+
     def test_answer_respects_k_override(self, monkeypatch, generate_module):
         generate, _, dummy_llm, _ = generate_module
 
@@ -224,10 +303,10 @@ class TestAnswer:
         assert captured_k == [generate.config.k_results]
 
 
-class TestCodeAwareAnswerGeneration:
-    """Tests for code-aware answer generation (Phase 4.2)."""
+class TestCodeQueryCompatibility:
+    """Tests that code-specific answer generation is no longer active."""
 
-    def test_code_query_detection_java(self, monkeypatch, generate_module):
+    def test_code_like_query_uses_standard_prompt(self, monkeypatch, generate_module):
         generate, logger, dummy_llm, audit_events = generate_module
 
         chunks = ["public class AuthService { }"]
@@ -237,17 +316,20 @@ class TestCodeAwareAnswerGeneration:
             "retrieve",
             lambda q, c, k=None, persona=None, domain=None, **kwargs: (chunks, sources),
         )
+        prompts_built = []
         monkeypatch.setattr(
-            generate, "build_code_aware_prompt", lambda q, c, metadata=None: "CODE_PROMPT"
+            generate,
+            "build_prompt",
+            lambda query, context, **kwargs: prompts_built.append((query, context))
+            or "STANDARD_PROMPT",
         )
         dummy_llm.set_responses("Generated answer")
 
         response = generate.answer("Show Java services", collection=None)
 
-        assert response["is_code_query"] is True
-        # Check that build_code_aware_prompt was called (implies code detection)
-        # Also verify response includes code-aware formatting
-        assert response["model"] is not None
+        assert response["is_code_query"] is False
+        assert prompts_built == [("Show Java services", chunks)]
+        assert response["answer"] == "Generated answer"
 
     def test_non_code_query_uses_standard_prompt(self, monkeypatch, generate_module):
         generate, logger, dummy_llm, audit_events = generate_module
@@ -273,7 +355,7 @@ class TestCodeAwareAnswerGeneration:
         # Standard prompt should have been called
         assert len(prompts_built) > 0
 
-    def test_code_response_enhancement(self, monkeypatch, generate_module):
+    def test_code_like_response_is_not_postprocessed(self, monkeypatch, generate_module):
         generate, logger, dummy_llm, audit_events = generate_module
 
         chunks = ["@Service public class PaymentService { }"]
@@ -285,93 +367,13 @@ class TestCodeAwareAnswerGeneration:
             "retrieve",
             lambda q, c, k=None, persona=None, domain=None, **kwargs: (chunks, sources),
         )
-        monkeypatch.setattr(
-            generate, "build_code_aware_prompt", lambda q, c, metadata=None: "CODE_PROMPT"
-        )
-        # Mock response enhancement
-        enhanced_responses = []
-        original_enhance = generate._enhance_code_response
-
-        def track_enhance(answer, metadata=None):
-            enhanced_responses.append((answer, metadata))
-            return "Enhanced: " + answer
-
-        monkeypatch.setattr(generate, "_enhance_code_response", track_enhance)
+        monkeypatch.setattr(generate, "build_prompt", lambda *args, **kwargs: "STANDARD_PROMPT")
         dummy_llm.set_responses("Payment service implementation")
 
         response = generate.answer("Show payment service class", collection=None)
 
-        assert response["is_code_query"] is True
-        # Enhancement should have been called
-        assert len(enhanced_responses) > 0
-        # Answer should be enhanced
-        assert "Enhanced:" in response["answer"]
-
-    def test_language_extraction_from_metadata(self, generate_module):
-        generate, _, _, _ = generate_module
-        from scripts.rag.assemble import extract_language_from_metadata
-
-        metadata = [{"language": "java", "service_name": "Auth"}, {"language": "python"}]
-        lang = extract_language_from_metadata(metadata)
-        assert lang == "java"
-
-        # Test with empty metadata
-        assert extract_language_from_metadata(None) is None
-        assert extract_language_from_metadata([]) is None
-        assert extract_language_from_metadata([{}, {}]) is None
-
-    def test_code_response_formatting(self, generate_module):
-        generate, _, _, _ = generate_module
-        from scripts.rag.assemble import format_code_response
-
-        answer = "The service uses: public class Auth { }"
-        formatted = format_code_response(answer, language="java")
-        # Should be formatted or unchanged (depends on implementation)
-        assert isinstance(formatted, str)
-
-    def test_git_links_inclusion(self, generate_module):
-        generate, _, _, _ = generate_module
-        from scripts.rag.assemble import include_git_links
-
-        answer = "Check the authentication service"
-        metadata = [{"git_url": "https://github.com/org/repo/blob/main/AuthService.java"}]
-
-        enhanced = include_git_links(answer, metadata)
-
-        assert "github" in enhanced.lower()
-        assert "https://github.com/org/repo/blob/main/AuthService.java" in enhanced
-
-    def test_git_links_deduplication(self, generate_module):
-        generate, _, _, _ = generate_module
-        from scripts.rag.assemble import include_git_links
-
-        answer = "Check services"
-        metadata = [
-            {"git_url": "https://github.com/org/repo/blob/main/A.java"},
-            {"git_url": "https://github.com/org/repo/blob/main/A.java"},  # Duplicate
-            {"git_url": "https://github.com/org/repo/blob/main/B.java"},
-        ]
-
-        enhanced = include_git_links(answer, metadata)
-
-        # Count occurrences - each URL should appear once
-        count_a = enhanced.count("A.java")
-        count_b = enhanced.count("B.java")
-        assert count_a == 1
-        assert count_b == 1
-
-    def test_code_aware_prompt_building(self, generate_module):
-        generate, _, _, _ = generate_module
-        from scripts.rag.assemble import build_code_aware_prompt
-
-        chunks = ["@Service public class Auth { }"]
-        metadata = [{"language": "java", "service_name": "AuthService"}]
-
-        prompt = build_code_aware_prompt("Show Auth service", chunks, metadata)
-
-        assert "code" in prompt.lower()
-        assert "Auth" in prompt or "@Service" in prompt
-        assert "Show Auth service" in prompt
+        assert response["is_code_query"] is False
+        assert response["answer"] == "Payment service implementation"
 
     def test_response_contains_is_code_query_flag(self, monkeypatch, generate_module):
         generate, _, dummy_llm, _ = generate_module

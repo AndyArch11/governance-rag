@@ -16,7 +16,7 @@ import math
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from scripts.search.text_preprocessing import PreprocessingStrategy, TextPreprocessor
 
@@ -265,7 +265,7 @@ class BM25Search:
         logger.info(f"BM25 search for '{query}': {len(scores)} candidates, returning top {top_k}")
         return scores[:top_k]
 
-    def get_stats(self) -> Dict[str, any]:
+    def get_stats(self) -> Dict[str, Any]:
         """Get index statistics.
 
         Returns:

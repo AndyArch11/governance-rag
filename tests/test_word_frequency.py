@@ -62,6 +62,19 @@ class TestWordFrequencyExtractor:
         assert "https" not in freqs
         assert "org" not in freqs
 
+    def test_extract_filters_html_and_function_word_noise(self):
+        """Citation HTML entities and high-frequency function words do not dominate clouds."""
+        text = "Smith &amp; Jones also worked within community-led reproductive health research"
+        extractor = WordFrequencyExtractor()
+
+        freqs = extractor.extract_frequencies(text)
+
+        assert "amp" not in freqs
+        assert "also" not in freqs
+        assert "within" not in freqs
+        assert "community" in freqs
+        assert "reproductive" in freqs
+
     def test_extract_with_doc_count(self):
         """Test extraction with document count tracking."""
         text = "leadership and workplace collaboration"

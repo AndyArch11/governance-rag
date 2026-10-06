@@ -1,7 +1,7 @@
 """Common BM25 indexing utilities for chunk-level ingestion.
 
 Provides centralised BM25 indexing logic at chunk granularity,
-ensuring consistency across ingest.py, ingest_git.py, and ingest_academic.py.
+ensuring consistency across standard and academic ingestion.
 
 This module handles:
 - Indexing regular chunks with IDs: doc_id-chunk-{i}

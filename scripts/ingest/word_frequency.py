@@ -16,6 +16,7 @@ Usage:
 
 from __future__ import annotations
 
+import html
 import re
 from collections import Counter
 from typing import Dict, Set
@@ -37,6 +38,10 @@ WORD_CLOUD_STOP_WORDS: Set[str] = {
     "scholar",
     "et",
     "al",
+    # HTML entity and high-frequency function-word artefacts.
+    "amp",
+    "also",
+    "within",
 }
 
 
@@ -72,6 +77,10 @@ class WordFrequencyExtractor:
         """
         if not text:
             return {}
+
+        # Decode PDF/HTML extraction entities so ``&amp;`` cannot become the
+        # high-frequency token ``amp`` in author lists and citations.
+        text = html.unescape(text)
 
         # Tokenise using TextPreprocessor (applies stop word filtering)
         tokens = self.preprocessor.tokenise(text)

@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from scripts.ingest.academic.providers import (
+    FatalError,
     OpenAlexProvider,
     ProviderChain,
     Reference,
@@ -60,6 +61,62 @@ class TestOpenAlexProvider:
             assert result.title == "Sample Paper"
             assert len(result.authors) == 2
             assert result.oa_available
+
+    def test_resolve_by_title_year(self, provider):
+        """Title and year resolution selects a confident matching work."""
+        work = {
+            "id": "https://openalex.org/W987",
+            "title": "Qualitative Research Methods",
+            "publication_year": 2024,
+            "authorships": [],
+            "biblio": {},
+            "is_open_access": False,
+        }
+        with patch.object(provider, "_request_with_retry") as mock_request:
+            mock_request.return_value = Mock(json=lambda: {"results": [work]})
+
+            result = provider.resolve("Qualitative Research Methods", year=2024)
+
+        assert result.resolved
+        assert result.title == "Qualitative Research Methods"
+        assert "publication_year:2024" in mock_request.call_args.args[1]
+
+    def test_resolve_by_authors_after_year_lookup_fails(self, provider):
+        """Author hints provide the next resolution strategy after a failed year lookup."""
+        work = {
+            "id": "https://openalex.org/W456",
+            "title": "Community Governance",
+            "publication_year": 2023,
+            "authorships": [{"author": {"display_name": "Smith, Ada"}}],
+            "biblio": {},
+            "is_open_access": False,
+        }
+        with (
+            patch.object(
+                provider,
+                "_resolve_by_title_year",
+                side_effect=FatalError("year lookup unavailable"),
+            ),
+            patch.object(provider, "_request_with_retry") as mock_request,
+        ):
+            mock_request.return_value = Mock(json=lambda: {"results": [work]})
+
+            result = provider.resolve("Community Governance", year=2023, authors=["Smith, Ada"])
+
+        assert result.resolved
+        assert result.authors == ["Smith, Ada"]
+        assert "authorships.author.display_name.search:Smith" in mock_request.call_args.args[1]
+
+    def test_resolve_returns_unresolved_reference_when_no_match(self, provider):
+        """An unresolvable title returns a stable unresolved reference rather than raising."""
+        with patch.object(provider, "_request_with_retry") as mock_request:
+            mock_request.return_value = Mock(json=lambda: {"results": []})
+
+            result = provider.resolve("No Matching Publication")
+
+        assert not result.resolved
+        assert result.status.value == "unresolved"
+        assert result.metadata_provider == "openalex"
 
     def test_fuzzy_title_matching(self, provider):
         """Test fuzzy title matching."""
@@ -265,6 +322,23 @@ class TestProviderChain:
         # Reset should work
         chain.reset_stats()
         assert chain.resolution_stats["total_queries"] == 0
+
+    def test_resolution_forwards_author_hints(self):
+        """Provider chains retain author context for title disambiguation."""
+        provider = Mock()
+        provider.name = "author-aware"
+        provider.resolve.return_value = Reference(
+            ref_id="ref-1",
+            raw_citation="Citation",
+            title="Resolved",
+            resolved=True,
+            quality_score=1.0,
+        )
+        chain = ProviderChain([provider], min_confidence=0.1)
+
+        chain.resolve("Citation", authors=["Smith, J."])
+
+        assert provider.resolve.call_args.kwargs["authors"] == ["Smith, J."]
 
 
 class TestProviderIntegration:

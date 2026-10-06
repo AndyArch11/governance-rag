@@ -132,6 +132,26 @@ class TestSemanticClustererInit:
 class TestCacheOperations:
     """Test SQLite cache get/put operations."""
 
+    def test_cache_miss_audits_embedding_usage(self, temp_cache_db, mock_embedder, monkeypatch):
+        from scripts.utils import llm_instrumentation
+
+        usage_events = []
+        monkeypatch.setattr(
+            llm_instrumentation,
+            "audit",
+            lambda event, data: usage_events.append((event, data)),
+        )
+        clusterer = SemanticClusterer(cache_path=temp_cache_db)
+
+        assert clusterer._get_embedding("authentication") is not None
+
+        records = [data for event, data in usage_events if event == "llm_usage"]
+        assert len(records) == 1
+        assert records[0]["operation"] == "semantic_clustering.embed_term"
+        assert records[0]["input_tokens"] == len("authentication") // 4
+        assert records[0]["output_tokens"] == 0
+        assert records[0]["success"] is True
+
     def test_cache_miss_generates_embedding(self, temp_cache_db, mock_embedder):
         """Test that cache miss generates and stores embedding."""
         clusterer = SemanticClusterer(cache_path=temp_cache_db)
@@ -341,6 +361,14 @@ class TestSynonymDetection:
         synonyms = clusterer.find_synonyms("authentication", [])
 
         assert synonyms == []
+
+    def test_find_synonyms_skips_zero_denominator(self, temp_cache_db, monkeypatch):
+        """Opposite embeddings do not produce an invalid similarity score."""
+        clusterer = SemanticClusterer(cache_path=temp_cache_db)
+        embeddings = {"first": [1.0, 0.0], "opposite": [-1.0, 0.0]}
+        monkeypatch.setattr(clusterer, "_get_embedding", lambda term: embeddings[term])
+
+        assert clusterer.find_synonyms("first", ["opposite"]) == []
 
     def test_find_synonyms_returns_similar_terms(self, temp_cache_db, mock_embedder):
         """Test that find_synonyms returns similar terms."""

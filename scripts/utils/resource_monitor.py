@@ -484,7 +484,7 @@ class ResourceMonitor:
         if self._start_time and self._end_time:
             duration = (self._end_time - self._start_time).total_seconds()
 
-        summary = {
+        summary: Dict[str, Any] = {
             "operation": self.operation_name,
             "timestamp": self._start_time.isoformat() if self._start_time else None,
             "duration_seconds": duration,

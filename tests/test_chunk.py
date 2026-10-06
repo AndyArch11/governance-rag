@@ -338,7 +338,9 @@ Never trust, always verify - all access requests are authenticated and authorise
         before_text_exists = any(
             "Lead paragraph before table" in chunk for chunk in chunks[: table_idx + 1]
         )
-        after_text_exists = any("Tail paragraph after table" in chunk for chunk in chunks[table_idx:])
+        after_text_exists = any(
+            "Tail paragraph after table" in chunk for chunk in chunks[table_idx:]
+        )
 
         assert before_text_exists
         assert after_text_exists
@@ -346,10 +348,7 @@ Never trust, always verify - all access requests are authenticated and authorise
     def test_table_chunking_splits_oversized_tables_by_rows(self):
         """Oversized tables should be split into multiple table-marked chunks."""
         rows = "\n".join(
-            [
-                f"| service_{i} | " + ("very long descriptive content " * 8) + "|"
-                for i in range(30)
-            ]
+            [f"| service_{i} | " + ("very long descriptive content " * 8) + "|" for i in range(30)]
         )
         text = (
             "[TABLE 2]\n"
@@ -372,10 +371,7 @@ Never trust, always verify - all access requests are authenticated and authorise
         """Nested table payloads should be preserved and chunked as content tables."""
         nested_payload = "[nested: Region A 200K Region B 300K]"
         rows = "\n".join(
-            [
-                f"| Segment {i} | {nested_payload} " + ("details " * 20) + "|"
-                for i in range(10)
-            ]
+            [f"| Segment {i} | {nested_payload} " + ("details " * 20) + "|" for i in range(10)]
         )
         text = (
             "[TABLE 7]\n"
@@ -408,7 +404,9 @@ Never trust, always verify - all access requests are authenticated and authorise
 
         # Layout tables should be treated as narrative chunks (no strict table marker wrapping).
         assert any("Layout table 9" in chunk for chunk in chunks)
-        assert not any("#### TABLE MARKER ####" in chunk and "[TABLE 9]" in chunk for chunk in chunks)
+        assert not any(
+            "#### TABLE MARKER ####" in chunk and "[TABLE 9]" in chunk for chunk in chunks
+        )
         assert any("Before layout table." in chunk for chunk in chunks)
         assert any("After layout table." in chunk for chunk in chunks)
 
@@ -426,7 +424,9 @@ Never trust, always verify - all access requests are authenticated and authorise
         chunks = chunk_text(text, doc_type="reference", adaptive=True)
 
         assert any("Layout table 11" in chunk for chunk in chunks)
-        assert not any("#### TABLE MARKER ####" in chunk and "[TABLE 11]" in chunk for chunk in chunks)
+        assert not any(
+            "#### TABLE MARKER ####" in chunk and "[TABLE 11]" in chunk for chunk in chunks
+        )
 
     def test_table_chunking_honours_explicit_content_type(self):
         """Explicit parser metadata should preserve content-table markers."""

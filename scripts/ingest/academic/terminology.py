@@ -29,6 +29,7 @@ Consider using a more sophisticated method like RAKE or TextRank for better phra
 
 from __future__ import annotations
 
+import html
 import re
 import sqlite3
 from collections import Counter, defaultdict
@@ -108,6 +109,7 @@ DOMAIN_STOP_WORDS = {
     "available",
     "accessed",
     "online",
+    "amp",
     # URLs and web artifacts
     "http",
     "https",
@@ -182,6 +184,36 @@ DOMAIN_STOP_WORDS = {
     "y",
     "z",
 }
+
+# Canonical terms whose connective words and meaningful sub-terms must survive
+# stopword filtering and sliding n-gram extraction. The excluded fragments are
+# extraction artefacts rather than independent concepts in this context.
+CANONICAL_INDIGENOUS_TERMS = {
+    "aboriginal",
+    "first nations",
+    "torres strait",
+    "islander",
+    "torres strait islander",
+    "aboriginal and torres strait islander",
+}
+INDIGENOUS_NGRAM_ARTIFACTS = {
+    "aboriginal torres",
+    "aboriginal torres strait",
+    "strait islander",
+}
+FIRST_NATIONS_PATTERN = re.compile(r"\bfirst\s+nations\b", re.IGNORECASE)
+REFERENCE_SECTION_HEADING_PATTERN = re.compile(
+    r"(?im)^\s*(?:#{1,6}\s*)?(?:references|bibliography|works\s+cited)\s*#*\s*$"
+)
+MARKDOWN_REFERENCE_SECTION_PATTERN = re.compile(
+    r"(?im)^\s*(#{1,6})\s*(?:references|bibliography|works\s+cited)\s*#*\s*$"
+)
+MARKDOWN_HEADING_PATTERN = re.compile(r"^\s*(#{1,6})\s+.+?\s*#*\s*$")
+URL_OR_FILENAME_PATTERN = re.compile(
+    r"(?:https?://|www\.)\S+|\b\S+(?:%[0-9a-f]{2})\S*|\b\S+\.(?:pdf|html?|docx?)\b",
+    re.IGNORECASE,
+)
+TABLE_BLOCK_PATTERN = re.compile(r"\[TABLE\s+\d+\].*?\[/TABLE\s+\d+\]", re.IGNORECASE | re.DOTALL)
 
 
 def get_all_stopwords() -> Set[str]:
@@ -366,6 +398,93 @@ class DomainTerminologyExtractor:
 
         return ngrams
 
+    @staticmethod
+    def _prepare_text_for_terminology(text: str) -> str:
+        """Remove non-prose regions that create terminology extraction artefacts.
+
+        Markdown bibliography sections are skipped only until the next heading
+        at the same or higher hierarchy level. This preserves appendices and
+        other post-reference thesis sections. Plain-text bibliography headings
+        retain the conservative end-of-document behaviour because they provide
+        no structural boundary.
+
+        Args:
+            text: The input text from which to remove non-prose regions.
+
+        Returns:
+            The cleaned text suitable for terminology extraction.
+        """
+        main_text = html.unescape(text)
+        markdown_match = MARKDOWN_REFERENCE_SECTION_PATTERN.search(main_text)
+        if markdown_match:
+            heading_level = len(markdown_match.group(1))
+            reference_end = len(main_text)
+            cursor = markdown_match.end()
+            for line_match in re.finditer(r"(?m)^.*$", main_text[cursor:]):
+                heading_match = MARKDOWN_HEADING_PATTERN.match(line_match.group(0))
+                if heading_match and len(heading_match.group(1)) <= heading_level:
+                    reference_end = cursor + line_match.start()
+                    break
+            main_text = main_text[: markdown_match.start()] + main_text[reference_end:]
+        else:
+            main_text = REFERENCE_SECTION_HEADING_PATTERN.split(main_text, maxsplit=1)[0]
+        main_text = TABLE_BLOCK_PATTERN.sub(" ", main_text)
+        return URL_OR_FILENAME_PATTERN.sub(" ", main_text)
+
+    def _apply_canonical_phrase_policy(self, term_freq: Counter, text: str) -> Counter:
+        """Canonicalise protected phrases and remove their n-gram artefacts.
+
+        The generic tokeniser removes stopwords such as ``and`` before n-gram
+        extraction. This restores canonical Indigenous phrases from source text.
+        It retains meaningful Aboriginal and Torres Strait Islander sub-terms.
+        For First Nations, it excludes phrase-derived unigram fragments while
+        preserving occurrences of first or nations that appear independently.
+
+        Args:
+            term_freq: Extracted n-gram frequencies.
+            text: Original document text before stopword filtering.
+
+        Returns:
+            Canonicalised candidate-term frequencies.
+        """
+        canonicalised = Counter(term_freq)
+
+        full_phrase_pattern = re.compile(
+            r"\baboriginal\s+(?:and\s+)?torres\s+strait\s+islanders?\b",
+            re.IGNORECASE,
+        )
+        full_phrase_count = len(full_phrase_pattern.findall(text))
+        if full_phrase_count:
+            canonicalised["aboriginal and torres strait islander"] = full_phrase_count
+
+        torres_strait_islander_pattern = re.compile(
+            r"\btorres\s+strait\s+islanders?\b",
+            re.IGNORECASE,
+        )
+        torres_strait_islander_count = len(torres_strait_islander_pattern.findall(text))
+        if torres_strait_islander_count:
+            canonicalised["torres strait islander"] = torres_strait_islander_count
+
+        first_nations_matches = list(FIRST_NATIONS_PATTERN.finditer(text))
+        if first_nations_matches:
+            canonicalised["first nations"] = len(first_nations_matches)
+
+            # Remove phrase spans before counting words that occur independently.
+            text_without_first_nations = FIRST_NATIONS_PATTERN.sub(" ", text)
+            for word in ("first", "nations"):
+                standalone_count = len(
+                    re.findall(rf"\b{word}\b", text_without_first_nations, re.IGNORECASE)
+                )
+                if standalone_count:
+                    canonicalised[word] = standalone_count
+                else:
+                    canonicalised.pop(word, None)
+
+        for artifact in INDIGENOUS_NGRAM_ARTIFACTS:
+            canonicalised.pop(artifact, None)
+
+        return canonicalised
+
     def _compute_bm25_scores(
         self, candidate_terms: Dict[str, int], doc_id: str
     ) -> Dict[str, float]:
@@ -428,20 +547,23 @@ class DomainTerminologyExtractor:
         if doc_id is None:
             doc_id = f"doc_{self.num_docs}"
 
+        terminology_text = self._prepare_text_for_terminology(text)
         term_freq: Counter = Counter()
         term_sentences: Dict[str, List[str]] = defaultdict(list)
 
         # Extract n-grams of various sizes
         for n in range(self.ngram_range[0], self.ngram_range[1] + 1):
-            ngrams = self._extract_ngrams(text, n)
+            ngrams = self._extract_ngrams(terminology_text, n)
             term_freq.update(ngrams)
 
             # Track which sentences contain each term
-            sentences = sent_tokenize(text.lower())
+            sentences = sent_tokenize(terminology_text.lower())
             for sent in sentences:
                 for term in ngrams:
                     if term in sent:
                         term_sentences[term].append(sent)
+
+        term_freq = self._apply_canonical_phrase_policy(term_freq, terminology_text)
 
         # Filter by minimum frequency
         unigram_freq = {term: freq for term, freq in term_freq.items() if len(term.split()) == 1}

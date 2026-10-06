@@ -148,6 +148,11 @@ class TestFailureClassification:
 class TestRetryDecorator:
     """Test retry_with_backoff decorator behaviour."""
 
+    def test_zero_max_retries_is_rejected(self):
+        """Retry configuration must permit at least one function call."""
+        with pytest.raises(ValueError, match="max_retries must be at least 1"):
+            retry_with_backoff(max_retries=0)
+
     def test_successful_call_no_retry(self):
         """Successful call should not trigger retries."""
         mock_func = Mock(return_value="success")

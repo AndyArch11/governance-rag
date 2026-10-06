@@ -1,22 +1,60 @@
-// For format details, see https://aka.ms/devcontainer.json. For config options, see the
-// README at: https://github.com/devcontainers/templates/tree/main/src/python
+// For format details, see https://aka.ms/devcontainer.json
 {
-	"name": "Python 3",
-	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
-	"image": "mcr.microsoft.com/devcontainers/python:2-3.14-trixie"
+	"name": "governance-rag (Python 3.13)",
+	"image": "mcr.microsoft.com/devcontainers/python:2-3.13-trixie",
+	"workspaceFolder": "/workspaces/governance-rag",
+	"workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/governance-rag,type=bind",
 
-	// Features to add to the dev container. More info: https://containers.dev/features.
-	// "features": {},
+	// Named volumes keep the container venv separate from the host .venv and persist pip/HF/Docling caches
+	"mounts": [
+		"source=governance-rag-venv,target=/workspaces/governance-rag/.venv,type=volume",
+		"source=governance-rag-cache,target=/home/vscode/.cache,type=volume"
+	],
 
-	// Use 'forwardPorts' to make a list of ports inside the container available locally.
-	// "forwardPorts": [],
+	// Ollama runs on the WSL host; it must listen on 0.0.0.0 (OLLAMA_HOST=0.0.0.0 ollama serve)
+	"runArgs": [
+		"--add-host=host.docker.internal:host-gateway",
+		"--shm-size=2g"
+	],
+	"hostRequirements": {
+		"gpu": "optional"
+	},
+	"containerEnv": {
+		"OLLAMA_HOST": "${localEnv:DEVCONTAINER_OLLAMA_HOST:http://host.docker.internal:11434}",
+		"DASHBOARD_HOST": "0.0.0.0",
+		"PYTHONUNBUFFERED": "1"
+	},
 
-	// Use 'postCreateCommand' to run commands after the container is created.
-	// "postCreateCommand": "pip3 install --user -r requirements.txt",
+	"forwardPorts": [8050, 8051],
+	"portsAttributes": {
+		"8050": {"label": "Dashboard", "onAutoForward": "notify"},
+		"8051": {"label": "Dashboard alternate", "onAutoForward": "notify"}
+	},
 
-	// Configure tool-specific properties.
-	// "customizations": {},
+	"postCreateCommand": "bash .devcontainer/post-create.sh",
+	"postStartCommand": "curl -sf --max-time 5 \"$OLLAMA_HOST/api/tags\" > /dev/null && echo \"Ollama reachable at $OLLAMA_HOST\" || echo \"WARNING: Ollama not reachable at $OLLAMA_HOST\"",
 
-	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
-	// "remoteUser": "root"
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"ms-python.python",
+				"ms-python.vscode-pylance",
+				"ms-python.black-formatter",
+				"ms-python.isort",
+				"ms-python.pylint",
+				"ms-python.mypy-type-checker",
+				"ms-toolsai.jupyter",
+				"GitHub.copilot-chat"
+			],
+			"settings": {
+				"python.defaultInterpreterPath": "/workspaces/governance-rag/.venv/bin/python",
+				"python.terminal.activateEnvironment": true,
+				"python.testing.pytestEnabled": true,
+				"python.testing.unittestEnabled": false,
+				"python.testing.pytestArgs": ["tests"]
+			}
+		}
+	},
+
+	"remoteUser": "vscode"
 }

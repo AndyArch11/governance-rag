@@ -8,7 +8,6 @@ import pytest
 
 from scripts.ingest.chunk import (
     create_enhanced_metadata,
-    detect_code_language,
     extract_heading_path,
     extract_technical_entities,
 )
@@ -157,154 +156,6 @@ class TestExtractTechnicalEntities:
 
         # Functions with special chars may not be extracted, but shouldn't crash
         assert isinstance(entities, list)
-
-
-# =========================
-# Test detect_code_language
-# =========================
-
-
-class TestDetectCodeLanguage:
-    """Tests for detect_code_language function."""
-
-    def test_detect_python_fence(self):
-        """Test detection of Python from code fence."""
-        text = "```python\ndef hello():\n    print('world')\n```"
-        lang = detect_code_language(text)
-
-        assert lang == "python"
-
-    def test_detect_javascript_fence(self):
-        """Test detection of JavaScript from code fence."""
-        text = "```javascript\nconst x = 5;\n```"
-        lang = detect_code_language(text)
-
-        assert lang == "javascript"
-
-    def test_detect_sql_fence(self):
-        """Test detection of SQL from code fence."""
-        text = "```sql\nSELECT * FROM users;\n```"
-        lang = detect_code_language(text)
-
-        assert lang == "sql"
-
-    def test_detect_python_keywords(self):
-        """Test detection of Python from keywords."""
-        text = "Here is code: `def my_function():` and `import pandas`"
-        lang = detect_code_language(text)
-
-        assert lang == "python"
-
-    def test_detect_python_class_keyword(self):
-        """Test detection of Python from class keyword."""
-        text = "Define a `class MyClass:` here"
-        lang = detect_code_language(text)
-
-        assert lang == "python"
-
-    def test_detect_python_self_keyword(self):
-        """Test detection of Python from self usage."""
-        text = "Use `self.attribute` in methods"
-        lang = detect_code_language(text)
-
-        assert lang == "python"
-
-    def test_detect_python_print(self):
-        """Test detection of Python from print function."""
-        text = "Output with `print('hello')`"
-        lang = detect_code_language(text)
-
-        assert lang == "python"
-
-    def test_detect_javascript_const(self):
-        """Test detection of JavaScript from const keyword."""
-        text = "Declare `const myVar = 10;`"
-        lang = detect_code_language(text)
-
-        assert lang == "javascript"
-
-    def test_detect_javascript_let(self):
-        """Test detection of JavaScript from let keyword."""
-        text = "Use `let counter = 0;`"
-        lang = detect_code_language(text)
-
-        assert lang == "javascript"
-
-    def test_detect_javascript_var(self):
-        """Test detection of JavaScript from var keyword."""
-        text = "Old style `var x = 5;`"
-        lang = detect_code_language(text)
-
-        assert lang == "javascript"
-
-    def test_detect_javascript_arrow_function(self):
-        """Test detection of JavaScript from arrow function."""
-        text = "Arrow function `const fn = () => { };`"
-        lang = detect_code_language(text)
-
-        assert lang == "javascript"
-
-    def test_detect_javascript_console_log(self):
-        """Test detection of JavaScript from console.log."""
-        text = "Debug with `console.log('value')`"
-        lang = detect_code_language(text)
-
-        assert lang == "javascript"
-
-    def test_detect_sql_select(self):
-        """Test detection of SQL from SELECT keyword."""
-        text = "Query: `SELECT id, name FROM users`"
-        lang = detect_code_language(text)
-
-        assert lang == "sql"
-
-    def test_detect_sql_insert(self):
-        """Test detection of SQL from INSERT keyword."""
-        text = "Add data: `INSERT INTO users VALUES (1, 'john')`"
-        lang = detect_code_language(text)
-
-        assert lang == "sql"
-
-    def test_detect_yaml_from_structure(self):
-        """Test detection of YAML from structure."""
-        text = """Config:
-```
-version: 1.0
-database:
-  host: localhost
-```"""
-        lang = detect_code_language(text)
-
-        assert lang == "yaml"
-
-    def test_detect_no_code(self):
-        """Test detection returns None when no code present."""
-        text = "This is just plain text without any code"
-        lang = detect_code_language(text)
-
-        assert lang is None
-
-    def test_detect_empty_text(self):
-        """Test detection with empty text."""
-        lang = detect_code_language("")
-
-        assert lang is None
-
-    def test_detect_prefers_fence_over_keywords(self):
-        """Test that code fence takes precedence over keywords."""
-        # Text has JavaScript fence but also Python keywords
-        text = "```javascript\nconst x = 5;\n```\nAlso has print() in description"
-        lang = detect_code_language(text)
-
-        # Should detect from fence first
-        assert lang == "javascript"
-
-    def test_detect_case_insensitive_sql(self):
-        """Test SQL detection is case-insensitive."""
-        text = "Run query: `select * from users`"
-        lang = detect_code_language(text)
-
-        assert lang == "sql"
 
 
 # =========================
@@ -489,20 +340,19 @@ class TestCreateEnhancedMetadata:
         )
 
         assert metadata.content_type == "text"
-        assert metadata.contains_code is False
         assert metadata.contains_table is False
         assert metadata.contains_diagram is False
 
-    def test_create_metadata_with_code(self):
-        """Test metadata creation with code content."""
+    def test_code_fences_are_not_classified_as_code(self):
+        """Code fences do not add code-specific metadata to generic chunks."""
         chunk = "```python\ndef hello():\n    print('world')\n```"
         metadata = create_enhanced_metadata(
             chunk_text=chunk, chunk_index=0, total_chunks=1, doc_id="doc_123"
         )
 
-        assert metadata.contains_code is True
-        assert metadata.content_type == "code"
-        assert metadata.code_language == "python"
+        assert metadata.content_type == "text"
+        assert not hasattr(metadata, "contains_code")
+        assert not hasattr(metadata, "code_language")
 
     def test_create_metadata_with_inline_code(self):
         """Test metadata with inline code markers."""
@@ -511,8 +361,7 @@ class TestCreateEnhancedMetadata:
             chunk_text=chunk, chunk_index=0, total_chunks=1, doc_id="doc_123"
         )
 
-        assert metadata.contains_code is True
-        assert metadata.content_type == "mixed"
+        assert metadata.content_type == "text"
 
     def test_create_metadata_with_table_marker(self):
         """Test metadata with table marker."""
@@ -632,8 +481,7 @@ Run the installer"""
             chunk_text=chunk, chunk_index=0, total_chunks=1, doc_id="doc_123"
         )
 
-        assert metadata.content_type == "mixed"
-        assert metadata.contains_code is True
+        assert metadata.content_type == "text"
 
     def test_create_metadata_without_full_text(self):
         """Test metadata creation without full_text parameter."""
@@ -660,28 +508,6 @@ Run the installer"""
         # doc_type is passed but not stored in metadata (used for chunking)
         assert metadata is not None
 
-    def test_create_metadata_javascript_code(self):
-        """Test metadata detects JavaScript code."""
-        chunk = "```javascript\nconst x = 5;\nconsole.log(x);\n```"
-        metadata = create_enhanced_metadata(
-            chunk_text=chunk, chunk_index=0, total_chunks=1, doc_id="doc_123"
-        )
-
-        assert metadata.code_language == "javascript"
-        assert metadata.contains_code is True
-
-    def test_create_metadata_sql_code(self):
-        """Test metadata detects SQL code in fence."""
-        chunk = "```sql\nSELECT * FROM users WHERE active = 1\n```"
-        metadata = create_enhanced_metadata(
-            chunk_text=chunk, chunk_index=0, total_chunks=1, doc_id="doc_123"
-        )
-
-        # SQL in code fence should be detected
-        assert metadata.code_language == "sql"
-        assert metadata.contains_code is True
-        assert metadata.content_type == "code"
-
     def test_create_metadata_multiple_features(self):
         """Test metadata with multiple content features."""
         chunk = """# API Reference
@@ -705,11 +531,10 @@ def get_users():
             chunk_text=chunk, chunk_index=0, total_chunks=1, doc_id="doc_123", full_text=full_text
         )
 
-        assert metadata.contains_code is True
         assert metadata.contains_table is True
         assert metadata.is_api_reference is True
         assert metadata.is_configuration is True
-        assert metadata.code_language == "python"
+        assert metadata.content_type == "structured"
         assert "get_users" in metadata.technical_entities
         assert "/api/users" in metadata.technical_entities
 

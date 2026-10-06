@@ -85,7 +85,7 @@ class CacheDB:
         # Initialise database schema
         self._init_db()
 
-    def _get_connection(self) -> sqlite3.Connection:
+    def _get_connection(self) -> sqlite3.Connection | None:
         """Get thread-local database connection."""
         if not self.enabled:
             return None
@@ -125,6 +125,9 @@ class CacheDB:
             return
 
         conn = self._get_connection()
+        if conn is None:
+            yield None
+            return
         cursor = conn.cursor()
         try:
             yield cursor
@@ -659,7 +662,7 @@ class CacheDB:
     # STATS & CLEANUP
     # ============================================================================
 
-    def get_all_stats(self) -> Dict[str, Dict[str, Any]]:
+    def get_all_stats(self) -> Dict[str, Any]:
         """Get statistics for all cache tables."""
         if not self.enabled:
             return {"enabled": False}
@@ -1244,7 +1247,7 @@ class CacheDB:
             )
             return [(row["word"], row["frequency"], row["doc_count"]) for row in cursor.fetchall()]
 
-    def get_word_frequency_stats(self) -> Dict[str, int]:
+    def get_word_frequency_stats(self) -> Dict[str, int | float]:
         """Get overall word frequency statistics.
 
         Returns:

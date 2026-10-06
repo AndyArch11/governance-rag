@@ -113,23 +113,33 @@ class ContextCache(LRUCache):
 
     def put(
         self,
-        entity: str,
-        context: str,
-        chunk_ids: List[str],
+        key: Optional[str] = None,
+        value: Any = None,
+        chunk_ids: Optional[List[str]] = None,
         ttl: Optional[int] = None,
-        metadata: Optional[Dict] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        *,
+        entity: Optional[str] = None,
+        context: Optional[str] = None,
     ) -> None:
         """Store context for an entity.
 
         Args:
-            entity: Entity identifier
-            context: Expanded context text
+            key: Entity identifier (LRUCache-compatible positional argument)
+            value: Expanded context text (LRUCache-compatible positional argument)
             chunk_ids: List of chunk IDs that comprise this context
+            entity: Entity identifier as a named context-cache argument
+            context: Expanded context as a named context-cache argument
             ttl: Time-to-live in seconds (uses default if None)
             metadata: Optional metadata about this context
         """
         if not self.enabled:
             return
+
+        entity_key = entity if entity is not None else key
+        context_value = context if context is not None else value
+        if entity_key is None or context_value is None:
+            raise ValueError("Context cache put requires an entity and context value")
 
         now = time.time()
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -137,8 +147,8 @@ class ContextCache(LRUCache):
         # Build the entry structure that LRUCache expects
         # with our custom fields nested inside
         entry_value = {
-            "context": context,
-            "chunk_ids": chunk_ids,
+            "context": str(context_value),
+            "chunk_ids": chunk_ids or [],
             "created_at_iso": now_iso,
             "last_accessed_iso": now_iso,
             "access_count": 1,
@@ -148,7 +158,7 @@ class ContextCache(LRUCache):
 
         # Use parent's put which handles LRU eviction
         # It will wrap this in {value: entry_value, created_at: now, ...}
-        super().put(entity, entry_value)
+        super().put(entity_key, entry_value)
 
     def invalidate(self, entity: str) -> bool:
         """Remove an entity from cache.

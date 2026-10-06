@@ -39,9 +39,12 @@ import networkx as nx
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+from scripts.ingest.academic.config import get_academic_config
+from scripts.ui.layout_engine import ForceDirected3DLayout
 from scripts.utils.logger import create_module_logger
 
 get_logger, audit = create_module_logger("consistency_graph.academic.citation_graph_viz")
+THREE_D_MAX_NODES = 10000
 
 
 @dataclass
@@ -125,28 +128,24 @@ class CitationGraphViz:
         "unresolved": "#6b7280",  # gray - unresolved/unknown
     }
 
-    def __init__(self, db_path: Path | str = None):
+    def __init__(self, db_path: Path | str | None = None):
         """Initialise citation graph visualiser.
 
         Args:
             db_path: Optional path to SQLite database containing citation graph data.
-                     If None, defaults to 'rag_data/academic_citation_graph.db' in project root.
+                     If None, uses the configured academic RAG data directory.
         """
         if db_path is None:
-            # Use absolute path to project root
-            # __file__ = scripts/consistency_graph/academic/citation_graph_viz.py
-            # Need to go up 4 levels to reach project root
-            project_root = Path(__file__).parent.parent.parent.parent
-            db_path = project_root / "rag_data" / "academic_citation_graph.db"
+            db_path = Path(get_academic_config().rag_data_path) / "academic_citation_graph.db"
         self.db_path = Path(db_path)
         self.logger = get_logger()
         self._local = threading.local()  # Thread-local storage
         self._connections: set[sqlite3.Connection] = set()
         self._conn_lock = threading.Lock()
         self._graph = None
-        self._primary_docs = set()
+        self._primary_docs: set[str] = set()
 
-    def _get_connection(self) -> sqlite3.Connection:
+    def _get_connection(self) -> sqlite3.Connection | None:
         """Get or create thread-local database connection."""
         # Use thread-local storage to avoid sharing connections across threads
         if not hasattr(self._local, "conn") or self._local.conn is None:
@@ -388,6 +387,33 @@ class CitationGraphViz:
 
         node_data = self._graph.nodes[node_id]
 
+        if node_data.get("layer") == "thesis":
+            node_type = node_data.get("node_type", "chunk")
+            thesis_styles = {
+                "thesis": ("#9f1239", "diamond", 32),
+                "chapter": ("#0369a1", "square", 25),
+                "section": ("#0f766e", "circle", 18),
+                "chunk": ("#64748b", "circle", 10),
+                "research_question": ("#7c3aed", "star", 20),
+                "claim": ("#c2410c", "hexagon", 15),
+                "method": ("#a16207", "triangle-up", 15),
+                "finding": ("#15803d", "hexagon", 16),
+                "conclusion": ("#166534", "diamond", 17),
+                "readiness_criterion": ("#be185d", "star", 15),
+                "figure": ("#0891b2", "hexagon", 18),
+            }
+            colour, shape, size = thesis_styles.get(node_type, ("#475569", "circle", 13))
+            return NodeAttributes(
+                color=colour,
+                size=size,
+                border_color="#1e293b",
+                border_width=1.5,
+                shape=shape,
+                opacity=1.0,
+                label=str(node_data.get("label", node_id))[:50],
+                tooltip=self._build_tooltip(node_id, node_data),
+            )
+
         # Primary documents get special treatment
         if node_id in self._primary_docs:
             return NodeAttributes(
@@ -467,6 +493,30 @@ class CitationGraphViz:
             HTML string for tooltip content
 
         """
+        if node_data.get("layer") == "thesis":
+            if node_data.get("node_type") == "figure":
+                return (
+                    f"<b>{node_data.get('caption') or node_data.get('label', node_id)}</b><br>"
+                    f"Figure {node_data.get('figure_number', '?')} · page "
+                    f"{node_data.get('page_number', '?')}<br>"
+                    f"Alt text: {node_data.get('alt_text') or 'Not available'}<br>"
+                    f"Description: {node_data.get('description') or 'Not assessed'}<br>"
+                    "Human review required"
+                )
+            location = node_data.get("heading_path") or node_data.get("chapter") or ""
+            source_start = node_data.get("source_start")
+            source_end = node_data.get("source_end")
+            source_span = (
+                f"<br>Source characters: {source_start}-{source_end}"
+                if source_start is not None and source_end is not None
+                else ""
+            )
+            return (
+                f"<b>{node_data.get('label', node_id)}</b><br>"
+                f"Type: {node_data.get('node_type', 'thesis')}<br>"
+                f"{location}{source_span}"
+            )
+
         title = node_data.get("title", "Untitled")
         authors_raw = node_data.get("authors", "Unknown")
 
@@ -745,6 +795,9 @@ class CitationGraphViz:
             )
             return fig
 
+        if layout == "three_d":
+            return self._create_three_dimensional_figure(width, height)
+
         # Compute layout positions
         if layout == "hierarchical":
             pos = nx.spring_layout(self._graph, k=1.5, iterations=50, seed=42)
@@ -801,12 +854,14 @@ class CitationGraphViz:
 
         for node in self._graph.nodes():
             attrs = self.compute_node_attributes(node)
+            node_data = self._graph.nodes[node]
 
-            # Group by source for legend (primary docs get special treatment)
-            if node in self._primary_docs:
+            if node_data.get("layer") == "thesis":
+                node_type_label = str(node_data.get("node_type", "node"))
+                legend_label = f"Thesis: {node_type_label.replace('_', ' ').title()}"
+            elif node in self._primary_docs:
                 legend_label = "Primary Document"
             else:
-                node_data = self._graph.nodes[node]
                 source = node_data.get("source", "unresolved")
                 legend_label = source_labels.get(source, source.title())
 
@@ -884,7 +939,14 @@ class CitationGraphViz:
 
         # Update layout
         fig.update_layout(
-            title=dict(text="Citation Graph", font=dict(size=16)),
+            title=dict(
+                text={
+                    "thesis": "Thesis Graph",
+                    "thesis_and_references": "Thesis and References",
+                    "references": "Citation Graph",
+                }.get(self._graph.graph.get("mode"), "Academic Graph"),
+                font=dict(size=16),
+            ),
             showlegend=True,
             hovermode="closest",
             width=width,
@@ -897,6 +959,140 @@ class CitationGraphViz:
 
         return fig
 
+    def _create_three_dimensional_figure(self, width: int, height: int) -> go.Figure:
+        """Create a force-directed 3D view while preserving citation interactions."""
+        graph = self._graph
+        if graph is None or graph.number_of_nodes() == 0:
+            return go.Figure()
+        if graph.number_of_nodes() > THREE_D_MAX_NODES:
+            fig = go.Figure()
+            fig.add_annotation(
+                text=(
+                    f"3D layout is limited to {THREE_D_MAX_NODES} nodes. "
+                    "Choose a 2D layout to view this graph."
+                ),
+                xref="paper",
+                yref="paper",
+                x=0.5,
+                y=0.5,
+                showarrow=False,
+                font=dict(size=16, color="gray"),
+            )
+            fig.update_layout(width=width, height=height, template="plotly_white")
+            return fig
+
+        nodes = {node_id: dict(attributes) for node_id, attributes in graph.nodes(data=True)}
+        edges = [
+            {"source": source, "target": target, **attributes}
+            for source, target, attributes in graph.edges(data=True)
+        ]
+        positions = ForceDirected3DLayout(iterations=50, seed=42).compute_layout(nodes, edges)
+        edge_traces: Dict[str, Dict[str, List[float | None]]] = {}
+        for source, target in graph.edges():
+            if source not in positions or target not in positions:
+                continue
+            link_status = str(graph.nodes[target].get("link_status", "available"))
+            trace_data = edge_traces.setdefault(link_status, {"x": [], "y": [], "z": []})
+            source_position = positions[source]
+            target_position = positions[target]
+            trace_data["x"].extend([source_position[0], target_position[0], None])
+            trace_data["y"].extend([source_position[1], target_position[1], None])
+            trace_data["z"].extend([source_position[2], target_position[2], None])
+
+        source_labels = {
+            "crossref": "CrossRef (verified)",
+            "arxiv": "ArXiv (preprint)",
+            "url_fetch": "Web fetched",
+            "document": "Manual extraction",
+            "unresolved": "Unresolved",
+        }
+        supported_symbols = {"circle", "cross", "diamond", "square", "x"}
+        node_traces: Dict[str, Dict[str, List[Any]]] = {}
+        for node_id in graph.nodes():
+            attrs = self.compute_node_attributes(node_id)
+            node_data = graph.nodes[node_id]
+            if node_data.get("layer") == "thesis":
+                node_type = str(node_data.get("node_type", "node"))
+                legend_label = f"Thesis: {node_type.replace('_', ' ').title()}"
+            elif node_id in self._primary_docs:
+                legend_label = "Primary Document"
+            else:
+                source = str(node_data.get("source", "unresolved"))
+                legend_label = source_labels.get(source, source.title())
+
+            trace_data = node_traces.setdefault(
+                legend_label,
+                {"x": [], "y": [], "z": [], "sizes": [], "colours": [], "symbols": [], "ids": []},
+            )
+            position = positions[node_id]
+            trace_data["x"].append(position[0])
+            trace_data["y"].append(position[1])
+            trace_data["z"].append(position[2])
+            trace_data["sizes"].append(attrs.size)
+            trace_data["colours"].append(attrs.color)
+            trace_data["symbols"].append(attrs.shape if attrs.shape in supported_symbols else "circle")
+            trace_data["ids"].append(node_id)
+
+        fig = go.Figure()
+        for link_status, trace_data in edge_traces.items():
+            fig.add_trace(
+                go.Scatter3d(
+                    x=trace_data["x"],
+                    y=trace_data["y"],
+                    z=trace_data["z"],
+                    mode="lines",
+                    line=dict(color=self.LINK_STATUS_COLOURS.get(link_status, "#cbd5e1"), width=2),
+                    hoverinfo="none",
+                    showlegend=False,
+                    name=f"Link: {link_status}",
+                )
+            )
+
+        for legend_label, trace_data in node_traces.items():
+            ids = trace_data["ids"]
+            symbols = trace_data["symbols"]
+            fig.add_trace(
+                go.Scatter3d(
+                    x=trace_data["x"],
+                    y=trace_data["y"],
+                    z=trace_data["z"],
+                    mode="markers",
+                    name=legend_label,
+                    hovertext=[self._build_tooltip(node_id, graph.nodes[node_id]) for node_id in ids],
+                    hoverinfo="text",
+                    marker=dict(
+                        size=trace_data["sizes"],
+                        color=trace_data["colours"],
+                        symbol=symbols[0] if symbols else "circle",
+                    ),
+                    customdata=ids,
+                    showlegend=True,
+                )
+            )
+
+        graph_mode = graph.graph.get("mode")
+        fig.update_layout(
+            title={
+                "thesis": "Thesis Graph - 3D Force Layout",
+                "thesis_and_references": "Thesis and References - 3D Force Layout",
+                "references": "Citation Graph - 3D Force Layout",
+            }.get(graph_mode, "Academic Graph - 3D Force Layout"),
+            scene=dict(
+                xaxis=dict(visible=False),
+                yaxis=dict(visible=False),
+                zaxis=dict(visible=False),
+                bgcolor="#f8fafc",
+                camera=dict(eye=dict(x=1.5, y=1.5, z=1.2)),
+            ),
+            showlegend=True,
+            hovermode="closest",
+            width=width,
+            height=height,
+            margin=dict(b=20, l=5, r=5, t=60),
+            template="plotly_white",
+        )
+        return fig
+
     def create_dash_layout(self):
         """
         Create Dash layout components for citation graph tab.
@@ -906,14 +1102,74 @@ class CitationGraphViz:
         """
         from dash import dcc, html
 
+        from scripts.thesis_graph.thesis_registry import ThesisRegistry
+
+        registry_path = self.db_path.parent / "thesis_graphs" / "registry.sqlite"
+        thesis_options = []
+        if registry_path.exists():
+            try:
+                thesis_options = [
+                    {
+                        "label": thesis["title"],
+                        "value": thesis["thesis_id"],
+                    }
+                    for thesis in ThesisRegistry(registry_path).list_theses()
+                    if thesis.get("status") == "ready"
+                ]
+            except sqlite3.Error as error:
+                self.logger.warning(f"Could not load thesis registry for graph selector: {error}")
+
         return html.Div(
             [
                 html.Div(
                     [
-                        html.H3("Citation Graph", style={"margin": "0 0 8px 0"}),
+                        html.H3("Academic Graph", style={"margin": "0 0 8px 0"}),
                         html.P(
-                            "Interactive visualisation of academic reference networks",
+                            "Interactive view of thesis structure and academic references",
                             style={"color": "#64748b", "margin": 0},
+                        ),
+                    ],
+                    className="card",
+                ),
+                html.Div(
+                    [
+                        html.H4("Graph Source", style={"margin": "0 0 12px 0"}),
+                        html.Div(
+                            [
+                                dcc.RadioItems(
+                                    id="academic-graph-mode",
+                                    options=[
+                                        {"label": "Thesis", "value": "thesis"},
+                                        {
+                                            "label": "Thesis + references",
+                                            "value": "thesis_and_references",
+                                        },
+                                        {"label": "References only", "value": "references"},
+                                    ],
+                                    value="references",
+                                    inline=True,
+                                ),
+                                html.Div(
+                                    [
+                                        html.Label("Thesis:"),
+                                        dcc.Dropdown(
+                                            id="academic-graph-thesis",
+                                            options=thesis_options,
+                                            value=(
+                                                thesis_options[0]["value"]
+                                                if thesis_options
+                                                else None
+                                            ),
+                                            clearable=False,
+                                            disabled=not thesis_options,
+                                            placeholder="No ingested theses",
+                                            style={"width": "420px"},
+                                        ),
+                                    ],
+                                    style={"display": "inline-block", "marginLeft": "24px"},
+                                ),
+                            ],
+                            style={"display": "flex", "alignItems": "center", "gap": "16px"},
                         ),
                     ],
                     className="card",
@@ -951,6 +1207,7 @@ class CitationGraphViz:
                                                 {"label": "Hierarchical", "value": "hierarchical"},
                                                 {"label": "Force-Directed", "value": "force"},
                                                 {"label": "Circular", "value": "circular"},
+                                                {"label": "3D Force-Directed", "value": "three_d"},
                                             ],
                                             value="hierarchical",
                                             clearable=False,

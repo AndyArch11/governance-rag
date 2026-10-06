@@ -1,0 +1,300 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cultural_lens.schema.json",
+  "title": "Cultural Lens Profile",
+  "description": "Defines how a cultural lens is detected, applied to ingestion, retrieval, answer generation and thesis assessment. Profiles are authored or reviewed by people with the relevant cultural authority. The same schema drives file validation and any future dashboard editing form.",
+  "type": "object",
+  "required": ["profile_id", "name", "version", "status", "governance"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {"type": "string"},
+    "profile_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]+$",
+      "description": "Stable identifier used on the thesis registry and in API/CLI input (e.g. --cultural-lens)."
+    },
+    "name": {"type": "string", "description": "Display name."},
+    "version": {"type": "string", "description": "Semantic version; recorded against each thesis the profile is applied to."},
+    "status": {
+      "type": "string",
+      "enum": ["draft", "under_review", "approved", "retired"],
+      "description": "Only approved profiles can be used outside the Dev environment. Draft and under_review profiles are for development only (ENVIRONMENT=Dev) and outputs using them are labelled accordingly."
+    },
+    "extends": {
+      "type": ["string", "null"],
+      "description": "Parent profile_id. Child profiles (e.g. a specific nation, community or region) inherit and override parent entries by id."
+    },
+    "description": {"type": "string"},
+    "applies_to": {
+      "type": "object",
+      "description": "Scope of the profile. Use to distinguish nuances between peoples, nations, communities or regions.",
+      "additionalProperties": false,
+      "properties": {
+        "peoples": {"type": "array", "items": {"type": "string"}},
+        "nations_or_language_groups": {"type": "array", "items": {"type": "string"}},
+        "regions": {"type": "array", "items": {"type": "string"}},
+        "notes": {"type": "string"}
+      }
+    },
+    "governance": {
+      "type": "object",
+      "required": ["authored_by", "reviewed_by"],
+      "additionalProperties": false,
+      "properties": {
+        "authored_by": {"type": "array", "items": {"$ref": "#/$defs/person"}},
+        "reviewed_by": {"type": "array", "items": {"$ref": "#/$defs/person"}},
+        "approved_on": {"type": ["string", "null"], "format": "date"},
+        "review_due": {"type": ["string", "null"], "format": "date"},
+        "usage_permissions": {"type": "string", "description": "Conditions on use, sharing and storage of this profile's content."},
+        "contains_restricted_content": {
+          "type": "boolean",
+          "description": "When true the profile must be stored under rag_data/cultural_lenses/private/ (not committed to version control)."
+        },
+        "change_log": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["version", "date", "summary"],
+            "properties": {
+              "version": {"type": "string"},
+              "date": {"type": "string", "format": "date"},
+              "summary": {"type": "string"},
+              "by": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "domain_terms_ref": {
+      "type": ["string", "null"],
+      "description": "Domain terms file (rag_data/domain_terms/<name>.json) used for retrieval weighting, to avoid duplicating term weights here."
+    },
+    "detection": {
+      "type": "object",
+      "description": "Signals used to suggest this lens for a thesis. Detection only suggests; the user confirms.",
+      "additionalProperties": false,
+      "properties": {
+        "indicator_terms": {"type": "array", "items": {"type": "string"}},
+        "positionality_indicators": {"type": "array", "items": {"type": "string"}},
+        "methodology_indicators": {"type": "array", "items": {"type": "string"}},
+        "ethics_indicators": {"type": "array", "items": {"type": "string"}},
+        "min_confidence": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "frameworks": {
+      "type": "array",
+      "description": "Ethical, methodological and data governance frameworks assessment criteria may reference.",
+      "items": {
+        "type": "object",
+        "required": ["id", "title"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string"},
+          "title": {"type": "string"},
+          "issuer": {"type": "string"},
+          "year": {"type": ["integer", "null"]},
+          "url": {"type": "string"},
+          "key_principles": {"type": "array", "items": {"type": "string"}},
+          "relevance": {"type": "string"}
+        }
+      }
+    },
+    "concepts": {
+      "type": "array",
+      "description": "Culturally significant concepts and their relationships. Become concept nodes and edges in the thesis graph.",
+      "items": {
+        "type": "object",
+        "required": ["id", "label"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string"},
+          "label": {"type": "string"},
+          "aliases": {"type": "array", "items": {"type": "string"}},
+          "description": {"type": "string"},
+          "related": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["concept_id", "relation"],
+              "properties": {
+                "concept_id": {"type": "string"},
+                "relation": {"type": "string"},
+                "note": {"type": "string"}
+              }
+            }
+          },
+          "review_status": {"$ref": "#/$defs/review_status"}
+        }
+      }
+    },
+    "terminology": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "preferred_terms": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["use"],
+            "additionalProperties": false,
+            "properties": {
+              "use": {"type": "string"},
+              "instead_of": {"type": "array", "items": {"type": "string"}},
+              "note": {"type": "string"},
+              "review_status": {"$ref": "#/$defs/review_status"}
+            }
+          }
+        },
+        "capitalisation": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["term"],
+            "properties": {"term": {"type": "string"}, "note": {"type": "string"}}
+          }
+        },
+        "spelling_variants": {
+          "type": "array",
+          "description": "Accepted alternative spellings (e.g. language group names) treated as equivalent in search.",
+          "items": {
+            "type": "object",
+            "required": ["canonical", "variants"],
+            "properties": {
+              "canonical": {"type": "string"},
+              "variants": {"type": "array", "items": {"type": "string"}},
+              "note": {"type": "string"}
+            }
+          }
+        },
+        "avoid_terms": {
+          "type": "array",
+          "description": "Outdated, offensive or deficit-framed terms. Flagged in assessment; never introduced by generated answers.",
+          "items": {
+            "type": "object",
+            "required": ["term", "reason"],
+            "properties": {
+              "term": {"type": "string"},
+              "reason": {"type": "string"},
+              "suggested_alternative": {"type": "string"},
+              "allow_in_quotation": {"type": "boolean"}
+            }
+          }
+        }
+      }
+    },
+    "sensitivities": {
+      "type": "array",
+      "description": "Content requiring restricted handling. Matching content is flagged for human review and handled per 'handling'.",
+      "items": {
+        "type": "object",
+        "required": ["id", "type", "handling"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string"},
+          "type": {
+            "type": "string",
+            "enum": [
+              "deceased_persons",
+              "restricted_knowledge",
+              "gender_restricted_knowledge",
+              "sacred_sites_or_objects",
+              "ceremony",
+              "images_or_voices",
+              "personal_or_community_identifiers",
+              "other"
+            ]
+          },
+          "description": {"type": "string"},
+          "detection_terms": {"type": "array", "items": {"type": "string"}},
+          "applies_to": {
+            "type": "array",
+            "items": {"type": "string", "enum": ["text", "images", "captions", "answers"]}
+          },
+          "handling": {
+            "type": "string",
+            "enum": ["warn", "flag_for_review", "exclude_from_llm", "redact_in_output"]
+          },
+          "notice_text": {"type": "string", "description": "Notice shown to the user when matched."}
+        }
+      }
+    },
+    "emphasised_topics": {
+      "type": "array",
+      "description": "Topics that should receive emphasis in retrieval, answers and assessment when present.",
+      "items": {
+        "type": "object",
+        "required": ["topic"],
+        "additionalProperties": false,
+        "properties": {
+          "topic": {"type": "string"},
+          "concept_ids": {"type": "array", "items": {"type": "string"}},
+          "rationale": {"type": "string"},
+          "weight": {"type": "number", "minimum": 0}
+        }
+      }
+    },
+    "assessment_criteria": {
+      "type": "array",
+      "description": "Lens-specific criteria shown alongside generic examiner-readiness criteria.",
+      "items": {
+        "type": "object",
+        "required": ["id", "criterion", "description"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string"},
+          "criterion": {"type": "string"},
+          "description": {"type": "string"},
+          "evidence_indicators": {"type": "array", "items": {"type": "string"}},
+          "framework_refs": {"type": "array", "items": {"type": "string"}},
+          "severity_if_absent": {"type": "string", "enum": ["info", "warning", "critical"]},
+          "review_status": {"$ref": "#/$defs/review_status"}
+        }
+      }
+    },
+    "research_question_framings": {
+      "type": "array",
+      "description": "Ways research inquiry may be framed under this lens, used when identifying research questions.",
+      "items": {
+        "type": "object",
+        "required": ["framing"],
+        "properties": {
+          "framing": {"type": "string"},
+          "indicators": {"type": "array", "items": {"type": "string"}},
+          "classify_as": {
+            "type": "string",
+            "enum": ["research_question", "sub_question", "aim", "objective", "hypothesis", "guiding_question"]
+          }
+        }
+      }
+    },
+    "deficit_framing_indicators": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Phrases suggesting deficit framing; flagged during assessment."
+    },
+    "answer_guidance": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Instructions added to RAG and assessment prompts when the lens is active."
+    }
+  },
+  "$defs": {
+    "person": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string"},
+        "role": {"type": "string"},
+        "affiliation": {"type": "string"},
+        "cultural_authority": {"type": "string", "description": "Basis of authority to author or review, as described by the person."},
+        "date": {"type": "string", "format": "date"}
+      }
+    },
+    "review_status": {
+      "type": "string",
+      "enum": ["draft", "reviewed", "approved"],
+      "description": "Per-entry review state so partially reviewed profiles can be used with care."
+    }
+  }
+}

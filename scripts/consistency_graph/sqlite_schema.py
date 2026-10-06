@@ -27,7 +27,7 @@ from typing import Optional
 # Schema creation statements (DDL)
 SCHEMA_SQL = [
     # ========================================================================
-    # NODES: Document/code node metadata
+    # NODES: Document node metadata
     # ========================================================================
     """
     CREATE TABLE IF NOT EXISTS nodes (
@@ -40,19 +40,7 @@ SCHEMA_SQL = [
         timestamp TEXT,
         summary TEXT,
         source_category TEXT,
-        repository TEXT,
         health TEXT,  -- JSON blob
-        
-        -- Code-specific fields (JSON arrays stored as TEXT)
-        language TEXT,
-        service_name TEXT,
-        service_type TEXT,
-        dependencies TEXT,      -- JSON array
-        internal_calls TEXT,    -- JSON array
-        endpoints TEXT,         -- JSON array
-        db TEXT,                -- JSON array (database refs)
-        queue TEXT,             -- JSON array
-        exports TEXT,           -- JSON array
         
         -- Computed aggregates (updated after edge build)
         conflict_score REAL DEFAULT 0.0,
@@ -64,9 +52,6 @@ SCHEMA_SQL = [
     """,
     "CREATE INDEX IF NOT EXISTS idx_nodes_doc_id ON nodes(doc_id);",
     "CREATE INDEX IF NOT EXISTS idx_nodes_source_category ON nodes(source_category);",
-    "CREATE INDEX IF NOT EXISTS idx_nodes_language ON nodes(language);",
-    "CREATE INDEX IF NOT EXISTS idx_nodes_service_name ON nodes(service_name);",
-    "CREATE INDEX IF NOT EXISTS idx_nodes_repository ON nodes(repository);",
     "CREATE INDEX IF NOT EXISTS idx_nodes_conflict_score ON nodes(conflict_score DESC);",
     # ========================================================================
     # EDGES: Consistency relationships (undirected)
@@ -82,7 +67,7 @@ SCHEMA_SQL = [
         severity REAL NOT NULL,         -- [0, 1]: Computed severity
         
         -- Relationship metadata
-        relationship TEXT NOT NULL,     -- conflict | partial_conflict | duplicate | consistent | cross_repo_service
+        relationship TEXT NOT NULL,     -- conflict | partial_conflict | duplicate | consistent
         explanation TEXT,               -- Human-readable reason
         
         -- Version tracking

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from scripts.utils.config import BaseConfig
+from scripts.utils.llm_model_config import get_configured_context_window, get_configured_llm_model
 
 
 class ConsistencyConfig(BaseConfig):
@@ -24,10 +25,8 @@ class ConsistencyConfig(BaseConfig):
       - CONSISTENCY_SIMILARITY_THRESHOLD: Edge creation similarity threshold (default: 0.4)
       - CONSISTENCY_WORKERS: Parallel workers for graph build (default falls back to MAX_WORKERS or 4)
       - CONSISTENCY_LOUVAIN_SEED: Seed for Louvain clustering (default: 42)
-      - CONSISTENCY_CODE_ENABLE_DEPENDENCY_EDGES: Enable dependency-based edges for code (default: False)
-      - CONSISTENCY_CODE_SIMILARITY_THRESHOLD: Code-specific similarity threshold (default: 0.0=use general)
-      - CONSISTENCY_CODE_PROMPT_HINTS: LLM prompt hints for code comparison (default: service dependencies...)
-      - CONSISTENCY_LLM_MODEL: LLM model name for graph comparisons (default: mistral)
+    - CONSISTENCY_LLM_MODEL: Supported LLM model for graph comparisons
+    - CONSISTENCY_CONTEXT_WINDOW_TOKENS: Requested context window for comparisons
       - RAG_DATA_PATH, CHUNK_COLLECTION_NAME, DOC_COLLECTION_NAME: Storage + collections
     """
 
@@ -80,29 +79,13 @@ class ConsistencyConfig(BaseConfig):
         # Clustering determinism
         self.louvain_seed = self.get_int("CONSISTENCY_LOUVAIN_SEED", 42)
 
-        # Code-specific settings for enhanced graph building
-        # Enable dependency-based edges between code nodes sharing services/queues/dbs
-        self.code_enable_dependency_edges = self.get_bool(
-            "CONSISTENCY_CODE_ENABLE_DEPENDENCY_EDGES", False
-        )
-
-        # Code-specific similarity threshold (if different from general threshold)
-        # Use 0.0 (no override) to apply the general threshold
-        self.code_similarity_threshold = self.get_float(
-            "CONSISTENCY_CODE_SIMILARITY_THRESHOLD", 0.0
-        )
-        if self.code_similarity_threshold == 0.0:
-            self.code_similarity_threshold = self.similarity_threshold
-
-        # Code-aware prompt hints for LLM (space-separated list or config key)
-        # Examples: "dependencies", "service dependencies", "database connections", "api contracts"
-        self.code_prompt_hints = self.get_str(
-            "CONSISTENCY_CODE_PROMPT_HINTS",
-            "service dependencies internal service calls api contracts shared databases",
-        )
-
         # LLM configuration
-        self.llm_model_name = self.get_str("CONSISTENCY_LLM_MODEL", "mistral")
+        self.llm_model_name = get_configured_llm_model(self, "CONSISTENCY_LLM_MODEL")
+        self.llm_context_window_tokens = get_configured_context_window(
+            self,
+            self.llm_model_name,
+            "CONSISTENCY_CONTEXT_WINDOW_TOKENS",
+        )
 
 
 _CONSISTENCY_CONFIG: Optional[ConsistencyConfig] = None

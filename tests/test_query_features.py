@@ -189,7 +189,11 @@ class TestQueryTemplateManager:
         assert len(categories) > 0
         assert "governance" in categories
         assert "security" in categories
-        assert "code" in categories
+        assert "code" not in categories
+        assert manager.get_templates_by_category("code") == []
+        assert not manager.save_template(
+            name="Code query", category="code", template_text="Inspect code"
+        )
 
     def test_get_templates_by_category(self, temp_db):
         """Test retrieving templates by category."""

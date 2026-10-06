@@ -189,13 +189,24 @@ class BaseConfig:
             expand_user: Whether to expand ~ to user home directory
 
         Returns:
-            Path string, potentially expanded
+            Absolute path string. Relative configured paths are resolved against
+            the project root rather than the caller's working directory.
         """
         override = cls._get_override(var_name)
-        value = str(override) if override is not None else os.getenv(var_name, default)
+        value = str(override) if override is not None else os.getenv(var_name) or default
         if expand_user:
-            return os.path.expanduser(value)
-        return value
+            value = os.path.expanduser(value)
+
+        path = Path(value)
+        if not path.is_absolute():
+            project_root_env = os.getenv("PROJECT_ROOT", "").strip()
+            project_root = (
+                Path(project_root_env).expanduser().resolve()
+                if project_root_env
+                else Path(__file__).resolve().parents[2]
+            )
+            path = project_root / path
+        return str(path.resolve())
 
     @classmethod
     def get_list(
@@ -220,8 +231,8 @@ class BaseConfig:
                 return override
             value = str(override)
         else:
-            value = os.getenv(var_name)
-        if value is None or value.strip() == "":
+            value = os.getenv(var_name) or ""
+        if value.strip() == "":
             return default
 
         return [item.strip() for item in value.split(separator) if item.strip()]

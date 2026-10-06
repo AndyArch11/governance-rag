@@ -217,13 +217,13 @@ class AdaptiveCacheTuner:
         )
 
         # Expiry effectiveness: items accessed before they expire
-        items_before_expiry = sum(
-            1
-            for a in window_accesses
-            if a.key in self.item_stats
-            and self.item_stats[a.key].expiry_time
-            and a.timestamp < self.item_stats[a.key].expiry_time
-        )
+        items_before_expiry = 0
+        for access in window_accesses:
+            if access.key not in self.item_stats:
+                continue
+            expiry_time = self.item_stats[access.key].expiry_time
+            if expiry_time is not None and access.timestamp < expiry_time:
+                items_before_expiry += 1
         expiry_effectiveness = (
             (items_before_expiry / len(window_accesses)) if window_accesses else 0.0
         )
@@ -432,7 +432,7 @@ class AdaptiveCacheTuner:
         with self.lock:
             overall_stats = self._get_window_stats()
 
-            stats_dict = {
+            stats_dict: Dict[str, Any] = {
                 "total_accesses_tracked": len(self.accesses),
                 "unique_items": len(self.item_stats),
                 "current_ttl_seconds": self.current_ttl_sec,

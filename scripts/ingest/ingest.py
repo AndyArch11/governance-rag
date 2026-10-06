@@ -77,6 +77,15 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from tqdm import tqdm
 
+from scripts.ingest.ingest_utils import (
+    AuthConfig,
+    build_auth_headers,
+    check_ollama_availability,
+    compute_chunk_hash,
+    compute_doc_id,
+    compute_file_hash,
+    parse_seed_auth,
+)
 from scripts.utils.clear_databases import (
     ResetContext,
     clear_for_ingestion,
@@ -90,37 +99,31 @@ from scripts.utils.metrics_export import get_metrics_collector
 from scripts.utils.monitoring import get_perf_metrics, init_monitoring
 from scripts.utils.rate_limiter import init_rate_limiter
 from scripts.utils.resource_monitor import ResourceMonitor
-from scripts.ingest.ingest_utils import (
-    AuthConfig,
-    build_auth_headers,
-    check_ollama_availability,
-    compute_chunk_hash,
-    compute_doc_id,
-    compute_file_hash,
-    parse_seed_auth,
-)
 
 get_logger, audit = create_module_logger("ingest")
 
+DomainType: Any = None
+get_domain_term_manager: Any = None
+resolve_domain_type: Any = None
 try:
-    from scripts.rag.domain_terms import DomainType, get_domain_term_manager, resolve_domain_type
+    from scripts.rag.domain_terms import DomainType as _DomainType
+    from scripts.rag.domain_terms import get_domain_term_manager as _get_domain_term_manager
+    from scripts.rag.domain_terms import resolve_domain_type as _resolve_domain_type
 except ImportError:
-    DomainType = None  # type: ignore[assignment]
-    get_domain_term_manager = None  # type: ignore[assignment]
-    resolve_domain_type = None  # type: ignore[assignment]
+    pass
+else:
+    DomainType = _DomainType
+    get_domain_term_manager = _get_domain_term_manager
+    resolve_domain_type = _resolve_domain_type
 
 # Optional import for error handling compatibility
+NotFoundError: Any = Exception
 try:
-    import chromadb  # noqa: WPS433
+    from chromadb.errors import NotFoundError as _ChromaNotFoundError
 except ImportError:
-    chromadb = None
-
-if chromadb is not None:
-    NotFoundError = chromadb.errors.NotFoundError
-else:  # Fallback to avoid NameError when ChromaDB is absent
-
-    class NotFoundError(Exception):
-        pass
+    pass
+else:
+    NotFoundError = _ChromaNotFoundError
 
 
 # Centralised backend selection (ChromaDB preferred, SQLite fallback)
@@ -130,9 +133,7 @@ PersistentClient, USING_SQLITE = get_vector_client(prefer="chroma")
 from typing import Any, Union
 
 try:
-    from chromadb.api.models.Collection import (  # type: ignore  # noqa: WPS433,E402
-        Collection as ChromaDBCollection,
-    )
+    from chromadb.api.models.Collection import Collection as ChromaDBCollection  # noqa: WPS433,E402
 except Exception:
     ChromaDBCollection = Any  # type: ignore
 
@@ -148,7 +149,11 @@ try:
     if __package__:
         from .ingest_config import IngestConfig, build_cli_overrides, get_ingest_config
     else:
-        from scripts.ingest.ingest_config import IngestConfig, build_cli_overrides, get_ingest_config
+        from scripts.ingest.ingest_config import (
+            IngestConfig,
+            build_cli_overrides,
+            get_ingest_config,
+        )
 except ImportError:
     # Fallback should not happen in normal operation
     raise ImportError("Cannot import IngestConfig from ingest_config module")
@@ -157,7 +162,11 @@ except ImportError:
 if __name__ == "__main__" and __package__ is None:
     # Running as script
     from scripts.ingest.bm25_indexing import index_chunks_in_bm25
-    from scripts.ingest.chunk import chunk_text, create_parent_child_chunks, extract_technical_entities
+    from scripts.ingest.chunk import (
+        chunk_text,
+        create_parent_child_chunks,
+        extract_technical_entities,
+    )
     from scripts.ingest.embedding_cache import EmbeddingCache
     from scripts.ingest.htmlparser import extract_text_from_html
     from scripts.ingest.llm_cache import LLMCache
@@ -293,6 +302,9 @@ class ProgressTracker:
         audit(
             "progress_checkpoint",
             {
+                "stage": "document_ingestion",
+                "items_done": self.completed,
+                "items_total": self.total,
                 "completed": self.completed,
                 "total": self.total,
                 "percent": percent,
@@ -527,7 +539,7 @@ class ProfileStats:
             self.chunk_count += num_chunks
             self.doc_processing_times.append(processing_time)
 
-    def record_error(self, error_msg: str, doc_name: str = None):
+    def record_error(self, error_msg: str, doc_name: Optional[str] = None):
         """Record an error during processing.
 
         Args:
@@ -538,7 +550,7 @@ class ProfileStats:
             entry = f"{doc_name}: {error_msg}" if doc_name else error_msg
             self.errors.append(entry)
 
-    def record_warning(self, warning_msg: str, doc_name: str = None):
+    def record_warning(self, warning_msg: str, doc_name: Optional[str] = None):
         """Record a warning during processing.
 
         Args:
@@ -1500,11 +1512,12 @@ def stage_chunk_idempotency(
 
             existing_chunks = _get_existing_chunks()
 
-            existing_chunk_hashes = {}
+            existing_chunk_hashes: Dict[str, int] = {}
             for metadata in existing_chunks.get("metadatas", []):
                 if metadata and "chunk_text_hash" in metadata:
                     h = metadata["chunk_text_hash"]
-                    existing_chunk_hashes[h] = existing_chunk_hashes.get(h, 0) + 1
+                    if isinstance(h, str):
+                        existing_chunk_hashes[h] = existing_chunk_hashes.get(h, 0) + 1
 
             new_chunks = []
             new_hashes = []
@@ -1602,8 +1615,11 @@ def stage_store_chunks(
             and config.enable_parent_child_chunking
         )
 
+        if using_parent_child_chunking and parent_chunks is None:
+            raise ValueError("Parent-child chunking requires parent chunks before storage")
+
         if args.verbose:
-            if using_parent_child_chunking:
+            if using_parent_child_chunking and parent_chunks is not None:
                 print(
                     f"Storing {len(parent_chunks)} parent chunks and {len(child_chunks) if child_chunks else 0} child chunks (parent-child mode)"
                 )
@@ -1640,7 +1656,6 @@ def stage_store_chunks(
 
         # Store parent and child chunks if using parent-child chunking
         if using_parent_child_chunking:
-
             filename = os.path.basename(file_path)
             base_metadata = {
                 "doc_id": doc_id,
@@ -1683,7 +1698,7 @@ def stage_store_chunks(
             try:
                 store_parent_chunks(
                     doc_id=doc_id,
-                    parent_chunks=parent_chunks,
+                    parent_chunks=parent_chunks or [],
                     chunk_collection=chunk_collection,
                     base_metadata=base_metadata,
                     dry_run=args.dry_run,
@@ -1747,7 +1762,7 @@ def _close_chromadb_client(client: Any) -> None:
             stop()
     except Exception as exc:  # noqa: BLE001
         # Non-fatal: log and proceed — the swap will attempt regardless.
-        logger.warning("Could not cleanly close ChromaDB client before swap: %s", exc)
+        get_logger().warning("Could not cleanly close ChromaDB client before swap: %s", exc)
 
 
 def _get_bm25_cache_client(config: IngestConfig) -> Any:
@@ -1757,7 +1772,7 @@ def _get_bm25_cache_client(config: IngestConfig) -> Any:
     cache database so live hybrid search remains available.  For normal
     ingestion, this returns the default live cache client.
     """
-    staged_path = getattr(config, "bm25_stage_rag_data_path", None)
+    staged_path = config.bm25_stage_rag_data_path
     if staged_path:
         return get_cache_client(rag_data_path=Path(staged_path), enable_cache=True)
     return get_cache_client(enable_cache=True)
@@ -1806,6 +1821,9 @@ def extract_sidebar_links(
 
     links: List[str] = []
     for a in nav.find_all("a", href=True):
+        href = a.get("href")
+        if not isinstance(href, str):
+            continue
         depth = 0
         parent = a.parent
         while parent and parent is not nav:
@@ -1813,7 +1831,7 @@ def extract_sidebar_links(
                 depth += 1
             parent = parent.parent
         if depth <= max_depth:
-            links.append(urljoin(base_url, a["href"]))
+            links.append(urljoin(base_url, href))
     return links
 
 
@@ -1950,10 +1968,12 @@ def process_file(
     """
     logger = config.logger
     args = config.args
+    if logger is None or args is None:
+        raise ValueError("IngestConfig runtime context must be initialised before processing files")
     start_time = time.perf_counter()
     doc_id = None
     version = None
-    is_update = False
+    is_update: bool | None = False
 
     try:
         logger.info(f"START {file_path}")
@@ -2196,16 +2216,16 @@ def main() -> None:
 
     # Apply command-line BM25 arguments to config
     # Priority: --skip-bm25 > --bm25-indexing > environment variable
-    if config.args.skip_bm25:
+    if args.skip_bm25:
         config.bm25_indexing_enabled = False
-    elif config.args.bm25_indexing:
+    elif args.bm25_indexing:
         config.bm25_indexing_enabled = True
     # Otherwise use config value from environment variable
 
     # Handle log purging BEFORE logger initialisation
     # This ensures we purge the old audit log before we write to a new one
     purge_logs_performed = False
-    if config.args.purge_logs:
+    if args.purge_logs:
         if config.environment == "Prod":
             print("\n[ERROR] Log purging is disabled in Production environment for safety.")
             print("        Current environment: Prod")
@@ -2241,21 +2261,18 @@ def main() -> None:
                 _loggers.pop("ingest", None)
 
     # Initialise logger AFTER purging so we don't write to a file we're about to delete
-    config.logger = get_logger()
-    config.include_url_seeds = config.args.include_url_seeds
-    if config.args.url_seed_path:
-        config.url_seed_json_path = config.args.url_seed_path
-    config.max_workers = config.args.workers
+    logger = get_logger()
+    config.logger = logger
+    config.include_url_seeds = args.include_url_seeds
+    if args.url_seed_path:
+        config.url_seed_json_path = args.url_seed_path
+    config.max_workers = args.workers
     config.version_lock = threading.Lock()
 
     # Initialise monitoring infrastructure
     init_monitoring()
     perf_metrics = get_perf_metrics()
     metrics_collector = get_metrics_collector()
-
-    # Get logger reference
-    logger = config.logger
-    args = config.args
 
     # Log the purge event as the FIRST audit entry if logs were purged
     if purge_logs_performed:
@@ -2279,8 +2296,8 @@ def main() -> None:
         print("\n[PROFILE MODE] Running quick validation with detailed timing analysis...\n")
 
     # Override progress log interval from CLI if provided
-    if config.args.progress_interval is not None:
-        config.progress_log_interval = config.args.progress_interval
+    if args.progress_interval is not None:
+        config.progress_log_interval = args.progress_interval
 
     # Initialise LLM cache
     llm_cache = LLMCache(
@@ -2350,7 +2367,7 @@ def main() -> None:
             logger.info("[RESET] Preparing safe-swap workspace (live DB preserved during ingest)")
             audit("collection_reset", {})
             reset_context = prepare_reset_workspace(config, USING_SQLITE, verbose=args.verbose)
-            config.bm25_stage_rag_data_path = str(reset_context.bm25_stage_dir)
+            config.bm25_stage_rag_data_path = reset_context.bm25_stage_dir
             chroma_path = str(reset_context.chroma_path_temp)
             if args.verbose:
                 print("[RESET] Auxiliary data cleared. Ingestion writing to temp ChromaDB.\n")

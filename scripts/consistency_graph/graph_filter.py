@@ -5,7 +5,7 @@ Provides parameterised filtering, metadata extraction, and query optimisation
 for the consistency graph dashboard's pagination and filtering features.
 
 Features:
-- Extract metadata from node IDs (doc_type, language, repository)
+- Extract document metadata from node IDs
 - Build parameterised SQLite WHERE clauses
 - Aggregate available filter options from graph data
 - Preserve filter state across dashboard sessions
@@ -19,13 +19,10 @@ Usage:
 
     # Get available filter options
     doc_types = gf.get_available_doc_types()
-    languages = gf.get_available_languages()
-
     # Filter nodes by metadata
     filtered_nodes = gf.filter_nodes(
         min_conflict_score=0.5,
-        doc_types=['java', 'python'],
-        repositories=['repo1', 'repo2']
+        doc_types=['policy', 'standard'],
     )
 """
 
@@ -50,35 +47,31 @@ class GraphFilter:
         self.clusters = graph_data.get("clusters", {})
 
         # Cache metadata extraction
-        self._metadata_cache = {}
-        self._doc_types = None
-        self._languages = None
-        self._repositories = None
+        self._metadata_cache: Dict[str, Dict[str, Any]] = {}
+        self._doc_types: Optional[List[str]] = None
 
-    def extract_metadata(self, node_id: str) -> Dict[str, str]:
+    def extract_metadata(self, node_id: str) -> Dict[str, Any]:
         """Extract metadata from node ID.
 
         Node IDs typically follow patterns like:
         - "file.java_v1" → doc_type: "java", version: "1"
         - "policy_document_v2" → doc_type: "policy_document", version: "2"
-        - "code/service/Handler.groovy_v1" → language: "groovy", path: "code/service"
+        - "docs/policy_v1" → doc_type: "policy", path: "docs"
 
         Args:
             node_id: Node identifier string
 
         Returns:
-            Dict with extracted metadata (doc_type, language, file_path, version, etc.)
+            Dict with extracted metadata (doc_type, file_path, version, etc.)
         """
         if node_id in self._metadata_cache:
             return self._metadata_cache[node_id]
 
         # Start with defaults
-        metadata = {
+        metadata: Dict[str, Any] = {
             "node_id": node_id,
             "doc_type": "unknown",
-            "language": None,
             "file_path": None,
-            "repository": None,
             "version": None,
             "source_category": None,
         }
@@ -92,21 +85,6 @@ class GraphFilter:
             )
             if doc_type:
                 metadata["doc_type"] = str(doc_type).strip().lower()
-
-            # Language
-            lang = node_data.get("language") or node_data.get("lang")
-            if lang:
-                metadata["language"] = str(lang).strip().lower()
-
-            # Repository name
-            repo = (
-                node_data.get("repository")
-                or node_data.get("repo")
-                or node_data.get("repo_name")
-                or node_data.get("bitbucket_repo")
-            )
-            if repo:
-                metadata["repository"] = str(repo).strip()
 
             # Source category (e.g., policy, standard, glossary, code)
             src_cat = node_data.get("source_category") or node_data.get("category")
@@ -129,24 +107,6 @@ class GraphFilter:
 
             metadata["file_path"] = file_path
 
-            # Map extension to language/doc_type
-            code_extensions = {
-                "java": "java",
-                "groovy": "groovy",
-                "gvy": "groovy",
-                "gsp": "groovy",
-                "gradle": "gradle",
-                "py": "python",
-                "js": "javascript",
-                "jsx": "javascript",
-                "ts": "typescript",
-                "tsx": "typescript",
-                "cs": "csharp",
-                "go": "go",
-                "rust": "rust",
-                "rb": "ruby",
-            }
-
             doc_extensions = {
                 "md": "markdown",
                 "txt": "text",
@@ -163,40 +123,13 @@ class GraphFilter:
             }
 
             # Only infer if not explicitly provided above
-            if not metadata.get("language") and ext in code_extensions:
-                metadata["language"] = code_extensions[ext]
             if metadata.get("doc_type") in (None, "unknown"):
-                if ext in code_extensions:
-                    metadata["doc_type"] = "code"
-                    if not metadata.get("source_category"):
-                        metadata["source_category"] = "code"
-                elif ext in doc_extensions:
+                if ext in doc_extensions:
                     metadata["doc_type"] = doc_extensions[ext]
                     if not metadata.get("source_category"):
                         metadata["source_category"] = "documentation"
                 else:
                     metadata["doc_type"] = ext
-
-        # Skip repository extraction for academic references
-        if (
-            not metadata.get("repository")
-            and metadata.get("source_category") != "academic_reference"
-        ):
-            # Extract repository from file path (first path component)
-            file_path = metadata.get("file_path")
-            if file_path and "/" in file_path:
-                parts = file_path.split("/")
-                if len(parts) > 0:
-                    metadata["repository"] = parts[0]
-
-            # Fallback inference from underscored doc_id format: PROJECT_REPO_path_segments
-            if not metadata.get("repository"):
-                tokens = base_id.split("_")
-                if len(tokens) >= 3:
-                    # Heuristic: first token is project, second is repository
-                    repo_token = tokens[1]
-                    if repo_token:
-                        metadata["repository"] = repo_token
 
         self._metadata_cache[node_id] = metadata
         return metadata
@@ -219,7 +152,7 @@ class GraphFilter:
                     )
                     if dt:
                         doc_types.add(str(dt).strip().lower())
-                    # For non-code content, include source_category as a doc type (policy, standard, glossary)
+                    # Include source_category when it provides a document-type label.
                     src_cat = node_data.get("source_category") or node_data.get("category")
                     if src_cat:
                         doc_types.add(str(src_cat).strip().lower())
@@ -231,51 +164,6 @@ class GraphFilter:
             self._doc_types = sorted([dt for dt in doc_types if dt and dt != "unknown"])
 
         return self._doc_types
-
-    def get_available_languages(self) -> List[str]:
-        """Get list of unique programming languages in graph.
-
-        Returns:
-            Sorted list of language values
-        """
-        if self._languages is None:
-            languages: Set[str] = set()
-            for node_id, node_data in self.nodes.items():
-                if isinstance(node_data, dict):
-                    lang = node_data.get("language") or node_data.get("lang")
-                    if lang:
-                        languages.add(str(lang).strip().lower())
-                metadata = self.extract_metadata(node_id)
-                if metadata.get("language"):
-                    languages.add(str(metadata["language"]).strip().lower())
-            self._languages = sorted(list(languages))
-
-        return self._languages
-
-    def get_available_repositories(self) -> List[str]:
-        """Get list of unique repositories in graph.
-
-        Returns:
-            Sorted list of repository names
-        """
-        if self._repositories is None:
-            repositories: Set[str] = set()
-            for node_id, node_data in self.nodes.items():
-                if isinstance(node_data, dict):
-                    repo = (
-                        node_data.get("repository")
-                        or node_data.get("repo")
-                        or node_data.get("repo_name")
-                        or node_data.get("bitbucket_repo")
-                    )
-                    if repo:
-                        repositories.add(str(repo).strip())
-                metadata = self.extract_metadata(node_id)
-                if metadata.get("repository"):
-                    repositories.add(str(metadata["repository"]).strip())
-            self._repositories = sorted(list(repositories))
-
-        return self._repositories
 
     def filter_nodes(
         self,
@@ -289,8 +177,6 @@ class GraphFilter:
             filters: Dictionary with filter criteria:
                 - min_conflict: Minimum conflict score threshold (0-1)
                 - doc_types: List of doc_types to include
-                - languages: List of languages to include
-                - repositories: List of repositories to include
                 - source_categories: List of source categories
 
         Returns:
@@ -303,8 +189,6 @@ class GraphFilter:
 
         min_conflict = filters.get("min_conflict", 0.0)
         doc_types = filters.get("doc_types")
-        languages = filters.get("languages")
-        repositories = filters.get("repositories")
         source_categories = filters.get("source_categories")
         topic_clusters = set(filters.get("topic_clusters", []) or [])
         risk_clusters = set(filters.get("risk_clusters", []) or [])
@@ -322,14 +206,6 @@ class GraphFilter:
 
             # Check doc_type filter
             if doc_types and metadata["doc_type"] not in doc_types:
-                continue
-
-            # Check language filter
-            if languages and metadata["language"] not in languages:
-                continue
-
-            # Check repository filter
-            if repositories and metadata["repository"] not in repositories:
                 continue
 
             # Check source category filter
@@ -504,28 +380,20 @@ class GraphFilter:
         Returns:
             Dict with counts by category
         """
-        doc_type_counts = defaultdict(int)
-        language_counts = defaultdict(int)
-        repository_counts = defaultdict(int)
-        source_category_counts = defaultdict(int)
+        doc_type_counts: Dict[str, int] = defaultdict(int)
+        source_category_counts: Dict[str, int] = defaultdict(int)
 
         for node_id in node_ids:
             metadata = self.extract_metadata(node_id)
 
             if metadata["doc_type"]:
                 doc_type_counts[metadata["doc_type"]] += 1
-            if metadata["language"]:
-                language_counts[metadata["language"]] += 1
-            if metadata["repository"]:
-                repository_counts[metadata["repository"]] += 1
             if metadata["source_category"]:
                 source_category_counts[metadata["source_category"]] += 1
 
         return {
             "total_nodes": len(node_ids),
             "doc_types": dict(sorted(doc_type_counts.items())),
-            "languages": dict(sorted(language_counts.items())),
-            "repositories": dict(sorted(repository_counts.items())),
             "source_categories": dict(sorted(source_category_counts.items())),
         }
 
@@ -533,8 +401,6 @@ class GraphFilter:
         self,
         min_conflict_score: float = 0.0,
         doc_types: Optional[List[str]] = None,
-        languages: Optional[List[str]] = None,
-        repositories: Optional[List[str]] = None,
     ) -> Tuple[str, List[Any]]:
         """Build parameterised SQL WHERE clause for efficient SQLite querying.
 
@@ -544,14 +410,12 @@ class GraphFilter:
         Args:
             min_conflict_score: Minimum conflict score
             doc_types: List of doc_types
-            languages: List of languages
-            repositories: List of repositories
 
         Returns:
             Tuple of (where_clause, parameters) for parameterised query
         """
-        clauses = []
-        params = []
+        clauses: List[str] = []
+        params: List[Any] = []
 
         # Conflict score filter
         if min_conflict_score > 0.0:
@@ -563,18 +427,6 @@ class GraphFilter:
             placeholders = ",".join(["?" for _ in doc_types])
             clauses.append(f"doc_type IN ({placeholders})")
             params.extend(doc_types)
-
-        # Language filter
-        if languages:
-            placeholders = ",".join(["?" for _ in languages])
-            clauses.append(f"language IN ({placeholders})")
-            params.extend(languages)
-
-        # Repository filter
-        if repositories:
-            placeholders = ",".join(["?" for _ in repositories])
-            clauses.append(f"repository IN ({placeholders})")
-            params.extend(repositories)
 
         where_clause = " AND ".join(clauses) if clauses else "1=1"
 

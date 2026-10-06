@@ -100,9 +100,14 @@ def apply_persona_reranking(
     current_year = datetime.now().year
 
     # Normalise TF scores if available
-    tf_scores = [
-        m.get("tf_score") for m in metadata if isinstance(m, dict) and m.get("tf_score") is not None
-    ]
+    tf_scores: List[float] = []
+    for item in metadata:
+        if not isinstance(item, dict) or item.get("tf_score") is None:
+            continue
+        try:
+            tf_scores.append(float(item["tf_score"]))
+        except (TypeError, ValueError):
+            continue
     tf_max = max(tf_scores) if tf_scores else 1.0
 
     scored_items: List[Tuple[float, str, Dict[str, Any]]] = []
@@ -150,15 +155,17 @@ def apply_persona_reranking(
 
         # Base similarity score
         similarity_score = 0.0
-        if "distance" in meta:
+        distance = meta.get("distance")
+        tf_score = meta.get("tf_score")
+        if distance is not None:
             # Chroma distance: lower is better, map to similarity
             try:
-                similarity_score = max(0.0, 1.0 - float(meta.get("distance")))
+                similarity_score = max(0.0, 1.0 - float(distance))
             except (TypeError, ValueError):
                 similarity_score = 0.0
-        elif "tf_score" in meta:
+        elif tf_score is not None:
             try:
-                similarity_score = min(1.0, float(meta.get("tf_score")) / tf_max)
+                similarity_score = min(1.0, float(tf_score) / tf_max)
             except (TypeError, ValueError):
                 similarity_score = 0.0
 

@@ -7,7 +7,7 @@ until a confident match is found.
 
 import logging
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, TypedDict
 
 from .base import BaseProvider, FatalError, RecoverableError, Reference, ReferenceStatus
 
@@ -22,6 +22,22 @@ class ResolutionResult:
     provider: str
     confidence: float  # 0.0 - 1.0
     attempt_count: int
+
+
+class ProviderResolutionStats(TypedDict):
+    """Success and failure counters for one metadata provider."""
+
+    success: int
+    failure: int
+
+
+class ResolutionStats(TypedDict):
+    """Aggregate metadata provider-chain resolution counters."""
+
+    total_queries: int
+    resolved: int
+    unresolved: int
+    by_provider: Dict[str, ProviderResolutionStats]
 
 
 class ProviderChain:
@@ -42,7 +58,7 @@ class ProviderChain:
         """
         self.providers = providers
         self.min_confidence = min_confidence
-        self.resolution_stats = {
+        self.resolution_stats: ResolutionStats = {
             "total_queries": 0,
             "resolved": 0,
             "unresolved": 0,
@@ -87,13 +103,14 @@ class ProviderChain:
             try:
                 use_logger.debug(f"Attempting resolution with {provider.name} (attempt {attempt})")
 
-                # Call provider.resolve() with only parameters it accepts
-                # All providers accept: citation_text, year, doi
-                # Only some accept: authors (so we don't pass it here)
+                # All providers share the same resolution contract. Author
+                # hints improve disambiguation for providers that support
+                # title-plus-author matching.
                 reference = provider.resolve(
                     citation_text=citation_text,
                     year=year,
                     doi=doi,
+                    authors=authors,
                     logger=use_logger,
                 )
 
@@ -131,7 +148,12 @@ class ProviderChain:
                         f"(confidence: {confidence:.2f})"
                     )
                     self.resolution_stats["resolved"] += 1
-                    return best_result
+                    return ResolutionResult(
+                        reference=reference,
+                        provider=provider.name,
+                        confidence=confidence,
+                        attempt_count=attempt,
+                    )
 
             except RecoverableError as e:
                 use_logger.debug(f"{provider.name} recoverable error: {e}", exc_info=True)
@@ -253,7 +275,7 @@ class ProviderChain:
 
         return fields_present / max_fields
 
-    def get_stats(self) -> dict:
+    def get_stats(self) -> Dict[str, Any]:
         """Get resolution statistics."""
         total = self.resolution_stats["total_queries"]
         return {
@@ -266,7 +288,7 @@ class ProviderChain:
             ),
         }
 
-    def reset_stats(self):
+    def reset_stats(self) -> None:
         """Reset statistics."""
         self.resolution_stats = {
             "total_queries": 0,

@@ -36,6 +36,7 @@ from scripts.utils.json_utils import repair_json as utils_repair_json
 from scripts.utils.json_utils import (
     sanitise_for_json,
 )
+from scripts.utils.llm_instrumentation import invoke_with_usage
 from scripts.utils.logger import create_module_logger
 from scripts.utils.retry_utils import retry_ollama_call
 
@@ -51,12 +52,18 @@ if TYPE_CHECKING:
 CONFIG = get_ingest_config()
 
 # Primary LLM for content generation
-primary_llm = OllamaLLM(model=CONFIG.llm_model_name)
+primary_llm = OllamaLLM(
+    model=CONFIG.llm_model_name,
+    num_ctx=CONFIG.llm_context_window_tokens,
+)
 
 # Separate LLM instance for validation and repair
 # Maintains isolation between generation and validation
 # For greater separation, consider using a different model
-validator_llm = OllamaLLM(model=CONFIG.validator_llm_model_name)
+validator_llm = OllamaLLM(
+    model=CONFIG.validator_llm_model_name,
+    num_ctx=CONFIG.validator_llm_context_window_tokens,
+)
 
 # Shared DLP scanner instance for preprocessing
 _dlp_scanner = DLPScanner()
@@ -103,7 +110,6 @@ def redact_sensitive_text(text: str, doc_hash: Optional[str] = None) -> Tuple[st
     return redacted, counts
 
 
-@retry_ollama_call(max_retries=3, initial_delay=1.0, operation_name="llm_invoke_with_rate_limit")
 def llm_invoke_with_rate_limit(llm: OllamaLLM, prompt: str, timeout: float = 120.0) -> str:
     """Invoke LLM with rate limiting and retry logic.
 
@@ -122,12 +128,28 @@ def llm_invoke_with_rate_limit(llm: OllamaLLM, prompt: str, timeout: float = 120
     Raises:
         Exception: On hard failure or after all retries exhausted.
     """
-    limiter = _get_rate_limiter()
-    if limiter:
-        # Acquire 1 token (represents 1 LLM call)
-        limiter.acquire(tokens=1, blocking=True)
+    attempt = 0
 
-    return llm.invoke(prompt)
+    @retry_ollama_call(
+        max_retries=3, initial_delay=1.0, operation_name="llm_invoke_with_rate_limit"
+    )
+    def invoke_once() -> str:
+        nonlocal attempt
+        attempt += 1
+        limiter = _get_rate_limiter()
+        if limiter:
+            # Acquire 1 token (represents 1 LLM call)
+            limiter.acquire(tokens=1, blocking=True)
+
+        return invoke_with_usage(
+            llm,
+            prompt,
+            operation="preprocess.llm_invoke_with_rate_limit",
+            component="document_preprocessing",
+            attempt=attempt,
+        )
+
+    return invoke_once()
 
 
 # Wrapper preserves previous logging + validation semantics
@@ -332,7 +354,12 @@ def score_summary(
     \"\"\"{cleaned_text[:4000]}\"\"\"
     """)
 
-    raw = validator_llm.invoke(prompt)
+    raw = invoke_with_usage(
+        validator_llm,
+        prompt,
+        operation="preprocess.score_summary",
+        component="document_preprocessing",
+    )
     result = extract_first_json_block(raw)
 
     # Store in cache
@@ -381,7 +408,12 @@ def regenerate_summary(
 
     Return ONLY the summary text.
     """)
-    result = primary_llm.invoke(prompt).strip()
+    result = invoke_with_usage(
+        primary_llm,
+        prompt,
+        operation="preprocess.regenerate_summary",
+        component="document_preprocessing",
+    ).strip()
 
     # Store in cache
     if doc_hash and llm_cache:
@@ -459,7 +491,12 @@ def clean_text_with_llm(
     {raw_text}
     """)
 
-    cleaned_text = primary_llm.invoke(clean_prompt)
+    cleaned_text = invoke_with_usage(
+        primary_llm,
+        clean_prompt,
+        operation="preprocess.clean_text",
+        component="document_preprocessing",
+    )
     cleaned_text = sanitise_for_json(cleaned_text)
 
     # Cache result
@@ -553,7 +590,12 @@ TEXT:
 JSON (no markdown, no extra text):"""
     )
 
-    metadata_json = primary_llm.invoke(metadata_prompt)
+    metadata_json = invoke_with_usage(
+        primary_llm,
+        metadata_prompt,
+        operation="preprocess.extract_metadata",
+        component="document_preprocessing",
+    )
     try:
         # Use max 3 repair attempts for JSON parsing
         metadata = extract_first_json_block(metadata_json, max_repair_attempts=3)
@@ -577,7 +619,7 @@ JSON (no markdown, no extra text):"""
 
 def preprocess_text(
     raw_text: str,
-    source_category: str = None,
+    source_category: Optional[str] = None,
     doc_hash: Optional[str] = None,
     llm_cache: Optional["LLMCache"] = None,
 ) -> Dict[str, Any]:
@@ -716,7 +758,7 @@ def detect_and_mark_tables(text: str) -> Tuple[str, Dict[str, Any]]:
             - tables_start_pos: Character position of [TABLES START]
             - table_sizes: List of (table_index, approx_char_count)
     """
-    table_metadata = {
+    table_metadata: Dict[str, Any] = {
         "table_count": 0,
         "has_tables": False,
         "tables_start_pos": -1,

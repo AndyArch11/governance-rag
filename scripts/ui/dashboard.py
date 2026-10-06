@@ -49,11 +49,14 @@ import logging
 import math
 import os
 import pstats
+import re
+import sqlite3
 import sys
 import time
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import dash
@@ -74,6 +77,14 @@ from dash import (
 from dash.exceptions import PreventUpdate
 from plotly.subplots import make_subplots
 
+chromadb: ModuleType | None = None
+try:
+    import chromadb as _chromadb  # noqa: WPS433
+except ImportError:
+    pass
+else:
+    chromadb = _chromadb
+
 # Ensure project root is in sys.path for imports
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
@@ -85,19 +96,58 @@ from scripts.rag.rag_config import RAGConfig
 from scripts.ui.academic.citation_graph_callbacks import register_citation_graph_callbacks
 from scripts.ui.academic.citation_graph_viz import get_citation_viz
 from scripts.ui.export_manager import ExportManager
+from scripts.ui.pipelines import build_pipeline_components, register_pipeline_callbacks
 from scripts.ui.word_cloud_provider import get_word_cloud_data, get_word_cloud_stats
 from scripts.utils.db_factory import get_cache_client, get_default_vector_path, get_vector_client
 
 # Logger setup
 logger = logging.getLogger(__name__)
 
+
+def get_dashboard_host(configured_host: str | None = None) -> str:
+    """Return the configured bind host, defaulting to local-only access.
+
+    Args:
+        configured_host (str | None): The host to bind the dashboard to. If None, the environment variable DASHBOARD_HOST is used.
+
+    Returns:
+        str: The host to bind the dashboard to.
+    """
+    host = configured_host if configured_host is not None else os.getenv("DASHBOARD_HOST")
+    return host.strip() if host and host.strip() else "127.0.0.1"
+
+
+def get_dashboard_port(configured_port: str | int | None = None) -> int:
+    """Return a validated dashboard port, defaulting to 8050.
+
+    Args:
+        configured_port (str | int | None): The port to bind the dashboard to. If None, the environment variable DASHBOARD_PORT is used.
+
+    Returns:
+        int: The validated port to bind the dashboard to.
+    """
+    value = configured_port if configured_port is not None else os.getenv("DASHBOARD_PORT", "8050")
+    if isinstance(value, bool):
+        raise ValueError("DASHBOARD_PORT must be between 1 and 65535")
+    try:
+        port = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("DASHBOARD_PORT must be an integer") from exc
+    if not 1 <= port <= 65535:
+        raise ValueError("DASHBOARD_PORT must be between 1 and 65535")
+    return port
+
+
 # Centralised backend selection (Chroma preferred)
 PersistentClient, USING_SQLITE = get_vector_client(prefer="chroma")
 
+OllamaEmbeddings: Any | None = None
 try:
-    from langchain_ollama import OllamaEmbeddings
+    from langchain_ollama import OllamaEmbeddings as _OllamaEmbeddings
 except ImportError:
-    OllamaEmbeddings = None
+    pass
+else:
+    OllamaEmbeddings = _OllamaEmbeddings
 
 from scripts.consistency_graph.consistency_config import get_consistency_config
 
@@ -112,6 +162,7 @@ from scripts.ui.academic.academic_references import (
 )
 from scripts.ui.layout_engine import (
     CircularLayout,
+    ForceDirected3DLayout,
     ForceDirectedLayout,
     HierarchicalLayout,
     compute_layout,
@@ -133,14 +184,65 @@ RAG_CONFIG = RAGConfig()
 _QUERY_COLLECTION = None
 
 
+def _clear_query_collection_cache():
+    """Drop the cached query collection so it can be recreated on demand."""
+    global _QUERY_COLLECTION
+    _QUERY_COLLECTION = None
+
+
 def _get_query_collection():
     """Lazy-load and cache the RAG chunks collection for queries."""
     global _QUERY_COLLECTION
-    if _QUERY_COLLECTION is None:
-        chroma_path = get_default_vector_path(Path(RAG_CONFIG.rag_data_path), USING_SQLITE)
-        client = PersistentClient(path=chroma_path)
+    if _QUERY_COLLECTION is not None:
+        try:
+            _QUERY_COLLECTION.count()
+            return _QUERY_COLLECTION
+        except Exception as exc:
+            if chromadb is None or not isinstance(exc, chromadb.errors.NotFoundError):
+                raise
+            _clear_query_collection_cache()
+
+    chroma_path = get_default_vector_path(Path(RAG_CONFIG.rag_data_path), USING_SQLITE)
+    client = PersistentClient(path=chroma_path)
+    if chromadb is not None:
+        _QUERY_COLLECTION = client.get_or_create_collection(RAG_CONFIG.chunk_collection_name)
+    else:
         _QUERY_COLLECTION = client.get_collection(RAG_CONFIG.chunk_collection_name)
     return _QUERY_COLLECTION
+
+
+def _load_assessment_doc_options(current_selection):
+    """Build assessment dropdown options from the query collection.
+
+    Args:
+        current_selection: Currently selected doc_id (if any)"""
+    try:
+        collection = _get_query_collection()
+        all_docs = collection.get(include=["metadatas"])
+        doc_metadata = all_docs.get("metadatas", [])
+        doc_ids = sorted({meta.get("doc_id", "") for meta in doc_metadata if meta.get("doc_id")})
+        thesis_doc_ids = sorted(
+            {
+                meta.get("doc_id", "")
+                for meta in doc_metadata
+                if meta.get("doc_id")
+                and meta.get("source_kind", meta.get("source")) == "thesis_document"
+            }
+        )
+    except Exception as exc:
+        if chromadb is None or not isinstance(exc, chromadb.errors.NotFoundError):
+            raise
+        _clear_query_collection_cache()
+        doc_ids = []
+
+    options = [{"label": doc_id, "value": doc_id} for doc_id in doc_ids]
+
+    if current_selection and current_selection in doc_ids:
+        selected = current_selection
+    else:
+        selected = thesis_doc_ids[0] if thesis_doc_ids else (doc_ids[0] if doc_ids else None)
+
+    return options, selected
 
 
 # Pagination & Lazy Loading
@@ -150,7 +252,12 @@ MAX_GRAPH_VISUALISATION_NODES = 300
 
 
 def human_size(n: int) -> str:
-    """Convert bytes to human-readable format."""
+    """Convert bytes to human-readable format.
+    Args:
+        n: Size in bytes.
+    Returns:
+        Human-readable string representation of the size.
+    """
     units = ["B", "KB", "MB", "GB"]
     s = float(n)
     for u in units:
@@ -164,6 +271,12 @@ def get_display_name(node_data: Dict, node_id: str) -> str:
     """
     Extract display name for a node.
     For academic nodes, use summary (title); otherwise use node_id.
+
+    Args:
+        node_data: Dictionary containing node attributes.
+        node_id: Unique identifier for the node.
+    Returns:
+        Display name for the node.
     """
     if not isinstance(node_data, dict):
         return node_id
@@ -192,7 +305,6 @@ app = Dash(
     suppress_callback_exceptions=True,
     title="Governance Consistency Graph Dashboard",
 )
-
 # Custom CSS for better styling
 app.index_string = """<!DOCTYPE html>
 <html>
@@ -387,20 +499,174 @@ app.index_string = """<!DOCTYPE html>
 # Store for lazy-loaded data
 graph_store = SQLiteGraphStore(GRAPH_SQLITE)
 
+
+def _get_analytics_graph_options() -> List[Dict[str, str]]:
+    """Return the consistency graph and available thesis evidence graphs."""
+    options = [{"label": "Consistency graph", "value": "consistency"}]
+    graphs_dir = Path(RAGConfig().thesis_graphs_dir)
+    if not graphs_dir.exists():
+        return options
+
+    for graph_path in sorted(graphs_dir.glob("*.sqlite")):
+        try:
+            with sqlite3.connect(graph_path) as connection:
+                row = connection.execute(
+                    "SELECT value FROM metadata WHERE key = 'thesis_id'"
+                ).fetchone()
+        except sqlite3.Error:
+            continue
+        if row and row[0]:
+            options.append({"label": f"Thesis: {row[0]}", "value": f"thesis:{row[0]}"})
+
+    registry_path = graphs_dir / "registry.sqlite"
+    if registry_path.exists():
+        try:
+            from scripts.thesis_graph.thesis_registry import ThesisRegistry
+
+            for thesis in ThesisRegistry(registry_path).list_theses():
+                thesis_id = thesis["thesis_id"]
+                title = thesis.get("title") or thesis_id
+                options.extend(
+                    [
+                        {
+                            "label": f"Citation graph: {title}",
+                            "value": f"citation:{thesis_id}",
+                        },
+                        {
+                            "label": f"Thesis + references: {title}",
+                            "value": f"thesis_and_references:{thesis_id}",
+                        },
+                    ]
+                )
+        except (OSError, sqlite3.Error, KeyError):
+            logger.warning("Unable to load registered thesis graphs for analytics")
+    return options
+
+
+def _load_thesis_analytics_graph(graph_path: Path, thesis_id: str) -> nx.Graph:
+    """Load one thesis evidence graph into NetworkX for analytics."""
+    graph = nx.Graph()
+    with sqlite3.connect(graph_path) as connection:
+        nodes = connection.execute(
+            """
+            SELECT node_id, node_type, label, attributes_json
+            FROM nodes
+            WHERE thesis_id = ?
+            """,
+            (thesis_id,),
+        ).fetchall()
+        for node_id, node_type, label, attributes_json in nodes:
+            attributes = json.loads(attributes_json or "{}")
+            graph.add_node(
+                node_id,
+                **{
+                    **attributes,
+                    "node_type": node_type,
+                    "thesis_id": thesis_id,
+                    "label": label,
+                },
+            )
+
+        edges = connection.execute(
+            """
+            SELECT edges.source_node_id, edges.target_node_id, edges.relation
+            FROM edges
+            JOIN nodes AS source ON source.node_id = edges.source_node_id
+            JOIN nodes AS target ON target.node_id = edges.target_node_id
+            WHERE source.thesis_id = ? AND target.thesis_id = ?
+            """,
+            (thesis_id, thesis_id),
+        ).fetchall()
+        for source_node_id, target_node_id, relation in edges:
+            graph.add_edge(source_node_id, target_node_id, relation=relation)
+    return graph
+
+
+def _build_analytics_graph(graph_source: str) -> nx.Graph:
+    """Build the selected consistency or thesis evidence graph."""
+    if graph_source == "consistency":
+        graph = nx.Graph()
+        node_ids = graph_store.get_node_ids()
+        for node_id in node_ids:
+            node_data = graph_store.get_node(node_id)
+            if node_data:
+                graph.add_node(node_id, **node_data)
+        for edge in graph_store.get_edges():
+            graph.add_edge(edge["source"], edge["target"], **edge)
+        return graph
+
+    if graph_source.startswith("thesis:"):
+        from scripts.thesis_graph.thesis_evidence_graph import get_thesis_graph_path
+
+        thesis_id = graph_source.removeprefix("thesis:")
+        graph_path = get_thesis_graph_path(Path(RAGConfig().thesis_graphs_dir), thesis_id)
+        if graph_path.exists():
+            return _load_thesis_analytics_graph(graph_path, thesis_id)
+
+    if graph_source.startswith(("citation:", "thesis_and_references:")):
+        from scripts.thesis_graph.unified_graph import load_academic_graph
+
+        mode, thesis_id = graph_source.split(":", maxsplit=1)
+        config = RAGConfig()
+        graphs_dir = Path(config.thesis_graphs_dir)
+        academic_graph = load_academic_graph(
+            graphs_dir / "registry.sqlite",
+            graphs_dir.parent / "academic_citation_graph.db",
+            thesis_id,
+            mode="references" if mode == "citation" else "thesis_and_references",
+        )
+        return academic_graph.to_undirected()
+    return nx.Graph()
+
+
+def refresh_graph_after_pipeline_success(_job: Dict[str, Any]) -> List[Dict[str, str]]:
+    """Reload the consistency graph view after a successful pipeline job."""
+    global graph_filter
+
+    if not graph_store.load_metadata():
+        raise RuntimeError("Consistency graph metadata could not be refreshed")
+    node_ids = graph_store.get_node_ids()
+    nodes_dict = {
+        node_id: node_data for node_id in node_ids if (node_data := graph_store.get_node(node_id))
+    }
+    graph_filter = GraphFilter(
+        {
+            "nodes": nodes_dict,
+            "edges": graph_store.get_edges(),
+            "clusters": graph_store.get_clusters(),
+        }
+    )
+    layout_positions_cache.clear()
+    return [
+        {
+            "label": get_display_name(nodes_dict.get(node_id) or {}, node_id),
+            "value": node_id,
+        }
+        for node_id in node_ids[:100]
+    ]
+
+
+register_pipeline_callbacks(
+    app,
+    _PROJECT_ROOT,
+    Path(RAG_CONFIG.rag_data_path),
+    RAG_CONFIG.environment,
+    on_job_succeeded=refresh_graph_after_pipeline_success,
+)
+
 # Initialise graph filter (will be populated after graph loads)
 graph_filter = None
-filter_data = {
+filter_data: Dict[str, Any] = {
     "available_doc_types": [],
-    "available_languages": [],
-    "available_repositories": [],
     "filtered_nodes": set(),
 }
 
 # WebGL/Layout engine configuration
 current_layout_type = "force"  # Default layout
-layout_positions_cache = {}  # Cache computed positions
+layout_positions_cache: Dict[str, Dict[str, Tuple[float, float]]] = {}
 use_webgl_global = False  # Track WebGL usage
 webgl_threshold = 1000  # Use WebGL for >1k nodes
+THREE_D_MAX_NODES = 750  # Keep interactive 3D rendering responsive
 # Viewport culling tuning
 QUADTREE_MAX_DEPTH = 10
 QUADTREE_MAX_ITEMS = 16
@@ -414,7 +680,15 @@ PERF_ENABLED = True
 def _compute_bounds(
     positions: Dict[str, Tuple[float, float]], node_ids: List[str], padding: float = SPATIAL_PADDING
 ) -> Bounds:
-    """Compute bounding box for given node positions."""
+    """Compute bounding box for given node positions.
+
+    Args:
+        positions: Mapping of node_id to (x, y) coordinates.
+        node_ids: List of node_ids to include in bounds calculation.
+        padding: Fractional padding to expand bounds (default 0.1).
+    Returns:
+        Bounds object representing the computed bounding box.
+    """
     if not positions or not node_ids:
         return Bounds(-1.0, -1.0, 1.0, 1.0).expanded(padding)
 
@@ -431,7 +705,14 @@ def _compute_bounds(
 
 
 def _extract_viewport_bounds(relayout_data: Dict[str, Any], default_bounds: Bounds) -> Bounds:
-    """Derive current viewport bounds from Plotly relayout data."""
+    """Derive current viewport bounds from Plotly relayout data.
+
+    Args:
+        relayout_data: Dictionary containing Plotly relayout information.
+        default_bounds: Bounds to return if relayout data is incomplete.
+    Returns:
+        Bounds object representing the current viewport.
+    """
     if not relayout_data:
         return default_bounds
 
@@ -602,6 +883,11 @@ def _build_word_cloud_figure(word_data: List[Dict[str, Any]]) -> go.Figure:
     Places words on a golden-angle spiral, skipping positions until no collision
     is detected with previously placed words.
 
+    Args:
+        word_data: List of dictionaries containing word information. Each dictionary should have keys "word", "size", "frequency", and "doc_count".
+    Returns:
+        Plotly Figure object representing the word cloud.
+
     TODO: Consider using wordcloud library to generate layout and then render with Plotly for better aesthetics and performance, especially for larger word clouds.
     """
     if not word_data:
@@ -629,7 +915,7 @@ def _build_word_cloud_figure(word_data: List[Dict[str, Any]]) -> go.Figure:
 
     x_vals = []
     y_vals = []
-    placed_bboxes = []  # Track bounding boxes of placed words
+    placed_bboxes: List[Dict[str, float]] = []  # Track bounding boxes of placed words
 
     golden_angle = 2.399963229728653
     min_radius = 0.5
@@ -713,7 +999,13 @@ def _build_word_cloud_figure(word_data: List[Dict[str, Any]]) -> go.Figure:
     prevent_initial_call=True,
 )
 def regenerate_layout_seed(n_clicks):
-    """Generate a new random seed when regenerate button is clicked."""
+    """Generate a new random seed when regenerate button is clicked.
+
+    Args:
+        n_clicks: Number of times the regenerate button has been clicked.
+    Returns:
+        A new random integer seed for layout computation.
+    """
     import random
 
     return random.randint(1, 10000)
@@ -726,12 +1018,14 @@ def regenerate_layout_seed(n_clicks):
     Input("graph-page-slider", "value"),
     Input("filter-state-store", "data"),
     Input("layout-selector", "value"),
+    Input("graph-view-mode", "value"),
     Input("webgl-toggle", "value"),
     Input("show-node-names-toggle", "value"),
     Input("show-unlinked-nodes-toggle", "value"),
     Input("nodes-per-page-selector", "value"),
     Input("selected-node-store", "data"),
     Input("layout-seed-store", "data"),
+    Input("reset-3d-camera-btn", "n_clicks"),
     State("min-conflict-slider", "value"),
     State("sim-threshold-slider", "value"),
 )
@@ -740,18 +1034,39 @@ def update_graph_tab(
     page,
     filter_state,
     layout_type,
+    graph_view_mode,
     use_webgl_list,
     show_names_list,
     show_unlinked_list,
     nodes_per_page,
     selected_node,
     layout_seed,
+    reset_3d_camera_clicks,
     min_conflict,
     sim_threshold,
 ):
-    """Update graph visualisation with layout engine, WebGL, and filtering."""
+    """Update graph visualisation with layout engine, WebGL, and filtering.
+
+    Args:
+        page: Current page number for pagination.
+        filter_state: Current filter state from store.
+        layout_type: Selected layout type (force, hierarchical, circular).
+        graph_view_mode: Selected graph view mode (two_d or three_d).
+        use_webgl_list: List indicating if WebGL is enabled.
+        show_names_list: List indicating if node names should be displayed.
+        show_unlinked_list: List indicating if unlinked nodes should be shown.
+        nodes_per_page: Number of nodes to display per page.
+        selected_node: Currently selected node.
+        layout_seed: Seed for layout computation.
+        reset_3d_camera_clicks: Click count for resetting the 3D camera orientation.
+        min_conflict: Minimum conflict threshold.
+        sim_threshold: Similarity threshold.
+    Returns:
+        Updated graph container and performance data.
+    """
     # Note: relayout_data removed as it creates circular dependency (graph-figure is output of this callback)
     relayout_data = None
+    _ = reset_3d_camera_clicks
 
     # Check if nodes are loaded, if not try to load metadata (handles hot reload after graph rebuild)
     if graph_store.get_node_ids() == []:
@@ -868,9 +1183,10 @@ def update_graph_tab(
 
         # Determine layout type (default to force-directed)
         layout_type = layout_type or "force"
+        graph_view_mode = graph_view_mode or "two_d"
 
         # Prepare node and edge data for layout engine
-        nodes_dict = {nid: data for nid, data in nodes_data}
+        nodes_dict = {nid: data or {} for nid, data in nodes_data}
         edges_list = filtered_edges  # Already in dict format with 'source' and 'target'
 
         # Use provided seed or default
@@ -878,6 +1194,7 @@ def update_graph_tab(
 
         # Compute layout positions using adaptive parameters
         try:
+            layout_engine: Any
             if layout_type == "hierarchical":
                 layout_engine = HierarchicalLayout(layer_gap=2.0, node_gap=1.0)
                 positions = layout_engine.compute_layout(nodes_dict, edges_list)
@@ -971,10 +1288,10 @@ def update_graph_tab(
         }
 
         # Group edges by relationship status and selection state
-        edges_by_status = {
+        edges_by_status: Dict[str, Dict[str, List[Any]]] = {
             status: {"x": [], "y": [], "widths": []} for status in status_colours.keys()
         }
-        edges_by_status_selected = {
+        edges_by_status_selected: Dict[str, Dict[str, List[Any]]] = {
             status: {"x": [], "y": [], "widths": []} for status in status_colours.keys()
         }
         visible_edges_count = 0
@@ -1052,7 +1369,14 @@ def update_graph_tab(
 
         # Prepare node display data with enhanced tooltips
         def format_node_tooltip(nid: str, node_data: Dict) -> str:
-            """Format comprehensive node tooltip with all available metrics."""
+            """Format comprehensive node tooltip with all available metrics.
+
+            Args:
+                nid: Node ID
+                node_data: Dictionary containing node attributes
+            Returns:
+                HTML-formatted tooltip string
+            """
             conflict = node_data.get("conflict_score", 0)
 
             # Extract health metrics if available
@@ -1104,7 +1428,7 @@ def update_graph_tab(
         node_colours = [nodes_dict[nid].get("conflict_score", 0) for nid, _ in visible_nodes]
 
         # Calculate node degrees (number of connections) for sizing
-        node_degrees = {}
+        node_degrees: Dict[Any, int] = {}
         for edge in filtered_edges:
             src = edge.get("source")
             tgt = edge.get("target")
@@ -1161,6 +1485,148 @@ def update_graph_tab(
                 node_line_widths.append(1)
                 node_line_colours.append("#fff")
 
+        show_node_names = show_names_list and "show-names" in show_names_list
+        trace_mode = "markers+text" if show_node_names else "markers"
+        node_symbols = []
+        node_sizes_three_d = []
+        for index, (node_id, node_data) in enumerate(visible_nodes):
+            source_category = str(node_data.get("source_category", "")).lower()
+            has_risk_cluster = bool(
+                node_data.get("risk_cluster") or node_data.get("risk_cluster_id")
+            )
+            has_topic_cluster = bool(
+                node_data.get("topic_cluster") or node_data.get("topic_cluster_id")
+            )
+            if node_id == selected_node:
+                node_symbols.append("diamond")
+            elif has_risk_cluster:
+                node_symbols.append("cross")
+            elif has_topic_cluster:
+                node_symbols.append("x")
+            elif source_category.startswith("academic"):
+                node_symbols.append("circle")
+            else:
+                node_symbols.append("circle-open")
+            cluster_size_bonus = 3 if has_risk_cluster or has_topic_cluster else 0
+            node_sizes_three_d.append(node_sizes_svg[index] + cluster_size_bonus)
+        use_three_d = graph_view_mode == "three_d" and len(visible_nodes) <= THREE_D_MAX_NODES
+        if use_three_d:
+            three_d_positions = ForceDirected3DLayout(
+                iterations=50,
+                seed=layout_seed,
+            ).compute_layout(
+                {node_id: nodes_dict[node_id] for node_id, _ in visible_nodes},
+                [
+                    edge
+                    for edge in filtered_edges
+                    if edge.get("source") in visible_ids_set
+                    and edge.get("target") in visible_ids_set
+                ],
+            )
+            fig = go.Figure()
+            for status, colour in status_colours.items():
+                edge_x: List[float | None] = []
+                edge_y: List[float | None] = []
+                edge_z: List[float | None] = []
+                for edge in filtered_edges:
+                    source = edge.get("source")
+                    target = edge.get("target")
+                    if (
+                        edge.get("relationship", "consistent") == status
+                        and source in three_d_positions
+                        and target in three_d_positions
+                    ):
+                        edge_x.extend(
+                            [three_d_positions[source][0], three_d_positions[target][0], None]
+                        )
+                        edge_y.extend(
+                            [three_d_positions[source][1], three_d_positions[target][1], None]
+                        )
+                        edge_z.extend(
+                            [three_d_positions[source][2], three_d_positions[target][2], None]
+                        )
+                if edge_x:
+                    fig.add_trace(
+                        go.Scatter3d(
+                            x=edge_x,
+                            y=edge_y,
+                            z=edge_z,
+                            mode="lines",
+                            line=dict(color=colour, width=3),
+                            hoverinfo="skip",
+                            name=status.replace("_", " ").title(),
+                            showlegend=False,
+                        )
+                    )
+
+            fig.add_trace(
+                go.Scatter3d(
+                    x=[three_d_positions[node_id][0] for node_id, _ in visible_nodes],
+                    y=[three_d_positions[node_id][1] for node_id, _ in visible_nodes],
+                    z=[three_d_positions[node_id][2] for node_id, _ in visible_nodes],
+                    mode=trace_mode,
+                    marker=dict(
+                        size=node_sizes_three_d,
+                        color=node_colours,
+                        colorscale="RdYlGn_r",
+                        showscale=True,
+                        opacity=1.0,
+                        line=dict(width=max(node_line_widths, default=1), color="#ffffff"),
+                        symbol=node_symbols,
+                        colorbar=dict(title="Conflict<br>Score"),
+                    ),
+                    text=[
+                        get_display_name(nodes_dict[node_id], node_id)
+                        for node_id, _ in visible_nodes
+                    ],
+                    customdata=[node_id for node_id, _ in visible_nodes],
+                    textposition="top center",
+                    hovertext=node_text,
+                    hoverinfo="text",
+                    name="Documents",
+                    showlegend=False,
+                )
+            )
+            fig.update_layout(
+                title=(
+                    "Consistency Graph - 3D Force Layout<br>"
+                    f"<sub>Page {page + 1} of {total_pages}, {len(visible_nodes)} nodes, "
+                    f"{visible_edges_count}/{len(filtered_edges)} edges visible</sub>"
+                ),
+                scene=dict(
+                    xaxis=dict(visible=False),
+                    yaxis=dict(visible=False),
+                    zaxis=dict(visible=False),
+                    bgcolor="#fafafa",
+                    camera=dict(eye=dict(x=1.5, y=1.5, z=1.2)),
+                ),
+                margin=dict(b=20, l=5, r=5, t=60),
+                height=600,
+            )
+
+            if perf:
+                perf.record("three_d_figure_build")
+            perf_data = None
+            if perf:
+                timings = format_timings_ms(perf.snapshot())
+                perf_data = {
+                    "timings_ms": timings,
+                    "page_size": original_page_size,
+                    "visible_nodes": len(visible_nodes),
+                    "total_edges": len(filtered_edges),
+                    "visible_edges": visible_edges_count,
+                    "use_webgl": True,
+                    "layout": "three_d_force",
+                }
+            return (
+                dcc.Graph(
+                    id="graph-figure",
+                    figure=fig,
+                    config={"responsive": True, "displayModeBar": True},
+                ),
+                perf_data,
+            )
+
         # =====================================================
         # WebGL Rendering Decision
         # =====================================================
@@ -1170,8 +1636,6 @@ def update_graph_tab(
         use_webgl = (
             total_filtered > webgl_threshold if use_webgl_list is None else use_webgl_selected
         )
-        show_node_names = show_names_list and "show-names" in show_names_list
-        trace_mode = "markers+text" if show_node_names else "markers"
 
         fig = go.Figure()
 
@@ -1195,7 +1659,10 @@ def update_graph_tab(
                     line=dict(width=node_line_widths, color=node_line_colours),
                     colorbar=dict(title="Conflict<br>Score", len=0.7),
                 ),
-                text=[get_display_name(nodes_dict.get(nid, {}), nid) for nid in page_node_ids],
+                text=[
+                    get_display_name(nodes_dict[node_id], node_id) for node_id, _ in visible_nodes
+                ],
+                customdata=[nid for nid, _ in visible_nodes],
                 textposition="top center",
                 hovertext=node_text,
                 hoverinfo="text",
@@ -1217,7 +1684,10 @@ def update_graph_tab(
                     line=dict(width=node_line_widths, color=node_line_colours),
                     colorbar=dict(title="Conflict<br>Score"),
                 ),
-                text=[get_display_name(nodes_dict.get(nid, {}), nid) for nid in page_node_ids],
+                text=[
+                    get_display_name(nodes_dict[node_id], node_id) for node_id, _ in visible_nodes
+                ],
+                customdata=[nid for nid, _ in visible_nodes],
                 textposition="top center",
                 hovertext=node_text,
                 hoverinfo="text",
@@ -1244,6 +1714,8 @@ def update_graph_tab(
 
         # Build figure title with rendering and algorithm info
         render_method = "WebGL (GPU)" if use_webgl else "SVG (CPU)"
+        if graph_view_mode == "three_d" and not use_three_d:
+            render_method += f"; 3D fallback (limit {THREE_D_MAX_NODES} nodes)"
         fig.update_layout(
             title=(
                 f"Consistency Graph - {algo_info} Layout ({render_method})<br>"
@@ -1331,7 +1803,20 @@ def update_graph_tab(
     Input("fps-store", "data"),
 )
 def update_render_stats(filter_state, layout_type, use_webgl_list, perf_data, fps_data):
-    """Update rendering statistics display and performance panel."""
+    """Update rendering statistics display and performance panel.
+
+    Args:
+        filter_state: Current filter state from store.
+        layout_type: Selected layout type (force, hierarchical, circular).
+        use_webgl_list: List indicating if WebGL is enabled.
+        perf_data: Performance data from store.
+        fps_data: Current frames per second data.
+    Returns:
+        Tuple containing:
+            - Render stats HTML element
+            - Performance panel HTML element
+            - FPS display HTML element
+    """
     try:
         all_nodes = graph_store.get_node_ids()
         if filter_state and filter_state.get("filtered_nodes"):
@@ -1366,6 +1851,13 @@ def update_render_stats(filter_state, layout_type, use_webgl_list, perf_data, fp
             t = perf_data["timings_ms"]
 
             def fmt(label: str) -> str:
+                """Format a timing label and value for display.
+
+                Args:
+                    label: The timing label (e.g., 'filter_load', 'page_fetch').
+                Returns:
+                    Formatted string with label and timing in milliseconds.
+                """
                 return f"{label}: {t.get(label, 0)} ms"
 
             perf_children = [
@@ -1417,7 +1909,16 @@ def update_render_stats(filter_state, layout_type, use_webgl_list, perf_data, fp
     prevent_initial_call=False,
 )
 def toggle_templates_panel(n_clicks, current_style):
-    """Toggle templates panel visibility."""
+    """Toggle templates panel visibility.
+
+    Also used for the "Show Templates" button in the Filters & Controls panel.
+
+    Args:
+        n_clicks: Number of times the toggle button has been clicked.
+        current_style: Current CSS style of the templates panel.
+    Returns:
+        Updated CSS style with toggled display property.
+    """
     if not n_clicks:
         return current_style
 
@@ -1439,7 +1940,14 @@ def toggle_templates_panel(n_clicks, current_style):
     prevent_initial_call=False,
 )
 def toggle_filters_panel(n_clicks, current_style):
-    """Toggle filters panel visibility."""
+    """Toggle filters panel visibility.
+
+    Args:
+        n_clicks: Number of times the toggle button has been clicked.
+        current_style: Current CSS style of the filters panel.
+    Returns:
+        Updated CSS style with toggled display property.
+    """
     if not n_clicks:
         return current_style
 
@@ -1462,7 +1970,16 @@ def toggle_filters_panel(n_clicks, current_style):
     prevent_initial_call=False,
 )
 def toggle_main_filters(n_clicks, current_style):
-    """Toggle main Filters & Controls expander visibility and button label."""
+    """Toggle main Filters & Controls expander visibility and button label.
+
+    Args:
+        n_clicks: Number of times the toggle button has been clicked.
+        current_style: Current CSS style of the main filters panel.
+    Returns:
+        Tuple containing:
+            - Updated CSS style with toggled display property.
+            - Updated button label indicating current state.
+    """
     if current_style is None:
         current_style = {"display": "none"}
     if not n_clicks:
@@ -1482,16 +1999,21 @@ def toggle_main_filters(n_clicks, current_style):
     Output("date-range-filter", "start_date", allow_duplicate=True),
     Output("date-range-filter", "end_date", allow_duplicate=True),
     Output("confidence-filter", "value", allow_duplicate=True),
-    Output("result-type-filter", "value", allow_duplicate=True),
     Output("tags-filter-input", "value", allow_duplicate=True),
     Input("reset-advanced-filters-btn", "n_clicks"),
     prevent_initial_call=True,
 )
 def reset_advanced_filters(n_clicks):
-    """Reset all advanced filters to default values."""
+    """Reset all advanced filters to default values.
+
+    Args:
+        n_clicks: Number of times the reset button has been clicked.
+    Returns:
+        Tuple containing default values for each advanced filter.
+    """
     if not n_clicks:
         raise PreventUpdate
-    return "", None, None, 0, ["documents", "code"], ""
+    return "", None, None, 0, ""
 
 
 @callback(
@@ -1500,7 +2022,15 @@ def reset_advanced_filters(n_clicks):
     Input("template-category-select", "value"),
 )
 def update_template_options(category):
-    """Update template dropdown based on selected category."""
+    """Update template dropdown based on selected category.
+
+    Args:
+        category: Selected template category.
+    Returns:
+        Tuple containing:
+            - List of template options for the dropdown.
+            - Reset value for the dropdown (None).
+    """
     from scripts.ui.query_templates import QueryTemplateManager
 
     try:
@@ -1536,7 +2066,6 @@ def update_template_options(category):
     Output("template-params-input", "value"),
     Output("rag-query-k", "value", allow_duplicate=True),
     Output("rag-query-temp", "value", allow_duplicate=True),
-    Output("rag-query-code-aware", "value", allow_duplicate=True),
     Output("rag-query-persona", "value"),
     Input("apply-template-btn", "n_clicks"),
     State("template-select", "value"),
@@ -1545,10 +2074,22 @@ def update_template_options(category):
     allow_duplicate=True,
 )
 def apply_template(n_clicks, template_name, params_text):
-    """Apply selected template to query input and update chunk settings, including persona."""
+    """Apply selected template to query input and update query settings and persona.
+
+    Args:
+        n_clicks: Number of times the apply button has been clicked.
+        template_name: Name of the selected template.
+        params_text: Comma-separated parameters for template substitution.
+    Returns:
+        Tuple containing:
+            - Updated query input value with template applied.
+            - Updated template parameters input value.
+            - Updated k_results value from template.
+            - Updated temperature value from template.
+            - Updated persona value from template.
+    """
     if not template_name:
         return (
-            dash.no_update,
             dash.no_update,
             dash.no_update,
             dash.no_update,
@@ -1570,7 +2111,6 @@ def apply_template(n_clicks, template_name, params_text):
                 dash.no_update,
                 dash.no_update,
                 dash.no_update,
-                dash.no_update,
             )
 
         # Substitute parameters if template has {}
@@ -1584,7 +2124,6 @@ def apply_template(n_clicks, template_name, params_text):
         # Extract chunk settings from template
         k_results = template.get("k_results", 5)
         temperature = template.get("temperature", 0.3)
-        code_aware = template.get("code_aware", True)
         persona = template.get("persona")
         persona_value = persona if persona else "none"
 
@@ -1593,7 +2132,6 @@ def apply_template(n_clicks, template_name, params_text):
             params_text or "",
             k_results,
             temperature,
-            ([code_aware] if code_aware else []),
             persona_value,
         )
     except Exception as e:
@@ -1604,8 +2142,33 @@ def apply_template(n_clicks, template_name, params_text):
             dash.no_update,
             dash.no_update,
             dash.no_update,
-            dash.no_update,
         )
+
+
+_PERSONA_QUERY_SETTINGS = {
+    "supervisor": (8, 0.2),
+    "researcher": (15, 0.5),
+    "assessor": (10, 0.3),
+}
+
+
+def _get_persona_query_settings(persona: Optional[str]) -> Optional[Tuple[int, float]]:
+    """Return the chunk and temperature preset for an academic persona."""
+    return _PERSONA_QUERY_SETTINGS.get(persona) if persona else None
+
+
+@callback(
+    Output("rag-query-k", "value", allow_duplicate=True),
+    Output("rag-query-temp", "value", allow_duplicate=True),
+    Input("rag-query-persona", "value"),
+    prevent_initial_call=True,
+)
+def apply_persona_query_settings(persona: Optional[str]):
+    """Apply academic persona presets to RAG Query Assistant controls."""
+    settings = _get_persona_query_settings(persona)
+    if settings is None:
+        return dash.no_update, dash.no_update
+    return settings
 
 
 # ============================================================================
@@ -1621,7 +2184,16 @@ def apply_template(n_clicks, template_name, params_text):
     prevent_initial_call=False,
 )
 def check_chromadb_status(n_clicks):
-    """Check if ChromaDB is available and show alert if not."""
+    """Check if ChromaDB is available and show alert if not.
+
+    Args:
+        n_clicks: Number of times the query run button has been clicked.
+    Returns:
+        Tuple containing:
+            - Alert content (HTML) if ChromaDB is unavailable or empty.
+            - CSS style for the alert (display: block/none).
+            - Boolean indicating if the query run button should be disabled.
+    """
     try:
         collection = _get_query_collection()
         if collection and collection.count() > 0:
@@ -1634,7 +2206,7 @@ def check_chromadb_status(n_clicks):
                     html.Strong("⚠️ Query Feature Unavailable"),
                     html.P(
                         "The document database is empty. Queries will not return results until data is re-ingested. "
-                        "Please run the ingestion process (ingest.py or ingest_git.py) to populate the database.",
+                        "Please run the ingestion process to populate the database.",
                         style={"margin": "8px 0"},
                     ),
                 ],
@@ -1691,11 +2263,68 @@ def check_chromadb_status(n_clicks):
 # ============================================================================
 
 
+def _build_query_chunk_details(chunks: list[Any], sources: list[dict[str, Any]]) -> list[Any]:
+    """Render retrieved chunks with stable IDs for answer citations."""
+    chunk_details = []
+    for chunk_number, chunk in enumerate(chunks, 1):
+        source = sources[chunk_number - 1] if chunk_number <= len(sources) else {}
+        source_title = (
+            source.get("display_name")
+            or source.get("title")
+            or source.get("doc_id")
+            or "Retrieved source"
+        )
+        section_title = source.get("heading_path") or source.get("chapter")
+        chunk_children: list[Any] = [
+            html.H5(f"Chunk {chunk_number}: {source_title}", style={"margin": "0 0 6px"}),
+        ]
+        if section_title:
+            chunk_children.append(html.P(str(section_title), style={"margin": "0 0 8px"}))
+        chunk_children.append(
+            html.Pre(
+                str(chunk),
+                style={
+                    "whiteSpace": "pre-wrap",
+                    "overflowWrap": "anywhere",
+                    "fontFamily": "inherit",
+                    "margin": 0,
+                },
+            )
+        )
+        chunk_details.append(
+            html.Div(
+                chunk_children,
+                id=f"rag-source-{chunk_number}",
+                style={
+                    "borderTop": "1px solid #ddd",
+                    "padding": "12px 0",
+                    "scrollMarginTop": "16px",
+                },
+            )
+        )
+    return chunk_details
+
+
+def _link_chunk_citations(answer: str, chunk_count: int) -> str:
+    """Point in-range chunk citations to their rendered source details."""
+
+    def replace_citation(match: re.Match[str]) -> str:
+        chunk_number = int(match.group(1))
+        if 1 <= chunk_number <= chunk_count:
+            return f"[Chunk {chunk_number}](#rag-source-{chunk_number})"
+        return match.group(0)
+
+    return re.sub(
+        r"\[Chunk\s+(\d+)\](?:\((?:[^()]|\([^()]*\))*\))?",
+        replace_citation,
+        answer,
+        flags=re.IGNORECASE,
+    )
+
+
 @callback(
     Output("rag-query-answer", "children"),
     Output("rag-query-sources", "children"),
-    Output("rag-query-code-preview", "children"),
-    Output("code-preview-container", "style"),
     Output("rag-query-metadata", "children"),
     Output("rag-query-explainability", "children"),
     Output("explainability-container", "style"),
@@ -1705,34 +2334,54 @@ def check_chromadb_status(n_clicks):
     State("rag-query-input", "value"),
     State("rag-query-k", "value"),
     State("rag-query-temp", "value"),
-    State("rag-query-code-aware", "value"),
     State("rag-query-persona", "value"),
     State("custom-role-input", "value"),
     State("date-range-filter", "start_date"),
     State("date-range-filter", "end_date"),
     State("confidence-filter", "value"),
-    State("result-type-filter", "value"),
     State("tags-filter-input", "value"),
     prevent_initial_call=True,
+    running=[
+        (Output("rag-query-busy", "children"), "Generating response...", ""),
+    ],
 )
 def run_rag_query(
     n_clicks,
     query_text,
     k_value,
     temp_value,
-    code_aware_list,
     persona_value,
     custom_role,
     start_date,
     end_date,
     min_confidence,
-    result_types,
     tags_filter,
 ):
-    """Execute RAG query with code-aware context, custom role, and filters."""
+    """Execute a thesis RAG query with custom role and filters.
+
+    Args:
+        n_clicks: Number of times the query run button has been clicked.
+        query_text: User input query text.
+        k_value: Number of top results to retrieve.
+        temp_value: Temperature setting for response generation.
+        persona_value: Selected persona for response generation.
+        custom_role: Custom role text for response generation.
+        start_date: Start date for date range filter.
+        end_date: End date for date range filter.
+        min_confidence: Minimum confidence threshold for filtering sources.
+        tags_filter: Comma-separated tags for filtering sources.
+    Returns:
+        Tuple containing:
+            - Answer content (HTML) for display.
+            - Sources content (HTML) for display.
+            - Metadata content (HTML) for display.
+            - Explainability content (HTML) for display.
+            - CSS style for explainability container (display: block/none).
+            - Status message (string) for display.
+            - Current query record ID (string) for tracking.
+    """
     if not n_clicks:
         return (
-            dash.no_update,
             dash.no_update,
             dash.no_update,
             dash.no_update,
@@ -1747,29 +2396,22 @@ def run_rag_query(
             "",
             "",
             "",
-            {"display": "none"},
-            "",
             "",
             {"display": "none"},
             "Enter a question to run the query.",
+            None,
         )
 
     try:
-        import re
         from datetime import datetime
 
         collection = _get_query_collection()
-        code_aware_enabled = code_aware_list and "enable" in code_aware_list
 
         # Prepare custom role (use only if provided and not empty)
         role_to_use = custom_role.strip() if custom_role and custom_role.strip() else None
         persona_to_use = None
         if persona_value and persona_value != "none":
             persona_to_use = persona_value
-
-        # Extract context signals from dashboard UI
-        enable_code_detection = code_aware_list and "enable" in code_aware_list
-        allow_code_category = result_types and "code" in result_types
 
         # Track system metrics during query execution
         manager = get_benchmark_manager()
@@ -1782,8 +2424,8 @@ def run_rag_query(
                     temperature=temp_value,
                     custom_role=role_to_use,
                     persona=persona_to_use,
-                    enable_code_detection=enable_code_detection,
-                    allow_code_category=allow_code_category,
+                    retrieval_filters={"source_kind": "thesis_document"},
+                    enable_thesis_graph=True,
                 )
                 # Store metrics for benchmark recording later
                 system_metrics_data = {"start": metrics["start"], "max": metrics["max"]}
@@ -1796,8 +2438,8 @@ def run_rag_query(
                 temperature=temp_value,
                 custom_role=role_to_use,
                 persona=persona_to_use,
-                enable_code_detection=enable_code_detection,
-                allow_code_category=allow_code_category,
+                retrieval_filters={"source_kind": "thesis_document"},
+                enable_thesis_graph=True,
             )
             system_metrics_data = None
 
@@ -1805,9 +2447,12 @@ def run_rag_query(
         if not isinstance(answer_md, str):
             answer_md = str(answer_md)
         sources = response.get("sources", []) or []
+        retrieved_sources = list(sources)
+        retrieved_chunks = response.get("chunks", []) or []
+        source_numbers = {id(source): index for index, source in enumerate(sources, 1)}
+        answer_md = _link_chunk_citations(answer_md, len(retrieved_chunks))
         gen_time = response.get("generation_time")
         total_time = response.get("total_time")
-        is_code_query = response.get("is_code_query", False)
         retrieval_count = response.get("retrieval_count", 0)
 
         # Apply filters to sources
@@ -1817,7 +2462,13 @@ def run_rag_query(
         if start_date or end_date:
 
             def _filter_by_date(source):
-                # Try to get creation date from source metadata
+                """Filter source by date.
+
+                Args:
+                    source: Source dictionary containing metadata.
+                Returns:
+                    True if source is within date range or has no date info, False otherwise.
+                """
                 created_date = source.get("created_date") or source.get("modified_date")
                 if not created_date:
                     return True  # Keep if no date info
@@ -1842,30 +2493,19 @@ def run_rag_query(
             max_distance = 2.0 * (1.0 - min_confidence / 100.0)
             filtered_sources = [s for s in filtered_sources if s.get("distance", 0) <= max_distance]
 
-        # Result type filter
-        if result_types and len(result_types) < 2:  # If not both selected
-            if "code" in result_types:
-                # Keep only code sources
-                filtered_sources = [
-                    s
-                    for s in filtered_sources
-                    if s.get("language") or "code" in s.get("doc_id", "").lower()
-                ]
-            elif "documents" in result_types:
-                # Keep only document sources (non-code)
-                filtered_sources = [
-                    s
-                    for s in filtered_sources
-                    if not s.get("language") and "code" not in s.get("doc_id", "").lower()
-                ]
-
         # Tags filter
         if tags_filter and tags_filter.strip():
             tags = [t.strip().lower() for t in tags_filter.split(",") if t.strip()]
             if tags:
 
                 def _has_matching_tag(source):
-                    # Check if any source tag matches filter tags
+                    """Check if source has any matching tags.
+
+                    Args:
+                        source: Source dictionary containing metadata.
+                    Returns:
+                        True if any source tag matches filter tags, False otherwise.
+                    """
                     source_tags = source.get("tags", [])
                     if not source_tags:
                         return False
@@ -1877,111 +2517,27 @@ def run_rag_query(
         # Use filtered sources for display
         sources = filtered_sources
 
-        # Extract code blocks for preview if code-aware and code query detected
-        code_preview_content = ""
-        code_preview_style = {"display": "none"}
-
-        if code_aware_enabled and is_code_query:
-            # Extract code blocks using regex
-            code_pattern = r"```(\w*)\n(.*?)\n```"
-            code_blocks = re.findall(code_pattern, answer_md, re.DOTALL)
-
-            if code_blocks:
-                code_preview_style = {"display": "block"}
-                code_items = []
-                for i, (lang, code_text) in enumerate(code_blocks):
-                    lang_display = lang if lang else "code"
-
-                    # Add line numbers
-                    lines = code_text.split("\n")
-                    max_line_num = len(lines)
-                    line_num_width = len(str(max_line_num))
-
-                    # Build line numbers and highlighted code
-                    line_items = []
-                    for line_idx, line in enumerate(lines, 1):
-                        line_items.append(
-                            html.Div(
-                                [
-                                    html.Span(
-                                        f"{line_idx:{line_num_width}}",
-                                        style={
-                                            "color": "#999",
-                                            "marginRight": "12px",
-                                            "fontFamily": "monospace",
-                                            "fontSize": "10px",
-                                            "userSelect": "none",
-                                        },
-                                    ),
-                                    html.Span(
-                                        line, style={"fontFamily": "monospace", "fontSize": "11px"}
-                                    ),
-                                ],
-                                style={
-                                    "display": "flex",
-                                    "whiteSpace": "pre-wrap",
-                                    "wordBreak": "break-all",
-                                },
-                            )
-                        )
-
-                    code_items.append(
-                        html.Div(
-                            [
-                                html.Div(
-                                    [
-                                        html.Span(
-                                            lang_display.upper(),
-                                            style={"fontWeight": 600, "fontSize": "10px"},
-                                        ),
-                                        html.Button(
-                                            "📋 Copy",
-                                            id={"type": "copy-code-btn", "index": i},
-                                            n_clicks=0,
-                                            title="Copy code to clipboard",
-                                            style={
-                                                "float": "right",
-                                                "padding": "4px 8px",
-                                                "fontSize": "10px",
-                                                "backgroundColor": "#e9ecef",
-                                                "border": "1px solid #dee2e6",
-                                                "borderRadius": "3px",
-                                                "cursor": "pointer",
-                                            },
-                                        ),
-                                    ],
-                                    style={
-                                        "fontWeight": 600,
-                                        "fontSize": "10px",
-                                        "marginBottom": "8px",
-                                        "display": "flex",
-                                        "justifyContent": "space-between",
-                                    },
-                                ),
-                                html.Div(
-                                    line_items,
-                                    style={
-                                        "backgroundColor": "#f5f5f5",
-                                        "padding": "8px",
-                                        "borderRadius": "4px",
-                                        "overflow": "auto",
-                                        "maxHeight": "250px",
-                                        "border": "1px solid #e0e0e0",
-                                    },
-                                ),
-                            ],
-                            style={"marginBottom": "12px"},
-                        )
-                    )
-                code_preview_content = code_items
-
         # Build source list with enhanced metadata (numbered to match chunk citations)
-        source_items = []
+        source_items: list[Any] = []
         for src in sources:
             label_parts = []
 
-            # Document identifier - prefer display_name for academic sources
-            if src.get("source_category") == "academic_reference":
+            # Thesis chunks share the academic source category with citations,
+            # but their structural metadata is the useful provenance for RAG.
+            if src.get("source_kind") == "thesis_document":
+                thesis_id = src.get("thesis_id") or src.get("doc_id")
+                if thesis_id:
+                    label_parts.append(str(thesis_id))
+                chapter = src.get("chapter")
+                section_title = src.get("section_title") or src.get("heading_path")
+                if chapter:
+                    label_parts.append(str(chapter))
+                if section_title and str(section_title) != str(chapter):
+                    label_parts.append(str(section_title))
+                if not chapter and not section_title:
+                    label_parts.append("Thesis chunk")
+            # Document identifier - prefer display_name for cited academic sources
+            elif src.get("source_category") == "academic_reference":
                 # For academic sources, try to look up the node data and get display name
                 doc_id = src.get("doc_id")
                 if doc_id:
@@ -2012,43 +2568,45 @@ def run_rag_query(
                         label_parts.append(str(src.get(key)))
                         break
 
-            # Code-specific metadata
-            if code_aware_enabled and is_code_query:
-                for key in ("language", "service", "doc_type"):
-                    if src.get(key):
-                        label_parts.append(str(src.get(key)))
-            else:
-                for key in ("language", "service", "doc_type"):
-                    if src.get(key):
-                        label_parts.append(str(src.get(key)))
-
             # Similarity score
             if src.get("score") is not None:
                 label_parts.append(f"score={src.get('score'):.3f}")
 
             # Only add source item if there are label parts
             if label_parts:
-                source_items.append(html.Li(" • ".join(label_parts)))
+                source_number = source_numbers.get(id(src))
+                source_label: Any = " • ".join(label_parts)
+                if source_number is not None and source_number <= len(retrieved_chunks):
+                    source_label = html.A(
+                        source_label,
+                        href=f"#rag-source-{source_number}",
+                    )
+                source_items.append(html.Li(source_label))
 
+        chunk_details = _build_query_chunk_details(retrieved_chunks, retrieved_sources)
+
+        source_content_children: list[Any] = []
         if not source_items:
-            source_content = html.Div("No sources returned", style={"color": "#777"})
+            source_content_children.append(html.Div("No sources returned", style={"color": "#777"}))
         else:
-            source_content = html.Ol(source_items, style={"paddingLeft": "20px"})
+            source_content_children.append(html.Ol(source_items, style={"paddingLeft": "20px"}))
+        if chunk_details:
+            source_content_children.extend(
+                [html.H4("Retrieved chunks", style={"marginBottom": "4px"}), *chunk_details]
+            )
+        source_content: Any = html.Div(source_content_children)
 
         # Build metadata display
         metadata_items = [
             html.Li(f"Query: {query_text[:80]}{'...' if len(query_text) > 80 else ''}"),
-            html.Li(f"Type: {'Code Query' if is_code_query else 'Governance Query'}"),
+            html.Li("Type: Thesis Query"),
             html.Li(f"Chunks Retrieved: {retrieval_count}"),
             html.Li(f"Generation Time: {gen_time:.2f}s"),
             html.Li(f"Total Time: {total_time:.2f}s"),
         ]
-        if code_aware_enabled:
-            metadata_items.append(html.Li("Code-Aware Context: Enabled"))
-
         # Build explainability display
         explainability = response.get("explainability", {})
-        explainability_content = ""
+        explainability_content: Any = ""
         explainability_style = {"display": "none"}
 
         if explainability:
@@ -2138,8 +2696,6 @@ def run_rag_query(
         return (
             answer_md,
             source_content,
-            code_preview_content,
-            code_preview_style,
             metadata_items,
             explainability_content,
             explainability_style,
@@ -2153,8 +2709,6 @@ def run_rag_query(
             "",
             error_div,
             "",
-            {"display": "none"},
-            "",
             "",
             {"display": "none"},
             "Query failed",
@@ -2167,7 +2721,13 @@ def run_rag_query(
     Input("cache-stats-interval", "n_intervals"),
 )
 def update_cache_stats(n_intervals):
-    """Update cache statistics from CacheDB."""
+    """Update cache statistics from CacheDB.
+
+    Args:
+        n_intervals: Number of intervals passed (from dcc.Interval).
+    Returns:
+        List of HTML elements displaying cache statistics.
+    """
     try:
         from scripts.ingest.ingest_config import get_ingest_config
 
@@ -2182,7 +2742,7 @@ def update_cache_stats(n_intervals):
         stats = cache.get_all_stats()
 
         # Build cache statistics display
-        cache_items = []
+        cache_items: List[Any] = []
 
         # Embeddings stats
         if "embeddings" in stats:
@@ -2249,7 +2809,14 @@ def update_cache_stats(n_intervals):
     prevent_initial_call=False,
 )
 def show_relevancy_feedback(record_id):
-    """Show relevancy feedback section when a query has been recorded."""
+    """Show relevancy feedback section when a query has been recorded.
+
+    Args:
+        record_id: ID of the current query record.
+
+    Returns:
+        Dictionary with CSS display property to show or hide the section.
+    """
     if record_id and record_id > 0:
         return {"display": "block"}
     return {"display": "none"}
@@ -2273,7 +2840,21 @@ def show_relevancy_feedback(record_id):
     prevent_initial_call=True,
 )
 def handle_relevancy_rating(r1, r2, r3, r4, r5, feedback_text, record_id):
-    """Handle star rating clicks and save to database."""
+    """Handle star rating clicks and save to database.
+
+    Args:
+        r1: Number of clicks on rating 1 star.
+        r2: Number of clicks on rating 2 star.
+        r3: Number of clicks on rating 3 star.
+        r4: Number of clicks on rating 4 star.
+        r5: Number of clicks on rating 5 star.
+        feedback_text: Text entered in the relevancy feedback textarea.
+        record_id: ID of the current query record.
+
+    Returns:
+        Tuple containing styles for each rating star, style for the feedback textarea,
+        and status message for the relevancy feedback.
+    """
     base_style = {
         "fontSize": "24px",
         "background": "none",
@@ -2369,7 +2950,20 @@ def handle_relevancy_rating(r1, r2, r3, r4, r5, feedback_text, record_id):
     prevent_initial_call=True,
 )
 def save_feedback_text(feedback_text, record_id, r1, r2, r3, r4, r5):
-    """Auto-save feedback text when it changes (if rating already given)."""
+    """Auto-save feedback text when it changes (if rating already given).
+
+    Args:
+        feedback_text: Text entered in the relevancy feedback textarea.
+        record_id: ID of the current query record.
+        r1: Number of clicks on rating 1 star.
+        r2: Number of clicks on rating 2 star.
+        r3: Number of clicks on rating 3 star.
+        r4: Number of clicks on rating 4 star.
+        r5: Number of clicks on rating 5 star.
+
+    Returns:
+        Status message for the relevancy feedback.
+    """
     if not record_id or record_id <= 0:
         return ""
 
@@ -2413,7 +3007,15 @@ def save_feedback_text(feedback_text, record_id, r1, r2, r3, r4, r5):
 
 
 def _build_connected_nodes_list(selected_doc, all_edges):
-    """Build list of connected nodes and relationships for details tab."""
+    """Build list of connected nodes and relationships for details tab.
+
+    Args:
+        selected_doc: ID of the currently selected document node.
+        all_edges: List of all edges in the graph.
+
+    Returns:
+        List of HTML elements representing connected nodes and their relationships.
+    """
     connected_edges = [
         edge
         for edge in all_edges
@@ -2519,7 +3121,16 @@ def _build_connected_nodes_list(selected_doc, all_edges):
     Input("selected-node-store", "data"),
 )
 def update_document_details(_, dropdown_value, selected_node):
-    """Load document details on demand."""
+    """Load document details on demand.
+
+    Args:
+        _: Click count for the details tab (unused).
+        dropdown_value: Selected document ID from the dropdown.
+        selected_node: Selected document ID from the graph.
+
+    Returns:
+        HTML content for the document details container.
+    """
     # Prioritise dropdown selection, then selected node from graph
     selected_doc = dropdown_value or selected_node
 
@@ -2577,14 +3188,6 @@ def update_document_details(_, dropdown_value, selected_node):
                                         html.Strong("Document Type:"),
                                         " ",
                                         node_data.get("doc_type", "N/A"),
-                                    ],
-                                    style={"marginBottom": "8px"},
-                                ),
-                                html.Div(
-                                    [
-                                        html.Strong("Language:"),
-                                        " ",
-                                        node_data.get("language", "N/A"),
                                     ],
                                     style={"marginBottom": "8px"},
                                 ),
@@ -2806,7 +3409,16 @@ def update_document_details(_, dropdown_value, selected_node):
     Input("selected-node-store", "data"),
 )
 def update_heatmap(_, node_count, selected_node):
-    """Generate risk heatmap (lazy loaded) with top-risk nodes sorted by relationship severity."""
+    """Generate risk heatmap (lazy loaded) with top-risk nodes sorted by relationship severity.
+
+    Args:
+        _: Click count for the heatmap tab (unused).
+        node_count: Number of nodes to display in the heatmap (from user input).
+        selected_node: Currently selected node (unused in this function).
+
+    Returns:
+        Tuple containing the heatmap graph component and a list of node IDs used in the heatmap.
+    """
     try:
         # Get all nodes
         all_node_ids = graph_store.get_node_ids()
@@ -2856,7 +3468,7 @@ def update_heatmap(_, node_count, selected_node):
                     row.append(0)
             matrix.append(row)
 
-        # Create heatmap with colourscale: white for 0 (no relationship), red for high severity
+        # Make zero-severity cells visible without implying that they are conflicts.
         # Build display labels for heatmap axes
         heatmap_labels = []
         for nid in node_ids:
@@ -2874,10 +3486,14 @@ def update_heatmap(_, node_count, selected_node):
             x=heatmap_labels,
             y=heatmap_labels,
             colorscale=[
-                [0, "white"],
-                [0.001, "lightblue"],
-                [1, "red"],
-            ],  # White for 0, red for high
+                [0, "#e5e7eb"],
+                [0.001, "#bfdbfe"],
+                [1, "#dc2626"],
+            ],
+            zmin=0,
+            zmax=1,
+            xgap=1,
+            ygap=1,
             hovertemplate=hovertemplate,
             name="Relationship Severity",
         )
@@ -2924,7 +3540,18 @@ def update_heatmap(_, node_count, selected_node):
     prevent_initial_call=True,
 )
 def update_heatmap_node_count(prev_clicks, next_clicks, input_value, current_value):
-    """Update heatmap node count via Previous/Next buttons or direct input."""
+    """Update heatmap node count via Previous/Next buttons or direct input.
+
+    Args:
+        prev_clicks: Number of clicks on the "Previous" button.
+        next_clicks: Number of clicks on the "Next" button.
+        input_value: Value entered in the input box.
+        current_value: Current value of the heatmap node count.
+
+    Returns:
+        Tuple containing the new heatmap node count, styles for the Previous and Next buttons,
+        and the value to display in the input box.
+    """
     from dash import callback_context
 
     if not callback_context.triggered:
@@ -2998,7 +3625,15 @@ def update_heatmap_node_count(prev_clicks, next_clicks, input_value, current_val
     prevent_initial_call=True,
 )
 def handle_heatmap_click(click_data, node_ids):
-    """Handle clicks on heatmap cells and select the document."""
+    """Handle clicks on heatmap cells and select the document.
+
+    Args:
+        click_data: Data from the heatmap click event.
+        node_ids: List of node IDs corresponding to the heatmap axes.
+
+    Returns:
+        Tuple containing the selected document ID for the dropdown and the selected node store.
+    """
     if not click_data or "points" not in click_data or len(click_data["points"]) == 0:
         raise PreventUpdate
 
@@ -3052,44 +3687,21 @@ def handle_heatmap_click(click_data, node_ids):
 
 
 @callback(
-    Output("document-selector", "value", allow_duplicate=True),
-    Output("selected-node-store", "data", allow_duplicate=True),
-    Input("dep-network-graph", "clickData"),
-    prevent_initial_call=True,
-)
-def handle_dep_network_click(click_data):
-    """Handle clicks on dependency network nodes and select the document."""
-    if not click_data or "points" not in click_data or len(click_data["points"]) == 0:
-        raise PreventUpdate
-
-    try:
-        point_data = click_data["points"][0]
-        # Plotly scatter node data stores the node ID in the customdata or label
-        clicked_node = point_data.get("customdata") or point_data.get("text")
-
-        if not clicked_node:
-            raise PreventUpdate
-
-        # Validate that the clicked node exists in graph store
-        if not graph_store.get_node(clicked_node):
-            print(f"Warning: Clicked node not found in store: {clicked_node}")
-            raise PreventUpdate
-
-        # Update both dropdown and selected node store
-        return clicked_node, clicked_node
-    except Exception as e:
-        print(f"Error in handle_dep_network_click: {e}")
-        raise PreventUpdate
-
-
-@callback(
     Output("document-selector", "options", allow_duplicate=True),
     Input("selected-node-store", "data"),
     State("document-selector", "options"),
     prevent_initial_call=True,
 )
 def ensure_dropdown_has_selected(selected_doc, current_options):
-    """Ensure the dropdown options contain the currently selected document for visibility."""
+    """Ensure the dropdown options contain the currently selected document for visibility.
+
+    Args:
+        selected_doc: Currently selected document ID from the graph or other source.
+        current_options: Current list of options in the dropdown.
+
+    Returns:
+        Updated list of options for the dropdown, ensuring the selected document is included.
+    """
     if not selected_doc:
         raise PreventUpdate
 
@@ -3108,19 +3720,42 @@ def ensure_dropdown_has_selected(selected_doc, current_options):
     prevent_initial_call=True,
 )
 def log_performance(perf_data):
-    """Persist performance snapshots to log for later benchmarking."""
+    """Persist timestamped performance snapshots to log for later benchmarking.
+
+    Args:
+        perf_data: Dictionary containing performance metrics from the dashboard.
+
+    Returns:
+        Empty string to satisfy the Output, as the log is written to a file.
+    """
     if not perf_data:
         raise PreventUpdate
 
-    try:
-        log_path = Path(LOGS_DIR) / "perf_metrics.log"
-        log_entry = json.dumps(perf_data)
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(log_entry + "\n")
-    except Exception as e:
-        print(f"Perf log write failed: {e}")
+    persist_performance_log(perf_data)
 
     return ""
+
+
+def persist_performance_log(perf_data: Dict[str, Any], logs_dir: Optional[str] = None) -> None:
+    """Append a timestamped dashboard performance event to the JSON Lines log.
+
+    Args:
+        perf_data: Dictionary containing performance metrics from the dashboard.
+        logs_dir: Optional directory to store the log file. Defaults to LOGS_DIR.
+
+    Returns:
+        None.
+    """
+    try:
+        log_path = Path(logs_dir or LOGS_DIR) / "perf_metrics.log"
+        log_payload = {
+            "recorded_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            **perf_data,
+        }
+        with open(log_path, "a", encoding="utf-8") as log_file:
+            log_file.write(json.dumps(log_payload) + "\n")
+    except Exception as exc:
+        print(f"Perf log write failed: {exc}")
 
 
 # ============================================================================
@@ -3129,7 +3764,11 @@ def log_performance(perf_data):
 
 
 def create_layout():
-    """Create the main application layout."""
+    """Create the main application layout.
+
+    Returns:
+        Dash HTML layout for the dashboard.
+    """
 
     graph_store.load_metadata()
     metadata = graph_store.get_metadata()
@@ -3167,8 +3806,7 @@ def create_layout():
     graph_filter = GraphFilter(graph_data)
 
     doc_types = graph_filter.get_available_doc_types()
-    languages = graph_filter.get_available_languages()
-    repositories = graph_filter.get_available_repositories()
+    pipeline_button, pipeline_panel = build_pipeline_components(RAG_CONFIG.environment)
 
     return html.Div(
         [
@@ -3374,72 +4012,6 @@ def create_layout():
                                                 value=[],
                                                 multi=True,
                                                 placeholder="Select document types...",
-                                            ),
-                                        ],
-                                        style={"marginBottom": "16px"},
-                                    ),
-                                    html.Div(
-                                        [
-                                            html.Label(
-                                                [
-                                                    html.Span(
-                                                        "Programming Languages:",
-                                                        title="Filter by programming language for code nodes",
-                                                        style={"cursor": "help"},
-                                                    ),
-                                                    html.Span(
-                                                        "\u2139\ufe0f",
-                                                        title="Useful when focusing code-only views.",
-                                                        style={
-                                                            "marginLeft": "6px",
-                                                            "cursor": "help",
-                                                            "color": "#667eea",
-                                                        },
-                                                    ),
-                                                ]
-                                            ),
-                                            dcc.Dropdown(
-                                                id="language-filter",
-                                                options=[
-                                                    {"label": lang, "value": lang}
-                                                    for lang in sorted(languages)
-                                                ],
-                                                value=[],
-                                                multi=True,
-                                                placeholder="Select languages...",
-                                            ),
-                                        ],
-                                        style={"marginBottom": "16px"},
-                                    ),
-                                    html.Div(
-                                        [
-                                            html.Label(
-                                                [
-                                                    html.Span(
-                                                        "Repositories:",
-                                                        title="Filter by repository source (Git repo)",
-                                                        style={"cursor": "help"},
-                                                    ),
-                                                    html.Span(
-                                                        "\u2139\ufe0f",
-                                                        title="Repository options come from node metadata or inferred from IDs.",
-                                                        style={
-                                                            "marginLeft": "6px",
-                                                            "cursor": "help",
-                                                            "color": "#667eea",
-                                                        },
-                                                    ),
-                                                ]
-                                            ),
-                                            dcc.Dropdown(
-                                                id="repository-filter",
-                                                options=[
-                                                    {"label": repo, "value": repo}
-                                                    for repo in sorted(repositories)
-                                                ],
-                                                value=[],
-                                                multi=True,
-                                                placeholder="Select repositories...",
                                             ),
                                         ],
                                         style={"marginBottom": "16px"},
@@ -3687,12 +4259,6 @@ def create_layout():
                                         className="tab-button",
                                     ),
                                     html.Button(
-                                        "🔗 Dependencies",
-                                        id="tab-dependencies",
-                                        n_clicks=0,
-                                        className="tab-button",
-                                    ),
-                                    html.Button(
                                         "📄 Details",
                                         id="tab-details",
                                         n_clicks=0,
@@ -3728,6 +4294,7 @@ def create_layout():
                                         n_clicks=0,
                                         className="tab-button",
                                     ),
+                                    pipeline_button,
                                     html.Button(
                                         "� Graph Analytics",
                                         id="tab-graph-analytics",
@@ -3889,6 +4456,32 @@ def create_layout():
                                                         style={
                                                             "display": "flex",
                                                             "gap": "16px",
+                                                            "marginBottom": "8px",
+                                                        },
+                                                    ),
+                                                    dcc.RadioItems(
+                                                        id="graph-view-mode",
+                                                        options=[
+                                                            {"label": " 2D", "value": "two_d"},
+                                                            {"label": " 3D", "value": "three_d"},
+                                                        ],
+                                                        value="two_d",
+                                                        labelStyle={"marginRight": "12px"},
+                                                        style={"marginBottom": "8px"},
+                                                    ),
+                                                    html.Button(
+                                                        "Reset 3D Camera",
+                                                        id="reset-3d-camera-btn",
+                                                        n_clicks=0,
+                                                        title="Restore the default 3D camera orientation.",
+                                                        style={
+                                                            "padding": "6px 12px",
+                                                            "fontSize": "13px",
+                                                            "backgroundColor": "#1f5f99",
+                                                            "color": "white",
+                                                            "border": "none",
+                                                            "borderRadius": "4px",
+                                                            "cursor": "pointer",
                                                             "marginBottom": "8px",
                                                         },
                                                     ),
@@ -4364,30 +4957,6 @@ def create_layout():
                                             html.Div(
                                                 [
                                                     html.Label(
-                                                        "Result Type",
-                                                        style={
-                                                            "fontWeight": 500,
-                                                            "fontSize": "12px",
-                                                        },
-                                                    ),
-                                                    dcc.Checklist(
-                                                        id="result-type-filter",
-                                                        options=[
-                                                            {
-                                                                "label": " Documents",
-                                                                "value": "documents",
-                                                            },
-                                                            {"label": " Code", "value": "code"},
-                                                        ],
-                                                        value=["documents", "code"],
-                                                        style={"marginBottom": "8px"},
-                                                    ),
-                                                ],
-                                                style={"marginBottom": "12px"},
-                                            ),
-                                            html.Div(
-                                                [
-                                                    html.Label(
                                                         "Tags Filter (comma-separated)",
                                                         style={
                                                             "fontWeight": 500,
@@ -4441,7 +5010,7 @@ def create_layout():
                                             html.Label("Question"),
                                             dcc.Textarea(
                                                 id="rag-query-input",
-                                                placeholder="Ask about governance, security, or code...",
+                                                placeholder="Ask about governance, security, or your thesis...",
                                                 style={
                                                     "width": "100%",
                                                     "height": "80px",
@@ -4486,22 +5055,6 @@ def create_layout():
                                                             0.6: "0.6",
                                                             1.0: "1.0",
                                                         },
-                                                    ),
-                                                ],
-                                                style={"marginBottom": "12px"},
-                                            ),
-                                            html.Div(
-                                                [
-                                                    dcc.Checklist(
-                                                        id="rag-query-code-aware",
-                                                        options=[
-                                                            {
-                                                                "label": " Code-Aware Context (detect & format code responses)",
-                                                                "value": "enable",
-                                                            }
-                                                        ],
-                                                        value=["enable"],
-                                                        style={"marginBottom": "12px"},
                                                     ),
                                                 ],
                                                 style={"marginBottom": "12px"},
@@ -4558,6 +5111,10 @@ def create_layout():
                                                 id="rag-query-status",
                                                 style={"marginLeft": "10px", "color": "#666"},
                                             ),
+                                            html.Span(
+                                                id="rag-query-busy",
+                                                style={"marginLeft": "10px", "color": "#667eea"},
+                                            ),
                                         ],
                                         style={"marginBottom": "16px"},
                                     ),
@@ -4593,6 +5150,7 @@ def create_layout():
                                             html.H4("Current Response", style={"marginTop": "0"}),
                                             dcc.Markdown(
                                                 id="rag-query-answer",
+                                                link_target="_self",
                                                 style={
                                                     "whiteSpace": "pre-wrap",
                                                     "lineHeight": "1.5",
@@ -4731,18 +5289,6 @@ def create_layout():
                                     ),
                                     html.Div(
                                         [
-                                            html.H4("Code Preview", style={"marginTop": "0"}),
-                                            html.Div(
-                                                id="rag-query-code-preview",
-                                                style={"display": "none"},
-                                            ),
-                                        ],
-                                        className="card",
-                                        id="code-preview-container",
-                                        style={"marginBottom": "12px", "display": "none"},
-                                    ),
-                                    html.Div(
-                                        [
                                             html.H4(
                                                 "Metadata & Query Info", style={"marginTop": "0"}
                                             ),
@@ -4765,7 +5311,9 @@ def create_layout():
                                         className="card",
                                     ),
                                     dcc.Store(
-                                        id="conversation-store", data={"id": "", "turns": []}
+                                        id="conversation-store",
+                                        data={"id": "", "turns": []},
+                                        storage_type="local",
                                     ),
                                     dcc.Store(id="current-query-record-id", data=None),
                                     html.Div(id="copy-feedback", style={"display": "none"}),
@@ -4774,201 +5322,6 @@ def create_layout():
                                     ),
                                 ],
                                 id="query-tab",
-                                style={"display": "none"},
-                                className="card",
-                            ),
-                            html.Div(
-                                [
-                                    html.H3("🔗 Service Dependencies", style={"marginTop": 0}),
-                                    html.Div(
-                                        [
-                                            html.Label("Top Services to Display:"),
-                                            html.Div(
-                                                [
-                                                    html.Button(
-                                                        "◀ Less",
-                                                        id="dep-node-prev",
-                                                        n_clicks=0,
-                                                        style={
-                                                            "padding": "8px 16px",
-                                                            "marginRight": "8px",
-                                                            "border": "1px solid #667eea",
-                                                            "background": "white",
-                                                            "color": "#667eea",
-                                                            "borderRadius": "4px",
-                                                            "cursor": "pointer",
-                                                            "fontSize": "14px",
-                                                            "fontWeight": "500",
-                                                        },
-                                                    ),
-                                                    html.Button(
-                                                        "More ▶",
-                                                        id="dep-node-next",
-                                                        n_clicks=0,
-                                                        style={
-                                                            "padding": "8px 16px",
-                                                            "border": "1px solid #667eea",
-                                                            "background": "white",
-                                                            "color": "#667eea",
-                                                            "borderRadius": "4px",
-                                                            "cursor": "pointer",
-                                                            "fontSize": "14px",
-                                                            "fontWeight": "500",
-                                                        },
-                                                    ),
-                                                    dcc.Input(
-                                                        id="dep-node-count-input",
-                                                        type="number",
-                                                        placeholder="Go to count...",
-                                                        min=10,
-                                                        max=500,
-                                                        step=10,
-                                                        style={
-                                                            "padding": "8px 12px",
-                                                            "border": "1px solid #ccc",
-                                                            "borderRadius": "4px",
-                                                            "fontSize": "14px",
-                                                            "width": "140px",
-                                                        },
-                                                    ),
-                                                ],
-                                                style={
-                                                    "marginBottom": "8px",
-                                                    "display": "flex",
-                                                    "gap": "8px",
-                                                    "alignItems": "center",
-                                                },
-                                            ),
-                                            dcc.Slider(
-                                                id="dep-node-count",
-                                                min=10,
-                                                max=500,
-                                                step=10,
-                                                value=50,
-                                                marks={i: str(i) for i in range(50, 550, 50)},
-                                                tooltip={
-                                                    "placement": "bottom",
-                                                    "always_visible": True,
-                                                },
-                                            ),
-                                        ],
-                                        style={"marginBottom": "16px"},
-                                    ),
-                                    html.Div(
-                                        [
-                                            html.Div(
-                                                [
-                                                    html.Div(
-                                                        [
-                                                            html.Label(
-                                                                "Metrics",
-                                                                style={
-                                                                    "fontWeight": 500,
-                                                                    "marginBottom": "8px",
-                                                                    "display": "block",
-                                                                },
-                                                            ),
-                                                            html.Div(
-                                                                [
-                                                                    html.Div(
-                                                                        id="dep-metric-services",
-                                                                        style={
-                                                                            "padding": "8px",
-                                                                            "backgroundColor": "#f0f0f0",
-                                                                            "borderRadius": "4px",
-                                                                            "marginBottom": "8px",
-                                                                        },
-                                                                    ),
-                                                                    html.Div(
-                                                                        id="dep-metric-internal-calls",
-                                                                        style={
-                                                                            "padding": "8px",
-                                                                            "backgroundColor": "#f0f0f0",
-                                                                            "borderRadius": "4px",
-                                                                            "marginBottom": "8px",
-                                                                        },
-                                                                    ),
-                                                                    html.Div(
-                                                                        id="dep-metric-shared-deps",
-                                                                        style={
-                                                                            "padding": "8px",
-                                                                            "backgroundColor": "#f0f0f0",
-                                                                            "borderRadius": "4px",
-                                                                            "marginBottom": "8px",
-                                                                        },
-                                                                    ),
-                                                                    html.Div(
-                                                                        id="dep-metric-circular",
-                                                                        style={
-                                                                            "padding": "8px",
-                                                                            "backgroundColor": "#f0f0f0",
-                                                                            "borderRadius": "4px",
-                                                                        },
-                                                                    ),
-                                                                ],
-                                                                style={"fontSize": "13px"},
-                                                            ),
-                                                        ],
-                                                        style={"marginBottom": "12px"},
-                                                    ),
-                                                    html.Div(
-                                                        [
-                                                            html.Label(
-                                                                "Info",
-                                                                style={
-                                                                    "fontWeight": 500,
-                                                                    "marginBottom": "8px",
-                                                                    "display": "block",
-                                                                },
-                                                            ),
-                                                            html.Div(
-                                                                id="dep-info-message",
-                                                                style={
-                                                                    "fontSize": "12px",
-                                                                    "color": "#666",
-                                                                    "paddingLeft": "8px",
-                                                                },
-                                                            ),
-                                                        ]
-                                                    ),
-                                                ],
-                                                style={"width": "100%", "maxWidth": "200px"},
-                                            ),
-                                            html.Div(
-                                                [
-                                                    html.H4(
-                                                        "Dependency Network",
-                                                        style={
-                                                            "marginTop": 0,
-                                                            "marginBottom": "12px",
-                                                        },
-                                                    ),
-                                                    dcc.Graph(
-                                                        id="dep-network-graph",
-                                                        style={"height": "600px"},
-                                                    ),
-                                                ],
-                                                style={"flex": "1"},
-                                            ),
-                                        ],
-                                        style={
-                                            "display": "flex",
-                                            "gap": "16px",
-                                            "marginBottom": "16px",
-                                        },
-                                    ),
-                                    html.Div(
-                                        [
-                                            html.H4("Service Call Matrix", style={"marginTop": 0}),
-                                            dcc.Graph(
-                                                id="dep-service-matrix", style={"height": "500px"}
-                                            ),
-                                        ],
-                                        className="card",
-                                        style={"marginBottom": "12px"},
-                                    ),
-                                ],
-                                id="dependencies-tab",
                                 style={"display": "none"},
                                 className="card",
                             ),
@@ -5129,6 +5482,13 @@ def create_layout():
                                     ),
                                     html.Div(
                                         [
+                                            dcc.Dropdown(
+                                                id="analytics-graph-source",
+                                                options=_get_analytics_graph_options(),
+                                                value="consistency",
+                                                clearable=False,
+                                                style={"width": "320px", "marginBottom": "12px"},
+                                            ),
                                             html.Div(
                                                 [
                                                     html.Button(
@@ -5559,6 +5919,16 @@ def create_layout():
                                                 options=[
                                                     {
                                                         "label": html.Span(
+                                                            "LLM: Readiness Evidence",
+                                                            title=(
+                                                                "Use LLM only to add source-grounded evidence "
+                                                                "notes to readiness criteria."
+                                                            ),
+                                                        ),
+                                                        "value": "readiness_evidence",
+                                                    },
+                                                    {
+                                                        "label": html.Span(
                                                             "LLM: Claims",
                                                             title="Use LLM to extract claims and detect contradictions.",
                                                         ),
@@ -5577,6 +5947,26 @@ def create_layout():
                                                             title="Use LLM to check if strong claims align with cited sources.",
                                                         ),
                                                         "value": "citation_misrep",
+                                                    },
+                                                    {
+                                                        "label": html.Span(
+                                                            "LLM: RQ Restatements",
+                                                            title=(
+                                                                "Use the local LLM to group clearly equivalent inquiry restatements "
+                                                                "across introduction and conclusion sections. Human review remains required."
+                                                            ),
+                                                        ),
+                                                        "value": "research_inquiry_reconciliation",
+                                                    },
+                                                    {
+                                                        "label": html.Span(
+                                                            "LLM: RQ Classification",
+                                                            title=(
+                                                                "Classify inquiry candidates and exclude non-RQ prompts. "
+                                                                "Uncertain or invalid responses fall back to deterministic labels."
+                                                            ),
+                                                        ),
+                                                        "value": "research_inquiry_classification",
                                                     },
                                                 ],
                                                 value=[],
@@ -5660,6 +6050,7 @@ def create_layout():
                                 style={"display": "none"},
                                 className="card",
                             ),
+                            pipeline_panel,
                         ],
                         style={"marginTop": "16px"},
                     ),
@@ -5696,39 +6087,40 @@ app.layout = create_layout
 @callback(
     [
         Output("doc-type-filter", "options"),
-        Output("language-filter", "options"),
-        Output("repository-filter", "options"),
         Output("topic-cluster-filter", "options"),
         Output("risk-cluster-filter", "options"),
     ],
     [
         Input("graph-tab", "n_clicks"),
-        Input("dependencies-tab", "style"),
         Input("show-singleton-clusters-toggle", "value"),
     ],
     prevent_initial_call=False,
 )
-def populate_filter_options(_graph_clicks, _dep_style, show_singletons):
-    """Populate filter dropdown options after graph loads."""
+def populate_filter_options(_graph_clicks, show_singletons):
+    """Populate filter dropdown options after graph loads.
+
+    Args:
+        _graph_clicks: Number of clicks on the graph tab.
+        show_singletons: Boolean indicating whether to show singleton clusters.
+
+    Returns:
+        Tuple of lists containing options for each filter dropdown.
+    """
     try:
         if graph_filter is None:
-            return [], [], [], [], []
+            return [], [], []
 
         doc_types = graph_filter.get_available_doc_types()
-        languages = graph_filter.get_available_languages()
-        repositories = graph_filter.get_available_repositories()
 
         # Convert to Dash dropdown format
         doc_type_opts = [{"label": dt, "value": dt} for dt in sorted(doc_types)]
-        lang_opts = [{"label": lang, "value": lang} for lang in sorted(languages)]
-        repo_opts = [{"label": repo, "value": repo} for repo in sorted(repositories)]
 
         # Cluster options with membership counts, sorted by size (descending) then label (ascending)
         topic_clusters = graph_filter.get_available_topic_clusters()
         risk_clusters = graph_filter.get_available_risk_clusters()
 
         # Get all topic cluster metadata and sort
-        topic_cluster_data = []
+        topic_cluster_data: List[Dict[str, Any]] = []
         for cid in topic_clusters:
             label = graph_filter.get_topic_cluster_filter_label(cid)
             # Extract size from label format "Label (N nodes)"
@@ -5748,7 +6140,7 @@ def populate_filter_options(_graph_clicks, _dep_style, show_singletons):
         ]
 
         # Get all risk cluster metadata and sort
-        risk_cluster_data = []
+        risk_cluster_data: List[Dict[str, Any]] = []
         for cid in risk_clusters:
             label = graph_filter.get_risk_cluster_filter_label(cid)
             # Extract size from label format "Label (N nodes)"
@@ -5766,28 +6158,34 @@ def populate_filter_options(_graph_clicks, _dep_style, show_singletons):
             if include_singletons or item["size"] > 1
         ]
 
-        return doc_type_opts, lang_opts, repo_opts, topic_opts, risk_opts
+        return doc_type_opts, topic_opts, risk_opts
     except Exception as e:
         print(f"Error populating filter options: {e}")
-        return [], [], [], [], []
+        return [], [], []
 
 
 @callback(
     Output("filters-summary-caption", "children"),
-    [Input("graph-tab", "n_clicks"), Input("dependencies-tab", "style")],
+    Input("graph-tab", "n_clicks"),
     prevent_initial_call=False,
 )
-def update_filters_summary(_graph_clicks, _dep_style):
-    """Update summary caption showing counts of available types/langs/repos."""
+def update_filters_summary(_graph_clicks):
+    """Update summary caption showing available document types and clusters.
+
+    Args:
+        _graph_clicks: Number of clicks on the graph tab.
+    Returns:
+        Summary caption string.
+    """
     try:
         if graph_filter is None:
             return ""
         types_count = len(graph_filter.get_available_doc_types() or [])
-        langs_count = len(graph_filter.get_available_languages() or [])
-        repos_count = len(graph_filter.get_available_repositories() or [])
         topics_count = len(graph_filter.get_available_topic_clusters() or [])
         risks_count = len(graph_filter.get_available_risk_clusters() or [])
-        return f"Types: {types_count} • Languages: {langs_count} • Repositories: {repos_count} • Topic Clusters: {topics_count} • Risk Clusters: {risks_count}"
+        return (
+            f"Types: {types_count} • Topic Clusters: {topics_count} • Risk Clusters: {risks_count}"
+        )
     except Exception as e:
         print(f"Error updating filters summary: {e}")
         return ""
@@ -5798,8 +6196,6 @@ def update_filters_summary(_graph_clicks, _dep_style):
     Input("apply-filters-btn", "n_clicks"),
     [
         State("doc-type-filter", "value"),
-        State("language-filter", "value"),
-        State("repository-filter", "value"),
         State("topic-cluster-filter", "value"),
         State("risk-cluster-filter", "value"),
         State("relationship-type-filter", "value"),
@@ -5810,14 +6206,24 @@ def update_filters_summary(_graph_clicks, _dep_style):
 def apply_filters(
     n_clicks,
     doc_types,
-    languages,
-    repositories,
     topic_clusters,
     risk_clusters,
     relationship_types,
     min_conflict,
 ):
-    """Apply selected filters and store filtered node list."""
+    """Apply selected filters and store filtered node list.
+
+    Args:
+        n_clicks: Number of clicks on the apply filters button.
+        doc_types: Selected document types.
+        topic_clusters: Selected topic clusters.
+        risk_clusters: Selected risk clusters.
+        relationship_types: Selected relationship types.
+        min_conflict: Minimum conflict value.
+
+    Returns:
+        Dictionary containing filtered nodes, active filters, relationship types, total filtered nodes, and total nodes.
+    """
     if not graph_store.get_node_ids():
         return {"filtered_nodes": [], "active_filters": {}, "relationship_types": []}
 
@@ -5826,12 +6232,6 @@ def apply_filters(
         filters = {}
         if doc_types:
             filters["doc_types"] = doc_types if isinstance(doc_types, list) else [doc_types]
-        if languages:
-            filters["languages"] = languages if isinstance(languages, list) else [languages]
-        if repositories:
-            filters["repositories"] = (
-                repositories if isinstance(repositories, list) else [repositories]
-            )
         if topic_clusters:
             filters["topic_clusters"] = (
                 topic_clusters if isinstance(topic_clusters, list) else [topic_clusters]
@@ -5875,8 +6275,6 @@ def apply_filters(
 @callback(
     [
         Output("doc-type-filter", "value"),
-        Output("language-filter", "value"),
-        Output("repository-filter", "value"),
         Output("topic-cluster-filter", "value"),
         Output("risk-cluster-filter", "value"),
         Output("relationship-type-filter", "value"),
@@ -5887,8 +6285,15 @@ def apply_filters(
     prevent_initial_call=True,
 )
 def reset_filters(n_clicks):
-    """Reset all filters to default values."""
-    return [], [], [], [], [], [], 0.0, []
+    """Reset all filters to default values.
+
+    Args:
+        n_clicks: Number of clicks on the reset filters button.
+
+    Returns:
+        Tuple containing default values for all filters.
+    """
+    return [], [], [], [], 0.0, []
 
 
 @callback(
@@ -5896,7 +6301,14 @@ def reset_filters(n_clicks):
     Input("filter-state-store", "data"),
 )
 def update_filter_stats(filter_state):
-    """Update filter statistics display."""
+    """Update filter statistics display.
+
+    Args:
+        filter_state: Dictionary containing the current filter state.
+
+    Returns:
+        String summarising the filter statistics.
+    """
     if not filter_state:
         return "No filters applied"
 
@@ -5911,10 +6323,6 @@ def update_filter_stats(filter_state):
             filter_desc = []
             if "doc_types" in active_filters:
                 filter_desc.append(f"Types: {', '.join(active_filters['doc_types'])}")
-            if "languages" in active_filters:
-                filter_desc.append(f"Languages: {', '.join(active_filters['languages'])}")
-            if "repositories" in active_filters:
-                filter_desc.append(f"Repos: {', '.join(active_filters['repositories'])}")
             if "topic_clusters" in active_filters:
                 filter_desc.append(
                     f"Topics: {', '.join(str(x) for x in active_filters['topic_clusters'])}"
@@ -5940,7 +6348,15 @@ def update_filter_stats(filter_state):
     Input("nodes-per-page-selector", "value"),
 )
 def update_slider_max(filter_state, nodes_per_page):
-    """Update page slider max value based on filtered nodes and page size."""
+    """Update page slider max value based on filtered nodes and page size.
+
+    Args:
+        filter_state: Dictionary containing the current filter state.
+        nodes_per_page: Number of nodes displayed per page.
+
+    Returns:
+        Maximum number of pages for the page slider.
+    """
     if not filter_state or not filter_state.get("filtered_nodes"):
         total_nodes = len(graph_store.get_node_ids())
     else:
@@ -5967,7 +6383,18 @@ def update_slider_max(filter_state, nodes_per_page):
     prevent_initial_call=True,
 )
 def navigate_pages(prev_clicks, next_clicks, input_value, current_page, max_page):
-    """Handle previous/next button navigation and direct page input for accessibility."""
+    """Handle previous/next button navigation and direct page input for accessibility.
+
+    Args:
+        prev_clicks: Number of clicks on the previous page button.
+        next_clicks: Number of clicks on the next page button.
+        input_value: Value entered in the page input field.
+        current_page: Current page index (0-based).
+        max_page: Maximum page index (0-based).
+
+    Returns:
+        Tuple containing new page index, previous button disabled state, next button disabled state, and new input value (1-based).
+    """
     from dash import ctx
 
     if not ctx.triggered:
@@ -6000,7 +6427,15 @@ def navigate_pages(prev_clicks, next_clicks, input_value, current_page, max_page
     prevent_initial_call=True,
 )
 def update_button_states(current_page, max_page):
-    """Update button disabled states when slider value changes."""
+    """Update button disabled states when slider value changes.
+
+    Args:
+        current_page: Current page index (0-based).
+        max_page: Maximum page index (0-based).
+
+    Returns:
+        Tuple containing previous button disabled state and next button disabled state.
+    """
     prev_disabled = current_page <= 0
     next_disabled = current_page >= max_page
     return prev_disabled, next_disabled
@@ -6015,7 +6450,14 @@ def update_button_states(current_page, max_page):
     prevent_initial_call=True,
 )
 def apply_filters_to_graph(filter_state):
-    """Apply filters and reset page to 0."""
+    """Apply filters and reset page to 0.
+
+    Args:
+        filter_state: Current state of the filters.
+
+    Returns:
+        Tuple containing updated graph container children and slider value.
+    """
     if not filter_state:
         return dash.no_update, dash.no_update
 
@@ -6031,7 +6473,15 @@ def apply_filters_to_graph(filter_state):
     prevent_initial_call=True,
 )
 def update_selected_node(click_data, dropdown_value):
-    """Update selected node from graph click or dropdown selection."""
+    """Update selected node from graph click or dropdown selection.
+
+    Args:
+        click_data: Data from the graph click event.
+        dropdown_value: Value selected in the document dropdown.
+
+    Returns:
+        Tuple containing the selected node ID for the store and the dropdown.
+    """
     from dash import ctx
 
     if not ctx.triggered:
@@ -6040,10 +6490,9 @@ def update_selected_node(click_data, dropdown_value):
     trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
 
     if trigger_id == "graph-figure" and click_data:
-        # Extract node ID from click data
+        # Prefer customdata, which carries the stable node ID in both 2D and 3D views.
         point = click_data.get("points", [{}])[0]
-        # The text field contains the node ID
-        selected_node = point.get("text", None)
+        selected_node = point.get("customdata") or point.get("text")
         # Update both store and dropdown
         return selected_node, selected_node
     elif trigger_id == "document-selector" and dropdown_value:
@@ -6058,10 +6507,10 @@ def update_selected_node(click_data, dropdown_value):
     Output("details-tab", "style"),
     Output("heatmap-tab", "style"),
     Output("query-tab", "style"),
-    Output("dependencies-tab", "style"),
     Output("conversation-browser-tab", "style"),
     Output("citation-graph-tab", "style"),
     Output("assessment-tab", "style"),
+    Output("pipelines-tab", "style"),
     Output("graph-analytics-tab", "style"),
     Output("metrics-tab", "style"),
     Output("benchmarks-tab", "style"),
@@ -6070,10 +6519,10 @@ def update_selected_node(click_data, dropdown_value):
     Output("tab-details", "className"),
     Output("tab-heatmap", "className"),
     Output("tab-query", "className"),
-    Output("tab-dependencies", "className"),
     Output("tab-conversations", "className"),
     Output("tab-citation-graph", "className"),
     Output("tab-assessment", "className"),
+    Output("tab-pipelines", "className"),
     Output("tab-graph-analytics", "className"),
     Output("tab-metrics", "className"),
     Output("tab-benchmarks", "className"),
@@ -6082,10 +6531,10 @@ def update_selected_node(click_data, dropdown_value):
     Input("tab-details", "n_clicks"),
     Input("tab-heatmap", "n_clicks"),
     Input("tab-query", "n_clicks"),
-    Input("tab-dependencies", "n_clicks"),
     Input("tab-conversations", "n_clicks"),
     Input("tab-citation-graph", "n_clicks"),
     Input("tab-assessment", "n_clicks"),
+    Input("tab-pipelines", "n_clicks"),
     Input("tab-graph-analytics", "n_clicks"),
     Input("tab-metrics", "n_clicks"),
     Input("tab-benchmarks", "n_clicks"),
@@ -6096,16 +6545,34 @@ def switch_tabs(
     details_clicks,
     heatmap_clicks,
     query_clicks,
-    dependencies_clicks,
     conversations_clicks,
     citation_graph_clicks,
     assessment_clicks,
+    pipelines_clicks,
     analytics_clicks,
     metrics_clicks,
     benchmarks_clicks,
     references_clicks,
 ):
-    """Toggle tab visibility and active styles."""
+    """Toggle tab visibility and active styles.
+
+    Args:
+        graph_clicks: Number of clicks on the graph tab button.
+        details_clicks: Number of clicks on the details tab button.
+        heatmap_clicks: Number of clicks on the heatmap tab button.
+        query_clicks: Number of clicks on the query tab button.
+        conversations_clicks: Number of clicks on the conversations tab button.
+        citation_graph_clicks: Number of clicks on the citation graph tab button.
+        assessment_clicks: Number of clicks on the assessment tab button.
+        pipelines_clicks: Number of clicks on the pipelines tab button.
+        analytics_clicks: Number of clicks on the graph analytics tab button.
+        metrics_clicks: Number of clicks on the metrics tab button.
+        benchmarks_clicks: Number of clicks on the benchmarks tab button.
+        references_clicks: Number of clicks on the academic references tab button.
+
+    Returns:
+        Tuple containing the styles for each content tab and the class names for each tab button.
+    """
     ctx = dash.callback_context
     active = "tab-graph"
     if ctx.triggered:
@@ -6118,10 +6585,10 @@ def switch_tabs(
         "tab-details": "details-tab",
         "tab-heatmap": "heatmap-tab",
         "tab-query": "query-tab",
-        "tab-dependencies": "dependencies-tab",
         "tab-conversations": "conversation-browser-tab",
         "tab-citation-graph": "citation-graph-tab",
         "tab-assessment": "assessment-tab",
+        "tab-pipelines": "pipelines-tab",
         "tab-graph-analytics": "graph-analytics-tab",
         "tab-metrics": "metrics-tab",
         "tab-benchmarks": "benchmarks-tab",
@@ -6132,9 +6599,23 @@ def switch_tabs(
     print(f"DEBUG: Active content div: {active_content}")  # Debug output
 
     def style_for(content_id: str) -> Dict[str, str]:
+        """Return style dict for content div based on active content.
+
+        Args:
+            content_id: ID of the content div.
+        Returns:
+            Style dict with display property set to 'block' if active, else 'none'.
+        """
         return {"display": "block"} if content_id == active_content else {"display": "none"}
 
     def class_for(button_id: str) -> str:
+        """Return class name for tab button based on active button.
+
+        Args:
+            button_id: ID of the tab button.
+        Returns:
+            Class name string, 'tab-button active' if active, else 'tab-button'.
+        """
         base = "tab-button"
         return f"{base} active" if button_id == active else base
 
@@ -6143,10 +6624,10 @@ def switch_tabs(
         style_for("details-tab"),
         style_for("heatmap-tab"),
         style_for("query-tab"),
-        style_for("dependencies-tab"),
         style_for("conversation-browser-tab"),
         style_for("citation-graph-tab"),
         style_for("assessment-tab"),
+        style_for("pipelines-tab"),
         style_for("graph-analytics-tab"),
         style_for("metrics-tab"),
         style_for("benchmarks-tab"),
@@ -6155,10 +6636,10 @@ def switch_tabs(
         class_for("tab-details"),
         class_for("tab-heatmap"),
         class_for("tab-query"),
-        class_for("tab-dependencies"),
         class_for("tab-conversations"),
         class_for("tab-citation-graph"),
         class_for("tab-assessment"),
+        class_for("tab-pipelines"),
         class_for("tab-graph-analytics"),
         class_for("tab-metrics"),
         class_for("tab-benchmarks"),
@@ -6171,7 +6652,17 @@ def switch_tabs(
     Input("academic-references-tab", "style"),
 )
 def populate_academic_references_tab(style):
-    """Populate the academic references tab with visualisation when it becomes visible."""
+    """Populate the academic references tab with visualisation when it becomes visible.
+
+    Args:
+        style: The style dictionary of the academic references tab, used to determine visibility.
+
+    Returns:
+        A Dash HTML Div containing the academic references content, or a message if the database is not found or an error occurs.
+
+    Raises:
+        PreventUpdate: If the tab is not visible (display is not 'block'), to prevent unnecessary updates.
+    """
     print(f"DEBUG: populate_academic_references_tab() called with style={style}")
 
     # Only populate when tab is visible (display: block)
@@ -6204,7 +6695,7 @@ def populate_academic_references_tab(style):
         module = _get_global_module()
         if not module:
             print("DEBUG: Module not initialised at startup, creating now...")
-            module = AcademicReferences(str(terminology_db_path))
+            module = AcademicReferences(terminology_db_path)
             _set_global_module(module)
         else:
             print("DEBUG: Using module initialised at startup")
@@ -6310,7 +6801,17 @@ def populate_academic_references_tab(style):
     Input("citation-graph-tab", "style"),
 )
 def populate_citation_graph_tab(style):
-    """Populate the citation graph tab when it becomes visible."""
+    """Populate the citation graph tab when it becomes visible.
+
+    Args:
+        style: The style dictionary of the citation graph tab, used to determine visibility.
+
+    Returns:
+        A Dash HTML Div containing the citation graph content, or a message if an error occurs.
+
+    Raises:
+        PreventUpdate: If the tab is not visible (display is not 'block'), to prevent unnecessary updates.
+    """
     if not style or style.get("display") != "block":
         raise PreventUpdate
 
@@ -6333,24 +6834,22 @@ def populate_citation_graph_tab(style):
     State("assessment-doc-dropdown", "value"),
 )
 def populate_assessment_doc_options(style, current_selection):
-    """Populate assessment document dropdown when visible."""
+    """Populate assessment document dropdown when visible.
+
+    Args:
+        style: The style dictionary of the assessment tab, used to determine visibility.
+        current_selection: The currently selected assessment document ID.
+
+    Returns:
+        A tuple containing the options for the assessment document dropdown and the selected value.
+
+    Raises:
+        PreventUpdate: If the tab is not visible (display is not 'block'), to prevent unnecessary updates.
+    """
     if not style or style.get("display") != "block":
         raise PreventUpdate
 
-    collection = _get_query_collection()
-    all_docs = collection.get(include=["metadatas"])
-    doc_ids = sorted(
-        set(meta.get("doc_id", "") for meta in all_docs.get("metadatas", []) if meta.get("doc_id"))
-    )
-
-    options = [{"label": doc_id, "value": doc_id} for doc_id in doc_ids]
-
-    if current_selection and current_selection in doc_ids:
-        selected = current_selection
-    else:
-        selected = doc_ids[0] if doc_ids else None
-
-    return options, selected
+    return _load_assessment_doc_options(current_selection)
 
 
 @callback(
@@ -6361,7 +6860,19 @@ def populate_assessment_doc_options(style, current_selection):
     State("assessment-doc-dropdown", "value"),
 )
 def populate_academic_doc_options(style, domain, assessment_doc_id):
-    """Populate academic references document dropdown when visible."""
+    """Populate academic references document dropdown when visible.
+
+    Args:
+        style: The style dictionary of the academic references tab, used to determine visibility.
+        domain: The selected academic domain from the domain dropdown.
+        assessment_doc_id: The currently selected assessment document ID.
+
+    Returns:
+        A tuple containing the options for the academic references document dropdown and the selected value.
+
+    Raises:
+        PreventUpdate: If the tab is not visible (display is not 'block'), to prevent unnecessary updates.
+    """
     if not style or style.get("display") != "block":
         raise PreventUpdate
 
@@ -6382,6 +6893,335 @@ def populate_academic_doc_options(style, domain, assessment_doc_id):
     return options, selected
 
 
+def build_examiner_readiness_panel(
+    readiness: Any,
+    graph_evidence: Dict[str, List[str]],
+) -> Any:
+    """Render evidence-based readiness assistance without examination outcomes.
+
+    Args:
+        readiness: An object containing readiness criteria and human review priorities.
+        graph_evidence: Graph-linked source chunk IDs keyed by criterion name.
+
+    Returns:
+        A Dash HTML Div containing the readiness panel.
+    """
+    status_labels = {
+        "evidence_present": "Evidence present",
+        "evidence_incomplete": "Evidence incomplete",
+        "needs_human_review": "Human review required",
+        "not_applicable": "Not applicable",
+    }
+    status_colours = {
+        "evidence_present": "#1f5f99",
+        "evidence_incomplete": "#a15c00",
+        "needs_human_review": "#9a3412",
+        "not_applicable": "#4b5563",
+    }
+    criteria_by_name = {criterion.criterion: criterion for criterion in readiness.criteria}
+    ordered_names = list(getattr(readiness, "human_review_priorities", []))
+    ordered_names.extend(
+        criterion.criterion
+        for criterion in readiness.criteria
+        if criterion.criterion not in ordered_names
+    )
+
+    criterion_items = []
+    for criterion_name in ordered_names:
+        criterion = criteria_by_name[criterion_name]
+        status = criterion.status
+        linked_chunk_count = len(graph_evidence.get(criterion_name, []))
+        evidence_items = [
+            html.Li(evidence, style={"fontSize": "12px", "marginBottom": "4px"})
+            for evidence in criterion.evidence
+        ]
+        criterion_items.append(
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            html.Strong(criterion.criterion.replace("_", " ").title()),
+                            html.Span(
+                                status_labels[status],
+                                style={
+                                    "marginLeft": "8px",
+                                    "fontSize": "12px",
+                                    "fontWeight": "bold",
+                                    "color": status_colours[status],
+                                },
+                            ),
+                            html.Span(
+                                f"Confidence: {criterion.confidence:.0%}",
+                                style={"marginLeft": "8px", "fontSize": "12px", "color": "#4b5563"},
+                            ),
+                        ]
+                    ),
+                    html.P(criterion.reason, style={"fontSize": "13px", "margin": "6px 0"}),
+                    html.P(
+                        f"Evidence source: {criterion.source}",
+                        style={"fontSize": "12px", "color": "#4b5563", "margin": "4px 0"},
+                    ),
+                    html.P(
+                        f"Graph-linked thesis chunks: {linked_chunk_count}",
+                        style={"fontSize": "12px", "color": "#4b5563", "margin": "4px 0"},
+                    ),
+                    (
+                        html.Details(
+                            [
+                                html.Summary(
+                                    "View evidence", style={"fontSize": "12px", "cursor": "pointer"}
+                                ),
+                                html.P(
+                                    "Sections: " + ", ".join(criterion.source_sections),
+                                    style={"fontSize": "12px", "margin": "6px 0"},
+                                ),
+                                html.Ul(
+                                    evidence_items, style={"margin": "4px 0", "paddingLeft": "20px"}
+                                ),
+                            ]
+                        )
+                        if evidence_items
+                        else html.Div()
+                    ),
+                ],
+                style={
+                    "padding": "12px",
+                    "borderLeft": f"3px solid {status_colours[status]}",
+                    "backgroundColor": "#f8fafc",
+                    "marginBottom": "8px",
+                },
+            )
+        )
+
+    return html.Div(
+        [
+            html.H4("Examiner Readiness Evidence"),
+            html.P(readiness.notice, style={"fontSize": "13px", "color": "#4b5563"}),
+            *criterion_items,
+        ],
+        className="card",
+        style={"marginBottom": "16px"},
+    )
+
+
+def build_cultural_lens_assessment_panel(profile: Dict[str, Any], evidence: List[Dict[str, Any]]):
+    """Render cultural-profile indicators as human-review evidence, not scores.
+
+    Args:
+        profile: The cultural lens profile containing assessment criteria.
+        evidence: List of evidence dictionaries corresponding to the profile's criteria.
+
+    Returns:
+        A Dash HTML Div element containing the rendered cultural lens assessment panel.
+    """
+    is_draft = profile.get("status") != "approved"
+    return html.Div(
+        [
+            html.H4(f"Cultural Lens Review: {profile.get('name', profile['profile_id'])}"),
+            html.P(
+                (
+                    "Draft cultural lens: development use only. Evidence matches are suggestions "
+                    "for human review, not findings or grades."
+                    if is_draft
+                    else "Evidence matches are suggestions for human review, not findings or grades."
+                ),
+                style={"fontSize": "13px", "color": "#4b5563"},
+            ),
+            *[
+                html.Div(
+                    [
+                        html.Strong(item.get("criterion", item.get("id", "Criterion"))),
+                        html.P(item.get("description", ""), style={"fontSize": "13px"}),
+                        html.P(
+                            f"Criterion review status: {item.get('review_status') or 'unspecified'}",
+                            style={"fontSize": "12px", "color": "#6b7280"},
+                        ),
+                        html.P(
+                            (
+                                "Potential indicator matches: "
+                                + ", ".join(
+                                    sorted(
+                                        {
+                                            indicator
+                                            for match in item.get("indicator_matches", [])
+                                            for indicator in match.get("matched_indicators", [])
+                                        }
+                                    )
+                                )
+                                if item.get("indicator_matches")
+                                else "No configured indicator matched; this does not establish absence."
+                            ),
+                            style={"fontSize": "12px", "color": "#4b5563"},
+                        ),
+                        *[
+                            html.Details(
+                                [
+                                    html.Summary(
+                                        f"{match['section']} · chunk {match['chunk_id']}",
+                                        style={"fontSize": "12px", "cursor": "pointer"},
+                                    ),
+                                    *[
+                                        html.Div(
+                                            [
+                                                html.Strong(evidence["indicator"]),
+                                                html.P(
+                                                    evidence["text"],
+                                                    style={"fontSize": "12px"},
+                                                ),
+                                                html.P(
+                                                    (
+                                                        f"Source characters {evidence['source_start']}-"
+                                                        f"{evidence['source_end']}"
+                                                        if isinstance(
+                                                            evidence.get("source_start"), int
+                                                        )
+                                                        and isinstance(
+                                                            evidence.get("source_end"), int
+                                                        )
+                                                        else "Source offset unavailable"
+                                                    ),
+                                                    style={"fontSize": "11px", "color": "#6b7280"},
+                                                ),
+                                            ],
+                                            style={"marginTop": "6px"},
+                                        )
+                                        for evidence in match.get("indicator_evidence", [])
+                                    ],
+                                    *(
+                                        [
+                                            html.P(
+                                                match["text"],
+                                                style={"fontSize": "12px"},
+                                            )
+                                        ]
+                                        if not match.get("indicator_evidence")
+                                        else []
+                                    ),
+                                ],
+                                style={"marginTop": "6px"},
+                            )
+                            for match in item.get("indicator_matches", [])
+                        ],
+                    ],
+                    style={
+                        "padding": "12px",
+                        "borderLeft": "3px solid #0f766e",
+                        "backgroundColor": "#f8fafc",
+                        "marginBottom": "8px",
+                    },
+                )
+                for item in evidence
+            ],
+        ],
+        className="card",
+        style={"marginBottom": "16px"},
+    )
+
+
+def _format_confirmed_research_inquiries(
+    structure_analysis: Any,
+    confirmed: Optional[List[Dict[str, str]]],
+) -> str:
+    """Format the current inquiry set as editable, ID/type-labelled lines.
+
+    Args:
+        structure_analysis: The structure analysis object containing research questions.
+        confirmed: A list of confirmed research inquiries, each represented as a dictionary with keys "id", "parent_id", "type", and "text".
+
+    Returns:
+        A string representing the formatted research inquiries, one per line.
+    """
+    if confirmed is not None:
+        inquiries = confirmed
+    else:
+        inquiry_ids = getattr(structure_analysis, "research_inquiry_ids", {})
+        parent_ids = getattr(structure_analysis, "research_inquiry_parent_ids", {})
+        inquiry_types = getattr(structure_analysis, "research_inquiry_types", {})
+        inquiries = [
+            {
+                "id": inquiry_ids.get(question, f"RQ{index}"),
+                "parent_id": parent_ids.get(question, ""),
+                "type": inquiry_types.get(question, "research_question"),
+                "text": question,
+            }
+            for index, question in enumerate(structure_analysis.research_questions, start=1)
+        ]
+    return "\n".join(
+        f"{item['id']} [{item.get('type', 'research_question')}]: {item['text']}"
+        for item in inquiries
+    )
+
+
+def _parse_confirmed_research_inquiries(text: str) -> List[Dict[str, str]]:
+    """Parse and validate reviewer-edited RQ lines while deriving parent IDs.
+
+    Args:
+        text: The text containing reviewer-edited research inquiries, one per line.
+
+    Returns:
+        A list of dictionaries representing the parsed research inquiries, each with keys "id", "parent_id", "type", and "text".
+
+    Raises:
+        ValueError: If any line does not conform to the expected format or contains invalid data.
+    """
+    import re
+
+    allowed_types = {
+        "research_question",
+        "sub_question",
+        "aim",
+        "objective",
+        "hypothesis",
+        "guiding_question",
+    }
+    records: List[Dict[str, str]] = []
+    seen_ids: set[str] = set()
+    line_pattern = re.compile(
+        r"^\s*(RQ\d+(?:[A-Za-z]|\.\d+)*)\s+\[([a-z_]+)\]\s*:\s*(.*?)\s*$",
+        re.IGNORECASE,
+    )
+    parent_pattern = re.compile(r"^(RQ\d+(?:\.\d+)*)(?:[A-Z]|\.\d+)$")
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        match = line_pattern.fullmatch(line)
+        if not match:
+            raise ValueError(f"Line {line_number} must use 'RQ1 [type]: inquiry text' format")
+        inquiry_id, inquiry_type, inquiry_text = match.groups()
+        inquiry_id = inquiry_id.upper()
+        inquiry_type = inquiry_type.casefold()
+        inquiry_text = " ".join(inquiry_text.split())
+        if inquiry_type not in allowed_types:
+            raise ValueError(f"Line {line_number} has unsupported inquiry type {inquiry_type!r}")
+        if not inquiry_text:
+            raise ValueError(f"Line {line_number} has empty inquiry text")
+        if inquiry_id in seen_ids:
+            raise ValueError(f"Inquiry ID {inquiry_id!r} is repeated")
+        seen_ids.add(inquiry_id)
+        records.append(
+            {
+                "id": inquiry_id,
+                "parent_id": "",
+                "type": inquiry_type,
+                "text": inquiry_text,
+            }
+        )
+
+    for record in records:
+        parent_match = parent_pattern.fullmatch(record["id"])
+        if parent_match:
+            record["parent_id"] = parent_match.group(1)
+            if record["parent_id"] not in seen_ids:
+                raise ValueError(
+                    f"Parent inquiry {record['parent_id']!r} for {record['id']!r} is missing"
+                )
+            if record["type"] != "sub_question":
+                raise ValueError(
+                    f"Nested inquiry ID {record['id']!r} must have type 'sub_question'"
+                )
+    return records
+
+
 @callback(
     Output("assessment-report", "children"),
     Input("assessment-tab", "style"),
@@ -6389,9 +7229,35 @@ def populate_academic_doc_options(style, domain, assessment_doc_id):
     Input("assessment-persona-dropdown", "value"),
     Input("assessment-llm-toggle", "value"),
     Input("assessment-issue-limit", "value"),
+    Input("assessment-rq-confirm", "n_clicks", allow_optional=True),
+    State("assessment-rq-editor", "value", allow_optional=True),
 )
-def update_assessment_report(style, selected_doc_id, persona, llm_toggle, issue_limit):
-    """Render assessment report for selected document and persona."""
+def update_assessment_report(
+    style,
+    selected_doc_id,
+    persona,
+    llm_toggle,
+    issue_limit,
+    confirm_rq_clicks,
+    inquiry_editor_text,
+):
+    """Render assessment report for selected document and persona.
+
+    Args:
+        style: The style dictionary of the assessment tab, used to determine visibility.
+        selected_doc_id: The ID of the selected assessment document.
+        persona: The selected persona for the assessment.
+        llm_toggle: The value of the LLM toggle, indicating which LLM features to use.
+        issue_limit: The maximum number of issues to display in the report.
+        confirm_rq_clicks: Number of times the reviewer confirmed the RQ set.
+        inquiry_editor_text: Edited inquiry lines from the Assessment panel.
+
+    Returns:
+        A Dash HTML component containing the assessment report.
+
+    Raises:
+        PreventUpdate: If the tab is not visible (display is not 'block') or no document is selected.
+    """
     if not style or style.get("display") != "block":
         raise PreventUpdate
     if not selected_doc_id:
@@ -6400,19 +7266,72 @@ def update_assessment_report(style, selected_doc_id, persona, llm_toggle, issue_
     try:
         from scripts.ingest.academic.phd_assessor import PhDQualityAssessor
         from scripts.rag.generate import _get_llm
+        from scripts.thesis_graph.cultural_lenses import get_assigned_cultural_lens_profile
 
         collection = _get_query_collection()
+        from pathlib import Path
+
+        from scripts.thesis_graph.thesis_registry import ThesisRegistry
+
+        registry_path = Path(RAG_CONFIG.rag_data_path) / "thesis_graphs" / "registry.sqlite"
+        registry = ThesisRegistry(registry_path)
+        registry_record = registry.get_thesis(selected_doc_id)
+        confirmed_inquiries = (
+            registry_record.get("confirmed_research_inquiries") if registry_record else None
+        )
+        inquiry_save_message = ""
+        triggered = dash.callback_context.triggered
+        triggered_id = triggered[0]["prop_id"].split(".")[0] if triggered else None
+        if triggered_id == "assessment-rq-confirm":
+            try:
+                edited_inquiries = _parse_confirmed_research_inquiries(inquiry_editor_text or "")
+                source_records = collection.get(
+                    where={"doc_id": selected_doc_id}, include=["documents", "metadatas"]
+                )
+                source_assessor = PhDQualityAssessor(collection)
+                source_map = source_assessor._locate_research_inquiry_sources(
+                    source_records,
+                    [item["text"] for item in edited_inquiries],
+                )
+                missing_sources = [
+                    item["id"] for item in edited_inquiries if not source_map.get(item["text"])
+                ]
+                if missing_sources:
+                    raise ValueError(
+                        "Each confirmed inquiry must match thesis text so its evidence source can be retained: "
+                        + ", ".join(missing_sources)
+                    )
+                if not registry.set_confirmed_research_inquiries(selected_doc_id, edited_inquiries):
+                    raise ValueError(
+                        "Thesis registry entry was not found; re-register the thesis first."
+                    )
+                confirmed_inquiries = edited_inquiries
+                inquiry_save_message = "Confirmed inquiry set saved and applied to this assessment."
+            except ValueError as save_error:
+                inquiry_save_message = str(save_error)
+
+        cultural_profile = get_assigned_cultural_lens_profile(
+            selected_doc_id,
+            registry_path=Path(RAG_CONFIG.rag_data_path) / "thesis_graphs" / "registry.sqlite",
+            profiles_dir=Path(RAG_CONFIG.rag_data_path) / "cultural_lenses",
+            environment=RAG_CONFIG.environment,
+        )
         llm_flags = {
+            "readiness_evidence": bool(llm_toggle and "readiness_evidence" in llm_toggle),
             "claims": bool(llm_toggle and "claims" in llm_toggle),
             "data_mismatch": bool(llm_toggle and "data_mismatch" in llm_toggle),
             "citation_misrep": bool(llm_toggle and "citation_misrep" in llm_toggle),
+            "research_inquiry_reconciliation": bool(
+                llm_toggle and "research_inquiry_reconciliation" in llm_toggle
+            ),
+            "research_inquiry_classification": bool(
+                llm_toggle and "research_inquiry_classification" in llm_toggle
+            ),
         }
         use_any_llm = any(llm_flags.values())
         llm_client = _get_llm(temperature=0.0) if use_any_llm else None
 
         # Path to citation graph database
-        from pathlib import Path
-
         citation_db_path = Path(RAG_CONFIG.rag_data_path) / "academic_citation_graph.db"
 
         assessor = PhDQualityAssessor(
@@ -6420,10 +7339,58 @@ def update_assessment_report(style, selected_doc_id, persona, llm_toggle, issue_
             llm_client=llm_client,
             llm_flags=llm_flags,
             citation_db_path=str(citation_db_path) if citation_db_path.exists() else None,
+            cultural_lens_profile=cultural_profile,
+            confirmed_research_inquiries=confirmed_inquiries,
         )
         report = assessor.assess_thesis(selected_doc_id, persona=persona or "supervisor")
+        from scripts.thesis_graph.thesis_evidence_graph import (
+            build_thesis_evidence_graph,
+            get_readiness_criterion_sources,
+            get_thesis_graph_path,
+        )
+
+        thesis_graph_path = get_thesis_graph_path(
+            Path(RAG_CONFIG.thesis_graphs_dir), selected_doc_id
+        )
+        build_thesis_evidence_graph(
+            collection,
+            selected_doc_id,
+            thesis_graph_path,
+            readiness=report.examiner_readiness,
+            structure_analysis=report.structure_analysis,
+            cultural_lens_profile=cultural_profile,
+            citation_graph_path=citation_db_path,
+        )
+        graph_evidence = get_readiness_criterion_sources(thesis_graph_path, selected_doc_id)
+
+        from scripts.thesis_graph.cultural_assessment import find_cultural_criteria_evidence
+
+        cultural_lens_panel = html.Div()
+        if cultural_profile:
+            thesis_chunks = collection.get(
+                where={"$and": [{"thesis_id": selected_doc_id}, {"chunk_type": "child"}]},
+                include=["documents", "metadatas"],
+                limit=50000,
+            )
+            cultural_evidence = find_cultural_criteria_evidence(
+                cultural_profile,
+                thesis_chunks.get("ids", []),
+                thesis_chunks.get("documents", []),
+                thesis_chunks.get("metadatas", []),
+            )
+            cultural_lens_panel = build_cultural_lens_assessment_panel(
+                cultural_profile, cultural_evidence
+            )
 
         def _build_concept_progression_figure(structure_analysis):
+            """Build a heatmap figure showing concept coverage across chapters.
+
+            Args:
+                structure_analysis: An object containing the structure analysis of the thesis, including key concepts and chapter order.
+
+            Returns:
+                A Plotly Figure object representing the concept coverage heatmap, or None if no concepts are available.
+            """
             import re
 
             concepts = structure_analysis.key_concepts or []
@@ -6446,6 +7413,14 @@ def update_assessment_report(style, selected_doc_id, persona, llm_toggle, issue_
                 return None
 
             def _chapter_sort_key(label: str) -> tuple:
+                """Generate a sort key for chapter labels.
+
+                Args:
+                    label: The chapter label string.
+
+                Returns:
+                    A tuple used for sorting chapter labels.
+                """
                 match = re.search(r"(\d+)", str(label))
                 if match:
                     return (0, int(match.group(1)), str(label))
@@ -6461,6 +7436,14 @@ def update_assessment_report(style, selected_doc_id, persona, llm_toggle, issue_
                 ordered_chapters = sorted(chapter_labels, key=_chapter_sort_key)
 
             def _shorten_chapter_label(label: str) -> str:
+                """Shorten chapter label for display in heatmap.
+
+                Args:
+                    label: The chapter label string.
+
+                Returns:
+                    A shortened chapter label string.
+                """
                 match = re.search(r"chapter\s+(\d+)", str(label), re.IGNORECASE)
                 if match:
                     return f"Ch {match.group(1)}"
@@ -6510,9 +7493,27 @@ def update_assessment_report(style, selected_doc_id, persona, llm_toggle, issue_
         concept_progression_fig = _build_concept_progression_figure(report.structure_analysis)
 
         def _shorten_transition_labels(labels: List[str]) -> Tuple[List[str], List[str]]:
+            """Shorten chapter transition labels for display.
+
+            Args:
+                labels: A list of chapter transition label strings.
+
+            Returns:
+                A tuple containing two lists:
+                    - Shortened chapter transition labels.
+                    - Full chapter transition labels.
+            """
             import re
 
             def _shorten(label: str) -> str:
+                """Shorten a chapter transition label.
+
+                Args:
+                    label: The chapter transition label string.
+
+                Returns:
+                    A shortened chapter transition label string.
+                """
                 match = re.search(r"chapter\s+(\d+)", label, re.IGNORECASE)
                 if match:
                     return f"Ch {match.group(1)}"
@@ -6561,10 +7562,10 @@ def update_assessment_report(style, selected_doc_id, persona, llm_toggle, issue_
                     ],
                     style={"display": "flex", "alignItems": "center", "marginBottom": "8px"},
                 ),
-                # Overall Score Card
+                # Assessment signal card
                 html.Div(
                     [
-                        html.H4("Overall Quality Score"),
+                        html.H4("Assessment Signal (Not a Grade)"),
                         html.Div(
                             [
                                 html.Div(
@@ -6572,15 +7573,16 @@ def update_assessment_report(style, selected_doc_id, persona, llm_toggle, issue_
                                     style={
                                         "fontSize": "48px",
                                         "fontWeight": "bold",
-                                        "color": (
-                                            "#28a745"
-                                            if report.overall_score >= 0.7
-                                            else (
-                                                "#FF6B00"
-                                                if report.overall_score >= 0.5
-                                                else "#d32f2f"
-                                            )
-                                        ),
+                                        "color": "#1f5f99",
+                                    },
+                                ),
+                                html.P(
+                                    report.score_label,
+                                    style={
+                                        "fontSize": "13px",
+                                        "color": "#4b5563",
+                                        "maxWidth": "800px",
+                                        "margin": "8px auto",
                                     },
                                 ),
                                 html.P(
@@ -6599,6 +7601,8 @@ def update_assessment_report(style, selected_doc_id, persona, llm_toggle, issue_
                     className="card",
                     style={"marginBottom": "16px"},
                 ),
+                build_examiner_readiness_panel(report.examiner_readiness, graph_evidence),
+                cultural_lens_panel,
                 # Critical Red Flags
                 html.Div(
                     [
@@ -6824,9 +7828,37 @@ def update_assessment_report(style, selected_doc_id, persona, llm_toggle, issue_
                                             html.Ul(
                                                 [
                                                     html.Li(
-                                                        rq[:200] + "..." if len(rq) > 200 else rq,
+                                                        [
+                                                            (
+                                                                f"[{getattr(report.structure_analysis, 'research_inquiry_ids', {}).get(rq, 'RQ?')}"
+                                                                + (
+                                                                    f" → {getattr(report.structure_analysis, 'research_inquiry_parent_ids', {}).get(rq)}"
+                                                                    if getattr(
+                                                                        report.structure_analysis,
+                                                                        "research_inquiry_parent_ids",
+                                                                        {},
+                                                                    ).get(rq)
+                                                                    else ""
+                                                                )
+                                                                + f"] [{getattr(report.structure_analysis, 'research_inquiry_types', {}).get(rq, 'research_question').replace('_', ' ').title()}] "
+                                                                f"{rq[:200] + '...' if len(rq) > 200 else rq}"
+                                                            ),
+                                                            *[
+                                                                html.Small(
+                                                                    f"Restated as: {alias}",
+                                                                    style={
+                                                                        "display": "block",
+                                                                        "color": "#666",
+                                                                    },
+                                                                )
+                                                                for alias in getattr(
+                                                                    report.structure_analysis,
+                                                                    "research_inquiry_aliases",
+                                                                    {},
+                                                                ).get(rq, [])[:3]
+                                                            ],
+                                                        ],
                                                         style={
-                                                            "fontSize": "12px",
                                                             "marginBottom": "4px",
                                                             "color": (
                                                                 "#d32f2f"
@@ -6841,6 +7873,43 @@ def update_assessment_report(style, selected_doc_id, persona, llm_toggle, issue_
                                                     ]
                                                 ],
                                                 style={"marginTop": "6px"},
+                                            ),
+                                            html.Label(
+                                                "Reviewer-confirmed inquiry set",
+                                                htmlFor="assessment-rq-editor",
+                                                style={
+                                                    "display": "block",
+                                                    "fontWeight": "bold",
+                                                    "fontSize": "12px",
+                                                    "marginTop": "12px",
+                                                },
+                                            ),
+                                            dcc.Textarea(
+                                                id="assessment-rq-editor",
+                                                value=_format_confirmed_research_inquiries(
+                                                    report.structure_analysis,
+                                                    confirmed_inquiries,
+                                                ),
+                                                style={
+                                                    "width": "100%",
+                                                    "minHeight": "120px",
+                                                    "fontSize": "12px",
+                                                },
+                                            ),
+                                            html.Button(
+                                                "Save confirmed inquiries",
+                                                id="assessment-rq-confirm",
+                                                n_clicks=0,
+                                                style={"marginTop": "8px"},
+                                            ),
+                                            html.P(
+                                                inquiry_save_message
+                                                or "Keep the inquiry text present in the thesis to preserve source evidence.",
+                                                style={
+                                                    "fontSize": "11px",
+                                                    "color": "#666",
+                                                    "marginTop": "4px",
+                                                },
                                             ),
                                         ],
                                         style={"marginBottom": "12px"},
@@ -7711,7 +8780,20 @@ def update_assessment_report(style, selected_doc_id, persona, llm_toggle, issue_
     prevent_initial_call=True,
 )
 def export_methodology_checklist(csv_clicks, pdf_clicks, selected_doc_id, persona, llm_toggle):
-    """Export methodology checklist report to CSV or PDF."""
+    """Export methodology checklist report to CSV or PDF.
+
+    Args:
+        csv_clicks: Number of clicks on the CSV export button.
+        pdf_clicks: Number of clicks on the PDF export button.
+        selected_doc_id: The ID of the selected assessment document.
+        persona: The selected persona for the assessment.
+        llm_toggle: The LLM toggle settings.
+
+    Returns:
+        A dictionary containing the file content and filename for download.
+    Raises:
+        PreventUpdate: If no document is selected or no export button is clicked.
+    """
     if not selected_doc_id:
         raise PreventUpdate
 
@@ -7730,6 +8812,12 @@ def export_methodology_checklist(csv_clicks, pdf_clicks, selected_doc_id, person
         "claims": bool(llm_toggle and "claims" in llm_toggle),
         "data_mismatch": bool(llm_toggle and "data_mismatch" in llm_toggle),
         "citation_misrep": bool(llm_toggle and "citation_misrep" in llm_toggle),
+        "research_inquiry_reconciliation": bool(
+            llm_toggle and "research_inquiry_reconciliation" in llm_toggle
+        ),
+        "research_inquiry_classification": bool(
+            llm_toggle and "research_inquiry_classification" in llm_toggle
+        ),
     }
     use_any_llm = any(llm_flags.values())
     llm_client = _get_llm(temperature=0.0) if use_any_llm else None
@@ -7745,6 +8833,11 @@ def export_methodology_checklist(csv_clicks, pdf_clicks, selected_doc_id, person
     checklist = report.methodology_checklist
 
     def _build_csv_payload():
+        """Build CSV payload for methodology checklist export.
+
+        Returns:
+            A dictionary containing the CSV content and filename for download.
+        """
         import csv
         import io
 
@@ -7774,6 +8867,14 @@ def export_methodology_checklist(csv_clicks, pdf_clicks, selected_doc_id, person
             snippets = data.get("snippets", [])
 
             def _get_snippet(idx):
+                """Get snippet details for a given index.
+
+                Args:
+                    idx: Index of the snippet to retrieve.
+
+                Returns:
+                    A tuple containing the snippet text, location, and tags.
+                """
                 if idx < len(snippets):
                     return (
                         snippets[idx].get("snippet", ""),
@@ -7819,14 +8920,22 @@ def export_methodology_checklist(csv_clicks, pdf_clicks, selected_doc_id, person
         import base64
         import io
 
-        from reportlab.lib.pagesizes import letter  # type: ignore[import]
-        from reportlab.pdfgen import canvas  # type: ignore[import]
+        from reportlab.lib.pagesizes import letter
+        from reportlab.pdfgen import canvas
 
         buffer = io.BytesIO()
         pdf = canvas.Canvas(buffer, pagesize=letter)
         width, height = letter
 
         def write_lines(lines, start_y):
+            """Write lines of text to the PDF canvas.
+
+            Args:
+                lines: A list of strings to write to the PDF.
+                start_y: The starting y-coordinate for writing the lines.
+            Returns:
+                The y-coordinate after writing the lines.
+            """
             y = start_y
             for line in lines:
                 pdf.drawString(40, y, line)
@@ -7881,7 +8990,14 @@ def export_methodology_checklist(csv_clicks, pdf_clicks, selected_doc_id, person
 
 
 def self_build_argument_flow_figure(flow):
-    """Build a Plotly figure for argument flow graph."""
+    """Build a Plotly figure for argument flow graph.
+
+    Args:
+        flow: An object containing nodes and edges representing the argument flow.
+
+    Returns:
+        A Plotly figure object visualising the argument flow.
+    """
     if not flow or not flow.nodes:
         return go.Figure()
 
@@ -7945,13 +9061,24 @@ def self_build_argument_flow_figure(flow):
     Output("analytics-data-store", "data", allow_duplicate=True),
     Output("analytics-status", "children", allow_duplicate=True),
     Input("graph-analytics-tab", "style"),
+    Input("analytics-graph-source", "value"),
     prevent_initial_call="initial_duplicate",
     running=[
         (Output("compute-analytics-btn", "disabled"), True, False),
     ],
 )
-def load_precomputed_analytics(tab_style):
-    """Auto-load pre-computed analytics on startup if available."""
+def load_precomputed_analytics(tab_style, graph_source):
+    """Auto-load pre-computed analytics on startup if available.
+
+    Args:
+        tab_style: The style of the graph analytics tab, used to determine if the tab is visible.
+
+    Returns:
+        A tuple containing the analytics data and a status message.
+    """
+    if graph_source != "consistency":
+        return {}, "No pre-computed analytics for this graph. Click Compute Analytics."
+
     try:
         # Try to load pre-computed analytics from graph metadata
         analytics = graph_store.get_analytics()
@@ -7972,40 +9099,30 @@ def load_precomputed_analytics(tab_style):
     Output("analytics-data-store", "data", allow_duplicate=True),
     Output("analytics-status", "children", allow_duplicate=True),
     Input("compute-analytics-btn", "n_clicks"),
+    State("analytics-graph-source", "value"),
     prevent_initial_call=True,
 )
-def compute_analytics(n_clicks):
-    """Compute advanced analytics for the graph on-demand."""
+def compute_analytics(n_clicks, graph_source):
+    """Compute advanced analytics for the graph on-demand.
+
+    Args:
+        n_clicks: The number of times the compute analytics button has been clicked.
+
+    Returns:
+        A tuple containing the analytics data and a status message.
+    Raises:
+        PreventUpdate: If the button has not been clicked.
+    """
     if not n_clicks:
         return dash.no_update, dash.no_update
 
     try:
         from scripts.consistency_graph.advanced_analytics import compute_advanced_analytics
 
-        # Load graph data from SQLiteGraphStore
-        node_ids = graph_store.get_node_ids()
-        if not node_ids:
+        graph_source = graph_source or "consistency"
+        G = _build_analytics_graph(graph_source)
+        if not G.nodes:
             return {}, "Error: No nodes found in graph"
-
-        # Build graph data dict
-        nodes_dict = {}
-        for node_id in node_ids:
-            node_data = graph_store.get_node(node_id)
-            if node_data:
-                nodes_dict[node_id] = node_data
-
-        edges_list = graph_store.get_edges()
-
-        if not nodes_dict:
-            return {}, "Error: Graph data not available"
-
-        # Build NetworkX graph
-        G = nx.Graph()
-        for node_id, node_data in nodes_dict.items():
-            G.add_node(node_id, **node_data)
-
-        for edge in edges_list:
-            G.add_edge(edge["source"], edge["target"], **edge)
 
         # Compute analytics
         analytics = compute_advanced_analytics(G)
@@ -8026,7 +9143,8 @@ def compute_analytics(n_clicks):
 
         return (
             serialised_analytics,
-            f"✓ On-demand computation complete ({len(G.nodes())} nodes, {len(G.edges())} edges)",
+            f"✓ On-demand computation complete for {graph_source} "
+            f"({len(G.nodes())} nodes, {len(G.edges())} edges)",
         )
 
     except Exception as e:
@@ -8045,7 +9163,17 @@ def compute_analytics(n_clicks):
     Input("analytics-data-store", "data"),
 )
 def update_analytics_displays(analytics):
-    """Update analytics display components from computed analytics."""
+    """Update analytics display components from computed analytics.
+
+    Args:
+        analytics: The computed analytics data from the graph.
+
+    Returns:
+        A tuple containing the updated components for the topology metrics, PageRank table,
+        betweenness table, communities display, and relationship strength chart.
+    Raises:
+        PreventUpdate: If no analytics data is available.
+    """
     if not analytics:
         empty_msg = html.Div(
             "Click 'Compute Analytics' to generate metrics",
@@ -8101,6 +9229,7 @@ def update_analytics_displays(analytics):
 
         # PageRank table
         top_pagerank = analytics.get("top_influencers", {}).get("by_pagerank", [])
+        pagerank_table: Any
         if top_pagerank:
             pagerank_rows = [
                 html.Tr(
@@ -8126,6 +9255,7 @@ def update_analytics_displays(analytics):
 
         # Betweenness table
         top_betweenness = analytics.get("top_influencers", {}).get("by_betweenness", [])
+        betweenness_table: Any
         if top_betweenness:
             betweenness_rows = [
                 html.Tr(
@@ -8219,12 +9349,28 @@ def update_analytics_displays(analytics):
     Output("conversation-store", "data"),
     Output("conversation-info", "children"),
     Input("new-conversation-btn", "n_clicks"),
+    State("conversation-store", "data"),
     prevent_initial_call=False,
 )
-def start_new_conversation(n_clicks):
-    """Start a new conversation."""
-    import uuid
+def start_new_conversation(n_clicks, existing_conversation):
+    """Start a new conversation.
+
+    Args:
+        n_clicks: The number of times the new conversation button has been clicked.
+        existing_conversation: Persisted conversation state from a prior page load.
+    Returns:
+        A tuple containing the conversation store data and the conversation info display.
+    """
     from datetime import datetime
+
+    if not n_clicks and existing_conversation and existing_conversation.get("id"):
+        timestamp = existing_conversation.get("created_at", "earlier")
+        return (
+            existing_conversation,
+            f"Conversation ID: {existing_conversation['id']} | Started: {timestamp}",
+        )
+
+    import uuid
 
     conv_id = str(uuid.uuid4())[:8]
     timestamp = datetime.now().strftime("%H:%M:%S")
@@ -8237,7 +9383,6 @@ def start_new_conversation(n_clicks):
 
 @callback(
     Output("conversation-store", "data", allow_duplicate=True),
-    Output("conversation-history", "children"),
     Input("rag-query-answer", "children"),
     State("conversation-store", "data"),
     State("rag-query-input", "value"),
@@ -8246,9 +9391,19 @@ def start_new_conversation(n_clicks):
     allow_duplicate=True,
 )
 def update_conversation_history_on_answer(answer_text, conv_data, query_text, status_text):
-    """Update conversation history when answer is ready (not when button is clicked)."""
+    """Update conversation history when answer is ready (not when button is clicked).
+
+    Args:
+        answer_text: The answer text from the RAG system.
+        conv_data: The current conversation data from the store.
+        query_text: The query text that was asked.
+        status_text: The status text indicating the result of the query.
+
+    Returns:
+        Updated conversation store data.
+    """
     if not answer_text or not query_text or not status_text:
-        return dash.no_update, dash.no_update
+        return dash.no_update
 
     # Only update if we got a real answer (not an error or empty)
     if isinstance(answer_text, str) and answer_text.strip() and "Error" not in str(answer_text):
@@ -8295,57 +9450,59 @@ def update_conversation_history_on_answer(answer_text, conv_data, query_text, st
         except Exception as e:
             print(f"Warning: Could not save conversation to DB: {e}")
 
-        # Build history display
-        history_items = []
-        for i, turn in enumerate(conv_data["turns"], 1):
-            query_time = turn.get("timestamp", "")
-            if query_time:
+        return conv_data
+
+    return dash.no_update
+
+
+@callback(
+    Output("conversation-history", "children"),
+    Input("conversation-store", "data"),
+)
+def render_conversation_history(conv_data):
+    """Render active conversation state restored from local browser storage."""
+    turns = (conv_data or {}).get("turns", [])
+    if not turns:
+        return html.Div(
+            "No conversation history yet", style={"color": "#999", "fontStyle": "italic"}
+        )
+
+    history_items = []
+    for index, turn in enumerate(turns, 1):
+        query_time = turn.get("timestamp", "")
+        if query_time:
+            try:
                 query_time = datetime.fromisoformat(query_time).strftime("%H:%M:%S")
-
-            history_items.append(
-                html.Div(
-                    [
-                        html.Div(
-                            [
-                                html.Strong(f"Turn {i} ({query_time})", style={"color": "#667eea"}),
-                            ],
-                            style={"marginTop": "8px", "marginBottom": "4px"},
-                        ),
-                        html.Div(
-                            [
-                                html.Strong("Q: "),
-                                html.Span(
-                                    turn["query"][:100]
-                                    + ("..." if len(turn["query"]) > 100 else "")
-                                ),
-                            ],
-                            style={"fontSize": "12px", "marginBottom": "4px"},
-                        ),
-                        html.Div(
-                            [
-                                html.Strong("A: "),
-                                html.Span(
-                                    turn["answer"][:100]
-                                    + ("..." if len(turn["answer"]) > 100 else "")
-                                ),
-                            ],
-                            style={"fontSize": "12px", "color": "#555"},
-                        ),
-                        html.Hr(style={"margin": "8px 0"}),
-                    ]
-                )
+            except ValueError:
+                pass
+        query = str(turn.get("query", ""))
+        answer = str(turn.get("answer", ""))
+        history_items.append(
+            html.Div(
+                [
+                    html.Div(
+                        [html.Strong(f"Turn {index} ({query_time})", style={"color": "#667eea"})],
+                        style={"marginTop": "8px", "marginBottom": "4px"},
+                    ),
+                    html.Div(
+                        [
+                            html.Strong("Q: "),
+                            html.Span(query[:100] + ("..." if len(query) > 100 else "")),
+                        ],
+                        style={"fontSize": "12px", "marginBottom": "4px"},
+                    ),
+                    html.Div(
+                        [
+                            html.Strong("A: "),
+                            html.Span(answer[:100] + ("..." if len(answer) > 100 else "")),
+                        ],
+                        style={"fontSize": "12px", "color": "#555"},
+                    ),
+                    html.Hr(style={"margin": "8px 0"}),
+                ]
             )
-
-        if not history_items:
-            history_items = [
-                html.Div(
-                    "No conversation history yet", style={"color": "#999", "fontStyle": "italic"}
-                )
-            ]
-
-        return conv_data, html.Div(history_items)
-
-    return dash.no_update, dash.no_update
+        )
+    return html.Div(history_items)
 
 
 @callback(
@@ -8425,7 +9582,15 @@ def handle_copy_code(n_clicks_list, code_blocks):
     allow_duplicate=True,
 )
 def hide_copy_feedback(n_intervals, current_style):
-    """Hide copy feedback message after 2 seconds."""
+    """Hide copy feedback message after 2 seconds.
+
+    Args:
+        n_intervals: The number of intervals passed from the timer.
+        current_style: The current style of the copy feedback component.
+
+    Returns:
+        The updated style for the copy feedback component.
+    """
     if n_intervals > 0 and current_style:
         # Fade out
         style = current_style.copy()
@@ -8447,7 +9612,14 @@ def hide_copy_feedback(n_intervals, current_style):
     prevent_initial_call=False,
 )
 def update_conversation_list(search_query):
-    """Update conversation list based on search."""
+    """Update conversation list based on search.
+
+    Args:
+        search_query: The search query entered by the user.
+
+    Returns:
+        A tuple containing the updated options for the conversation list dropdown and the selected value.
+    """
     from scripts.rag.conversation_manager import ConversationManager
 
     try:
@@ -8479,7 +9651,15 @@ def update_conversation_list(search_query):
     prevent_initial_call=True,
 )
 def load_conversation_details(n_clicks, conv_id):
-    """Load and display conversation details."""
+    """Load and display conversation details.
+
+    Args:
+        n_clicks: The number of times the load conversation button has been clicked.
+        conv_id: The ID of the conversation to load.
+
+    Returns:
+        A tuple containing the conversation details display and the conversation preview display.
+    """
     if not conv_id:
         return "Please select a conversation", ""
 
@@ -8570,7 +9750,15 @@ def load_conversation_details(n_clicks, conv_id):
     allow_duplicate=True,
 )
 def delete_conversation(n_clicks, conv_id):
-    """Delete a conversation."""
+    """Delete a conversation.
+
+    Args:
+        n_clicks: The number of times the delete conversation button has been clicked.
+        conv_id: The ID of the conversation to delete.
+
+    Returns:
+        A tuple containing the updated search input value, conversation details display, and conversation preview display.
+    """
     if not conv_id:
         return dash.no_update, dash.no_update, dash.no_update
 
@@ -8603,7 +9791,18 @@ def delete_conversation(n_clicks, conv_id):
     prevent_initial_call=True,
 )
 def export_conversation(md_clicks, pdf_clicks, conv_id):
-    """Export conversation to Markdown or PDF."""
+    """Export conversation to Markdown or PDF.
+
+    Args:
+        md_clicks: The number of times the export to Markdown button has been clicked.
+        pdf_clicks: The number of times the export to PDF button has been clicked.
+        conv_id: The ID of the conversation to export.
+
+    Returns:
+        A dictionary containing the exported content and the filename.
+    Raises:
+        PreventUpdate: If no conversation is selected or if an error occurs during export.
+    """
     if not conv_id:
         raise PreventUpdate
 
@@ -8673,11 +9872,17 @@ benchmark_manager = None
 
 
 def get_benchmark_manager():
-    """Get or create benchmark manager singleton."""
+    """Get or create benchmark manager singleton.
+
+    Returns:
+        The benchmark manager instance, or None if initialization failed.
+    """
     global benchmark_manager
     if benchmark_manager is None:
         try:
-            benchmark_manager = BenchmarkManager(Path(RAG_CONFIG.rag_data_path) / "benchmarks.db")
+            benchmark_manager = BenchmarkManager(
+                str(Path(RAG_CONFIG.rag_data_path) / "benchmarks.db")
+            )
         except Exception as e:
             print(f"Error initializing benchmark manager: {e}")
     return benchmark_manager
@@ -8695,7 +9900,16 @@ def get_benchmark_manager():
     prevent_initial_call=False,
 )
 def update_benchmarks(refresh_clicks, time_range):
-    """Update benchmark displays including system metrics and relevancy stats."""
+    """Update benchmark displays including system metrics and relevancy stats.
+
+    Args:
+        refresh_clicks: The number of times the refresh benchmarks button has been clicked.
+        time_range: The selected time range for the benchmarks.
+
+    Returns:
+        A tuple containing the updated benchmark summary, response time chart, cache rate chart,
+        slowest queries table, system metrics display, and relevancy stats display.
+    """
     manager = get_benchmark_manager()
     if not manager:
         return "Benchmark manager unavailable", {}, {}, "No data", "N/A", "N/A"
@@ -8748,19 +9962,6 @@ def update_benchmarks(refresh_clicks, time_range):
                                 "backgroundColor": "#f8f9fa",
                                 "borderRadius": "4px",
                                 "marginRight": "8px",
-                            },
-                        ),
-                        html.Div(
-                            [
-                                html.Strong(f"{stats['code_query_rate']:.1f}%"),
-                                html.Div(
-                                    "Code Queries", style={"fontSize": "12px", "color": "#666"}
-                                ),
-                            ],
-                            style={
-                                "padding": "12px",
-                                "backgroundColor": "#f8f9fa",
-                                "borderRadius": "4px",
                             },
                         ),
                     ],
@@ -9020,7 +10221,15 @@ def update_benchmarks(refresh_clicks, time_range):
     prevent_initial_call=False,
 )
 def update_relevancy_filter(min_rating, time_range):
-    """Update relevancy filtered queries display."""
+    """Update relevancy filtered queries display.
+
+    Args:
+        min_rating: The minimum rating to filter queries.
+        time_range: The selected time range for the benchmarks.
+
+    Returns:
+        A Dash HTML component containing the filtered queries table or a message if no queries match.
+    """
     manager = get_benchmark_manager()
     if not manager:
         return "Manager unavailable"
@@ -9113,7 +10322,17 @@ def update_relevancy_filter(min_rating, time_range):
     prevent_initial_call=True,
 )
 def export_benchmark_report(n_clicks, time_range):
-    """Export benchmark report to Markdown."""
+    """Export benchmark report to Markdown.
+
+    Args:
+        n_clicks: The number of times the export benchmark report button has been clicked.
+        time_range: The selected time range for the benchmarks.
+
+    Returns:
+        A dictionary containing the report content and filename.
+    Raises:
+        PreventUpdate: If no clicks or if an error occurs during export.
+    """
     if not n_clicks:
         raise PreventUpdate
 
@@ -9137,528 +10356,11 @@ def export_benchmark_report(n_clicks, time_range):
 
 # Check if reportlab is available
 try:
-    from reportlab.lib.pagesizes import letter  # type: ignore[import]
+    from reportlab.lib.pagesizes import letter
 
     REPORTLAB_AVAILABLE = True
 except ImportError:
     REPORTLAB_AVAILABLE = False
-
-
-# ============================================================================
-# Dependencies Tab Callbacks
-# ============================================================================
-
-
-@callback(
-    Output("dep-network-graph", "figure"),
-    Output("dep-service-matrix", "figure"),
-    Output("dep-metric-services", "children"),
-    Output("dep-metric-internal-calls", "children"),
-    Output("dep-metric-shared-deps", "children"),
-    Output("dep-metric-circular", "children"),
-    Output("dep-info-message", "children"),
-    Input("dependencies-tab", "style"),
-    Input("dep-node-count", "value"),
-    State("show-node-names-toggle", "value"),
-    prevent_initial_call=True,
-)
-def build_dependency_visualisation(tab_style, node_count, show_names_list):
-    """Build dependency graph visualisation from code nodes."""
-    import networkx as nx
-    import numpy as np
-    import plotly.graph_objects as go
-
-    print(f"\n{'='*80}")
-    print(f"DEBUG: build_dependency_visualisation() called with tab_style={tab_style}")
-    print(f"DEBUG: tab_style type: {type(tab_style)}")
-
-    try:
-        # Check if tab is visible - properly handle different input types
-        is_visible = False
-        if tab_style is not None:
-            print(f"DEBUG: tab_style is not None, checking visibility...")
-            if isinstance(tab_style, dict):
-                print(f"DEBUG: tab_style is dict with keys: {tab_style.keys()}")
-                is_visible = tab_style.get("display") == "block"
-                print(f"DEBUG: is_visible from dict check: {is_visible}")
-            elif tab_style == {"display": "block"}:
-                is_visible = True
-                print(f"DEBUG: is_visible from equality check: {is_visible}")
-        else:
-            print(f"DEBUG: tab_style is None")
-
-        if not is_visible:
-            print(f"DEBUG: Tab not visible, raising PreventUpdate")
-            raise PreventUpdate
-
-        print(f"DEBUG: Tab is visible, proceeding with visualisation build")
-
-        # Get node IDs to check if graph is loaded
-        print(f"DEBUG: Checking if graph_store has nodes...")
-        node_ids = graph_store.get_node_ids()
-        if not node_ids:
-            print("DEBUG: No nodes in graph_store, attempting to load metadata")
-            graph_store.load_metadata()
-            node_ids = graph_store.get_node_ids()
-
-        if not node_ids:
-            print("DEBUG: Still no nodes available - graph not loaded yet")
-            empty_fig = go.Figure().add_annotation(
-                text="Graph not loaded - navigate to Graph tab first"
-            )
-            return (
-                empty_fig,
-                empty_fig,
-                "Services: 0",
-                "Internal Calls: 0",
-                "Shared Deps: 0",
-                "Circular Paths: 0",
-                "Load a graph first",
-            )
-
-        print(f"DEBUG: Found {len(node_ids)} nodes in graph_store")
-
-        # Get full node data from graph_store
-        all_nodes_data = {}
-        for node_id in node_ids:
-            node_data = graph_store.get_node(node_id)
-            if node_data:
-                all_nodes_data[node_id] = node_data
-
-        print(f"DEBUG: Processing {len(all_nodes_data)} nodes for dependency visualisation")
-
-        # Extract code nodes (filter for nodes with source_category)
-        code_nodes_with_metadata = {}
-        categories_found = set()
-        processed_count = 0
-        code_categories = {"code", "source"}
-        for node_id, data in all_nodes_data.items():
-            processed_count += 1
-            if isinstance(data, dict):
-                category = data.get("source_category", "")
-                categories_found.add(category)
-                if category in code_categories:
-                    code_nodes_with_metadata[node_id] = data
-            else:
-                print(f"DEBUG: node_id={node_id}, data is not dict, type={type(data)}")
-
-        print(
-            f"DEBUG: Processed {processed_count} nodes, found {len(code_nodes_with_metadata)} code nodes"
-        )
-        print(f"DEBUG: Categories in graph: {categories_found}")
-
-        if not code_nodes_with_metadata:
-            print(f"DEBUG: No code nodes found. Available categories: {categories_found}")
-            empty_fig = go.Figure().add_annotation(text="No code nodes found in graph")
-            return (
-                empty_fig,
-                empty_fig,
-                "Services: 0",
-                "Internal Calls: 0",
-                "Shared Deps: 0",
-                "Circular Paths: 0",
-                "This tab displays dependency analysis for code repositories. Your current data contains documentation only.",
-            )
-
-        # Limit nodes if requested (default to 50)
-        effective_node_count = min(node_count or 50, len(code_nodes_with_metadata))
-
-        # First pass: build full graph to compute node importance scores
-        temp_graph = nx.DiGraph()
-        for node_id in code_nodes_with_metadata.keys():
-            temp_graph.add_node(node_id)
-
-        # Add edges to compute connectivity
-        for node_id, data in code_nodes_with_metadata.items():
-            internal_calls = data.get("internal_calls", [])
-            if internal_calls:
-                calls_list = (
-                    internal_calls if isinstance(internal_calls, list) else [internal_calls]
-                )
-                for called_service in calls_list:
-                    for target_id in code_nodes_with_metadata.keys():
-                        target_data = code_nodes_with_metadata[target_id]
-                        target_service = target_data.get("service_name") or target_data.get(
-                            "service"
-                        )
-                        if target_service == called_service or called_service in str(target_id):
-                            if node_id != target_id:
-                                temp_graph.add_edge(node_id, target_id)
-                            break
-
-            # Also add shared dependency edges
-            deps_a = set(
-                data.get("dependencies", []) if isinstance(data.get("dependencies"), list) else []
-            )
-            if deps_a:
-                for other_id, other_data in code_nodes_with_metadata.items():
-                    if other_id != node_id:
-                        deps_b = set(
-                            other_data.get("dependencies", [])
-                            if isinstance(other_data.get("dependencies"), list)
-                            else []
-                        )
-                        if deps_a & deps_b:  # Shared dependencies exist
-                            temp_graph.add_edge(node_id, other_id)
-
-        # Score nodes by total degree (in + out)
-        node_scores = [
-            (node_id, temp_graph.degree(node_id)) for node_id in code_nodes_with_metadata.keys()
-        ]
-        node_scores.sort(key=lambda x: x[1], reverse=True)
-
-        # Take top N nodes
-        top_node_ids = [node_id for node_id, _ in node_scores[:effective_node_count]]
-        limited_code_nodes = {nid: code_nodes_with_metadata[nid] for nid in top_node_ids}
-
-        print(
-            f"DEBUG: Limited to top {len(limited_code_nodes)} nodes (from {len(code_nodes_with_metadata)} total)"
-        )
-
-        # Build dependency graph with limited nodes
-        dep_graph = nx.DiGraph()
-
-        # Add nodes with service metadata
-        for node_id, data in limited_code_nodes.items():
-            service = data.get("service_name") or data.get("service", node_id)
-            language = data.get("language", "")
-            dep_graph.add_node(node_id, service=service, language=language)
-
-        # Add edges for internal calls
-        internal_calls_edges = 0
-        for node_id, data in limited_code_nodes.items():
-            internal_calls = data.get("internal_calls", [])
-            if internal_calls:
-                calls_list = (
-                    internal_calls if isinstance(internal_calls, list) else [internal_calls]
-                )
-                for called_service in calls_list:
-                    for target_id, target_data in limited_code_nodes.items():
-                        target_service = target_data.get("service_name") or target_data.get(
-                            "service"
-                        )
-                        if target_service == called_service or called_service in str(target_id):
-                            if node_id != target_id and not dep_graph.has_edge(node_id, target_id):
-                                dep_graph.add_edge(
-                                    node_id, target_id, type="internal_call", weight=1.0
-                                )
-                                internal_calls_edges += 1
-                            break
-
-        # Add edges for shared dependencies
-        dependency_edges = 0
-        for i, (node_id_a, data_a) in enumerate(limited_code_nodes.items()):
-            deps_a = set(
-                data_a.get("dependencies", [])
-                if isinstance(data_a.get("dependencies"), list)
-                else []
-            )
-            for node_id_b, data_b in list(limited_code_nodes.items())[i + 1 :]:
-                deps_b = set(
-                    data_b.get("dependencies", [])
-                    if isinstance(data_b.get("dependencies"), list)
-                    else []
-                )
-                shared = deps_a & deps_b
-                if shared:
-                    shared_list = sorted(shared)
-                    if not dep_graph.has_edge(node_id_a, node_id_b):
-                        weight = (
-                            len(shared) / max(len(deps_a), len(deps_b))
-                            if max(len(deps_a), len(deps_b)) > 0
-                            else 0
-                        )
-                        dep_graph.add_edge(
-                            node_id_a,
-                            node_id_b,
-                            type="shared_deps",
-                            shared=shared_list,
-                            weight=weight,
-                        )
-                        dependency_edges += 1
-
-        # Detect circular dependencies
-        circular_deps = list(nx.simple_cycles(dep_graph))
-        circular_services = set()
-        for cycle in circular_deps:
-            circular_services.update(cycle)
-
-        # Build network graph visualisation using spring layout
-        pos = nx.spring_layout(dep_graph, k=2, iterations=50, seed=42)
-
-        # Language colours
-        language_colours = {
-            "java": "#0066cc",
-            "groovy": "#228B22",
-            "kotlin": "#FF9933",
-            "gradle": "#9966cc",
-            "python": "#3776ab",
-            "javascript": "#f1e05a",
-            "typescript": "#2b7489",
-        }
-
-        # Create network graph
-        edge_x = []
-        edge_y = []
-        edge_colours = []
-        edge_widths = []
-
-        for source, target, data in dep_graph.edges(data=True):
-            x0, y0 = pos[source]
-            x1, y1 = pos[target]
-            edge_x.extend([x0, x1, None])
-            edge_y.extend([y0, y1, None])
-
-            # Colour edges based on type
-            # N.B. Plotly does not support hover text on line segments, applies line hover to attached node
-            # Online forums suggest intrapolating with invisible nodes for hover
-            # TODO: Explore cost of adding invisible midpoints for hover info
-            if data.get("type") == "internal_call":
-                edge_colours.extend(["#ff9933", "#ff9933", "#ff9933"])
-                edge_widths.extend([2, 2, 2])
-            else:
-                edge_colours.extend(["#66ccff", "#66ccff", "#66ccff"])
-                edge_widths.extend([1, 1, 1])
-
-        edge_trace = go.Scatter(
-            x=edge_x,
-            y=edge_y,
-            mode="lines",
-            line=dict(width=0.5, color="#888"),
-            hoverinfo="none",
-            showlegend=False,
-        )
-
-        # Add nodes
-        node_x = []
-        node_y = []
-        node_colours = []
-        node_sizes = []
-        node_labels = []
-        node_hover = []
-        node_ids = []
-
-        for node_id, data in dep_graph.nodes(data=True):
-            x, y = pos[node_id]
-            node_x.append(x)
-            node_y.append(y)
-            node_ids.append(node_id)
-
-            service = data.get("service", node_id)
-            language = data.get("language", "")
-
-            # Colour by language, or red if in circular dependency
-            if node_id in circular_services:
-                colour = "#ff4d4d"
-            else:
-                colour = language_colours.get(language.lower() if language else "", "#4da6ff")
-
-            node_colours.append(colour)
-
-            # For display label, prefer display name for academic nodes
-            node_data = limited_code_nodes.get(node_id, {})
-            if node_data.get("source_category") == "academic_reference":
-                display_name = get_display_name(node_data, node_id)
-                label_text = display_name[:20]  # Truncate to 20 chars for display
-            else:
-                label_text = service[:20]  # Truncate service name
-
-            node_labels.append(label_text)
-
-            # Node size based on degree
-            degree = dep_graph.degree(node_id)
-            node_sizes.append(max(15, 15 + degree * 2))
-
-            hover_text = f"<b>{service}</b><br>Language: {language}<br>Node: {node_id}"
-            if node_id in circular_services:
-                hover_text += "<br><b style='color: red'>⚠️ In circular dependency</b>"
-            node_hover.append(hover_text)
-
-        node_trace = go.Scatter(
-            x=node_x,
-            y=node_y,
-            mode=(
-                "markers+text"
-                if (show_names_list and "show-names" in show_names_list)
-                else "markers"
-            ),
-            text=node_labels,
-            customdata=node_ids,
-            textposition="top center",
-            hoverinfo="text",
-            hovertext=node_hover,
-            marker=dict(
-                size=node_sizes, color=node_colours, line=dict(width=2, color="white"), opacity=0.9
-            ),
-            showlegend=False,
-        )
-
-        # Create network figure
-        network_fig = go.Figure(data=[edge_trace, node_trace])
-        network_fig.update_layout(
-            title="Service Dependency Network (Click a node to select)",
-            showlegend=False,
-            hovermode="closest",
-            margin=dict(b=20, l=5, r=5, t=40),
-            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-            plot_bgcolor="#f9f9f9",
-            height=600,
-        )
-
-        # Build service call matrix
-        services = sorted(list(limited_code_nodes.keys()))
-        matrix = [[0.0 for _ in services] for _ in services]
-
-        for i, node_a in enumerate(services):
-            for j, node_b in enumerate(services):
-                if dep_graph.has_edge(node_a, node_b):
-                    edges_data = dep_graph.get_edge_data(node_a, node_b)
-                    matrix[i][j] = edges_data.get("weight", 1.0)
-
-        # Create heatmap
-        service_labels = [
-            limited_code_nodes[nid].get("service_name")
-            or limited_code_nodes[nid].get("service", nid)
-            for nid in services
-        ]
-        service_labels = [label[:15] for label in service_labels]  # Truncate
-
-        heatmap_fig = go.Figure(
-            data=go.Heatmap(
-                z=matrix,
-                x=service_labels,
-                y=service_labels,
-                colorscale="YlOrRd",
-                hovertemplate="From: %{y}<br>To: %{x}<br>Weight: %{z:.2f}<extra></extra>",
-                colorbar=dict(title="Dependency<br>Strength"),
-            )
-        )
-
-        heatmap_fig.update_layout(
-            title="Service Call Matrix (Who Calls Whom)",
-            xaxis_title="Called Service",
-            yaxis_title="Calling Service",
-            height=500,
-        )
-
-        # Build metrics
-        metrics_services = f"Services: {len(dep_graph.nodes())}"
-        metrics_internal = f"Internal Calls: {internal_calls_edges}"
-        metrics_shared = f"Shared Dependencies: {dependency_edges}"
-        metrics_circular = f"Circular Paths: {len(circular_deps)}"
-
-        if circular_deps:
-            warning_msg = f"⚠️ Found {len(circular_deps)} circular dependency path(s)"
-        else:
-            warning_msg = "✅ No circular dependencies detected"
-
-        return (
-            network_fig,
-            heatmap_fig,
-            metrics_services,
-            metrics_internal,
-            metrics_shared,
-            metrics_circular,
-            warning_msg,
-        )
-
-    except PreventUpdate:
-        raise
-
-    except Exception as e:
-        print(f"Error building dependency visualisation: {e}")
-        import traceback
-
-        traceback.print_exc()
-        empty_fig = go.Figure().add_annotation(text=f"Error: {str(e)}")
-        return (
-            empty_fig,
-            empty_fig,
-            "Services: Error",
-            "Internal Calls: Error",
-            "Shared Deps: Error",
-            "Circular Paths: Error",
-            f"Error generating visualisation: {str(e)}",
-        )
-
-
-@callback(
-    Output("dep-node-count", "value"),
-    Output("dep-node-prev", "style"),
-    Output("dep-node-next", "style"),
-    Output("dep-node-count-input", "value"),
-    Input("dep-node-prev", "n_clicks"),
-    Input("dep-node-next", "n_clicks"),
-    Input("dep-node-count-input", "value"),
-    State("dep-node-count", "value"),
-    prevent_initial_call=True,
-)
-def update_dep_node_count(prev_clicks, next_clicks, input_value, current_value):
-    """Update dependencies node count via Previous/Next buttons or direct input."""
-    from dash import callback_context
-
-    if not callback_context.triggered:
-        raise PreventUpdate
-
-    trigger_id = callback_context.triggered[0]["prop_id"].split(".")[0]
-    new_value = current_value
-
-    if trigger_id == "dep-node-prev" and current_value > 10:
-        new_value = max(10, current_value - 10)
-    elif trigger_id == "dep-node-next" and current_value < 500:
-        new_value = min(500, current_value + 10)
-    elif trigger_id == "dep-node-count-input" and input_value is not None:
-        # Validate and constrain input value
-        new_value = max(10, min(500, int(input_value)))
-        # Round to nearest 10
-        new_value = round(new_value / 10) * 10
-
-    # Style button disabled states
-    prev_style = {
-        "padding": "8px 16px",
-        "marginRight": "8px",
-        "border": "1px solid #ddd",
-        "background": "#f5f5f5",
-        "color": "#999",
-        "borderRadius": "4px",
-        "cursor": "not-allowed",
-        "fontSize": "14px",
-        "fontWeight": "500",
-        "opacity": "0.6",
-    }
-    next_style = {
-        "padding": "8px 16px",
-        "border": "1px solid #ddd",
-        "background": "#f5f5f5",
-        "color": "#999",
-        "borderRadius": "4px",
-        "cursor": "not-allowed",
-        "fontSize": "14px",
-        "fontWeight": "500",
-        "opacity": "0.6",
-    }
-
-    enabled_style = {
-        "padding": "8px 16px",
-        "border": "1px solid #667eea",
-        "background": "white",
-        "color": "#667eea",
-        "borderRadius": "4px",
-        "cursor": "pointer",
-        "fontSize": "14px",
-        "fontWeight": "500",
-    }
-
-    # Apply enabled/disabled states
-    if new_value > 10:
-        prev_style = enabled_style.copy()
-        prev_style["marginRight"] = "8px"
-
-    if new_value < 500:
-        next_style = enabled_style.copy()
-
-    return new_value, prev_style, next_style, new_value
 
 
 # ============================================================================
@@ -9677,7 +10379,18 @@ def update_dep_node_count(prev_clicks, next_clicks, input_value, current_value):
     prevent_initial_call=False,
 )
 def update_metrics_display(refresh_clicks, intervals):
-    """Update metrics display with current system metrics."""
+    """Update metrics display with current system metrics.
+
+    Args:
+        refresh_clicks: The number of times the refresh button has been clicked.
+        intervals: The number of intervals passed for automatic refresh.
+
+    Returns:
+        A tuple containing the summary HTML, Plotly figure, model stats content,
+        health status content, and cost display content.
+    Raises:
+        Exception: If there is an error retrieving metrics or generating the display.
+    """
     try:
         from scripts.utils.metrics_export import get_metrics_collector
 
@@ -9701,7 +10414,7 @@ def update_metrics_display(refresh_clicks, intervals):
         )
 
         # Model stats display
-        model_stats_content = []
+        model_stats_content: List[Any] = []
         if model_stats:
             for model, stats_data in sorted(model_stats.items()):
                 model_stats_content.append(
@@ -9802,7 +10515,9 @@ def update_metrics_display(refresh_clicks, intervals):
 # ============================================================================
 
 if __name__ == "__main__":
-    print(f"Starting Plotly Dash dashboard at http://localhost:8050")
+    dashboard_host = get_dashboard_host()
+    dashboard_port = get_dashboard_port()
+    print(f"Starting Plotly Dash dashboard at http://{dashboard_host}:{dashboard_port}")
     print(f"Graph: {GRAPH_SQLITE}")
     print(f"ChromaDB: {CHROMA_PATH}")
     print(f"Nodes per page: {NODES_PER_PAGE}")
@@ -9819,7 +10534,7 @@ if __name__ == "__main__":
         terminology_db_path = Path(INGEST_CONFIG.rag_data_path) / "academic_terminology.db"
         if terminology_db_path.exists():
             print(f"Initialising AcademicReferences at startup...")
-            module = AcademicReferences(str(terminology_db_path))
+            module = AcademicReferences(terminology_db_path)
             _set_global_module(module)
             print("AcademicReferences initialised successfully")
         else:
@@ -9827,4 +10542,13 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Warning: Could not initialise AcademicReferences: {e}")
 
-    app.run(debug=True, host="0.0.0.0", port=8050, dev_tools_ui=True)
+    debug_mode = os.environ.get("DASH_DEBUG", "false").lower() in {"1", "true", "yes"}
+    # Dash normally defers callback registration until its first request. Initialise
+    # eagerly so initial browser callback posts always find the complete map.
+    app._setup_server()
+    app.run(
+        debug=debug_mode,
+        host=dashboard_host,
+        port=dashboard_port,
+        dev_tools_ui=debug_mode,
+    )

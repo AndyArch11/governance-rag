@@ -95,7 +95,7 @@ class TestCodeMetadataStorage:
     @patch("scripts.ingest.vectors.generate_chunk_embeddings_batch")
     @patch("scripts.ingest.vectors.process_and_validate_chunks")
     @patch("scripts.ingest.vectors.compute_document_health")
-    def test_code_metadata_fields_added_to_base_metadata(
+    def test_code_parser_fields_are_not_stored(
         self,
         mock_compute_health,
         mock_process_chunks,
@@ -105,7 +105,7 @@ class TestCodeMetadataStorage:
         mock_chroma_collection,
         sample_code_metadata,
     ):
-        """Test that code-specific metadata fields are added to base_metadata."""
+        """Code parser metadata is ignored by the generic vector storage path."""
         from scripts.ingest.vectors import store_chunks_in_chroma
 
         # Setup mocks
@@ -149,31 +149,21 @@ class TestCodeMetadataStorage:
         # Get the metadata that was stored
         stored_metadata = call_args.kwargs["metadatas"][0]
 
-        # Verify code-specific fields are present
-        assert stored_metadata["language"] == "java"
-        assert stored_metadata["service_name"] == "PaymentService"
-        assert stored_metadata["service_type"] == "controller"
-
-        # Verify list fields are JSON-encoded
-        assert "dependencies" in stored_metadata
-        deps = json.loads(stored_metadata["dependencies"])
-        assert "com.stripe:stripe-java:20.0.0" in deps
-
-        assert "internal_calls" in stored_metadata
-        calls = json.loads(stored_metadata["internal_calls"])
-        assert "AuthService" in calls
-
-        assert "endpoints" in stored_metadata
-        endpoints = json.loads(stored_metadata["endpoints"])
-        assert "/api/payment/process" in endpoints
-
-        assert "db" in stored_metadata
-        dbs = json.loads(stored_metadata["db"])
-        assert "payments_db" in dbs
-
-        assert "queue" in stored_metadata
-        queues = json.loads(stored_metadata["queue"])
-        assert "payment.queue" in queues
+        code_fields = {
+            "language",
+            "service_name",
+            "service_type",
+            "dependencies",
+            "internal_calls",
+            "endpoints",
+            "db",
+            "queue",
+            "exports",
+            "repository",
+            "project",
+            "branch",
+        }
+        assert code_fields.isdisjoint(stored_metadata)
 
     @patch("scripts.ingest.vectors.get_logger")
     @patch("scripts.ingest.vectors.audit")
@@ -282,7 +272,6 @@ class TestCodeMetadataInGraph:
             sim_threshold=0.5,
             workers=1,
             progress_callback=None,
-            include_dependency_edges=False,
         )
 
         # Verify node was created
@@ -297,29 +286,18 @@ class TestCodeMetadataInGraph:
         assert node["version"] == 1
         assert node["source_category"] == "code"
 
-        # Verify code-specific fields are present
-        assert node["language"] == "java"
-        assert node["service_name"] == "PaymentService"
-        assert node["service_type"] == "controller"
-
-        # Verify list fields are deserialised from JSON
-        assert isinstance(node["dependencies"], list)
-        assert "com.stripe:stripe-java:20.0.0" in node["dependencies"]
-
-        assert isinstance(node["internal_calls"], list)
-        assert "AuthService" in node["internal_calls"]
-
-        assert isinstance(node["endpoints"], list)
-        assert "/api/payment/process" in node["endpoints"]
-
-        assert isinstance(node["db"], list)
-        assert "payments_db" in node["db"]
-
-        assert isinstance(node["queue"], list)
-        assert "payment.queue" in node["queue"]
-
-        assert isinstance(node["exports"], list)
-        assert "PaymentController" in node["exports"]
+        code_fields = {
+            "language",
+            "service_name",
+            "service_type",
+            "dependencies",
+            "internal_calls",
+            "endpoints",
+            "db",
+            "queue",
+            "exports",
+        }
+        assert code_fields.isdisjoint(node)
 
     def test_multiple_code_nodes_with_metadata(self):
         """Test multiple code nodes preserve their individual metadata."""
@@ -372,28 +350,23 @@ class TestCodeMetadataInGraph:
             sim_threshold=0.5,
             workers=1,
             progress_callback=None,
-            include_dependency_edges=False,
         )
 
         # Verify both nodes exist
         assert len(graph["nodes"]) == 2
 
-        # Verify AuthService node
+        # Code parser fields are not copied into consistency graph nodes.
         auth_node = graph["nodes"]["AuthService.java_v1"]
-        assert auth_node["service"] == "AuthService"
-        assert "UserRepository" in auth_node["internal_calls"]
-        assert (
-            "org.springframework.security:spring-security-core:5.5.0" in auth_node["dependencies"]
-        )
-
-        # Verify PaymentService node
         payment_node = graph["nodes"]["PaymentService.java_v1"]
-        assert payment_node["service"] == "PaymentService"
-        assert "AuthService" in payment_node["internal_calls"]
-        assert "com.stripe:stripe-java:20.0.0" in payment_node["dependencies"]
+        assert "service" not in auth_node
+        assert "dependencies" not in auth_node
+        assert "internal_calls" not in auth_node
+        assert "service" not in payment_node
+        assert "dependencies" not in payment_node
+        assert "internal_calls" not in payment_node
 
-    def test_json_deserialisation_error_handling(self):
-        """Test that malformed JSON in metadata fields doesn't break graph building."""
+    def test_code_json_metadata_is_ignored(self):
+        """Malformed code parser metadata does not enter the graph node."""
         from scripts.consistency_graph.build_consistency_graph import (
             build_consistency_graph_parallel,
         )
@@ -427,26 +400,21 @@ class TestCodeMetadataInGraph:
             sim_threshold=0.5,
             workers=1,
             progress_callback=None,
-            include_dependency_edges=False,
         )
 
         # Verify node was created
         assert len(graph["nodes"]) == 1
         node = graph["nodes"]["BrokenService.java_v1"]
 
-        # Malformed JSON should be kept as string
-        assert node["internal_calls"] == "not-valid-json-{[}"
-
-        # Valid JSON should be deserialised
-        assert isinstance(node["dependencies"], list)
-        assert "valid.dependency:1.0.0" in node["dependencies"]
+        assert "internal_calls" not in node
+        assert "dependencies" not in node
 
 
-class TestDashboardDependencyAnalysis:
-    """Test that dashboard can use code metadata for dependency analysis."""
+class TestNoCodeDerivedGraphEdges:
+    """Test that code metadata no longer creates graph relationships."""
 
-    def test_dependency_detection_from_metadata(self):
-        """Test that dependency edges can be detected from code metadata."""
+    def test_shared_dependencies_do_not_create_relationships(self):
+        """Shared code dependencies do not synthesise consistency graph edges."""
         from scripts.consistency_graph.build_consistency_graph import (
             build_consistency_graph_parallel,
         )
@@ -484,7 +452,7 @@ class TestDashboardDependencyAnalysis:
             },
         ]
 
-        # Build graph with dependency edges enabled
+        # Build graph; code metadata must not add non-classified edges.
         graph = build_consistency_graph_parallel(
             versioned_docs=versioned_docs,
             doc_collection=mock_collection,
@@ -492,36 +460,15 @@ class TestDashboardDependencyAnalysis:
             sim_threshold=0.5,
             workers=1,
             progress_callback=None,
-            include_dependency_edges=True,
         )
 
-        # Verify nodes have dependencies
-        assert graph["nodes"]["ServiceA.java_v1"]["dependencies"] == [
-            "com.shared:library:1.0.0",
-            "org.springframework:spring-core:5.0.0",
-        ]
-        assert graph["nodes"]["ServiceB.java_v1"]["dependencies"] == [
-            "com.shared:library:1.0.0",
-            "com.other:lib:2.0.0",
-        ]
+        assert "dependencies" not in graph["nodes"]["ServiceA.java_v1"]
+        assert "dependencies" not in graph["nodes"]["ServiceB.java_v1"]
 
-        # Verify dependency edge was created for shared dependency
-        dependency_edges = [e for e in graph["edges"] if e.get("relationship") == "dependency"]
-        assert len(dependency_edges) >= 1
-
-        # Find edge between ServiceA and ServiceB
-        shared_edge = None
-        for edge in dependency_edges:
-            if "ServiceA.java_v1" in [edge["source"], edge["target"]] and "ServiceB.java_v1" in [
-                edge["source"],
-                edge["target"],
-            ]:
-                shared_edge = edge
-                break
-
-        assert shared_edge is not None
-        assert shared_edge["field"] == "dependency"
-        assert shared_edge["value"] == "com.shared:library:1.0.0"
+        assert not any(
+            edge.get("relationship") in {"dependency", "cross_repo_service"}
+            for edge in graph["edges"]
+        )
 
 
 if __name__ == "__main__":

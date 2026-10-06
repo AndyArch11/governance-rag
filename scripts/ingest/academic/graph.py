@@ -45,10 +45,10 @@ class CitationGraph:
 
     def _compute_quality_score(self, metadata: dict, node_type: str) -> float:
         """Compute a heuristic quality score (0.0-1.0)."""
-        source = (metadata.get("source") or "").lower()
-        venue_rank = metadata.get("venue_rank")
+        source = str(metadata.get("source") or "").lower()
+        venue_rank = str(metadata.get("venue_rank") or "")
         citation_count = metadata.get("citation_count")
-        link_status = metadata.get("link_status")
+        link_status = str(metadata.get("link_status") or "")
         oa_available = metadata.get("oa_available")
         paywall_detected = metadata.get("paywall_detected")
         year_verified = metadata.get("year_verified")
@@ -181,7 +181,7 @@ class CitationGraph:
     def add_reference(self, ref_id: str, metadata: dict) -> None:
         if ref_id not in self.nodes:
             # Year is verified if from CrossRef, OpenAlex, or other authoritative source
-            source = metadata.get("source", "")
+            source = str(metadata.get("source") or "")
             year = metadata.get("year")
             year_verified = source in (
                 "crossref",
@@ -195,7 +195,7 @@ class CitationGraph:
 
             # If no year from provider, try to extract from citation text
             if not year and not year_verified:
-                citation_text = metadata.get("citation")
+                citation_text = str(metadata.get("citation") or "")
                 extracted_year = extract_year_from_citation(citation_text)
                 if extracted_year:
                     year = extracted_year
@@ -207,12 +207,12 @@ class CitationGraph:
 
             # Clean book review titles (common in CrossRef data for book reviews)
             # Also extract the book's actual authors (not the reviewer)
-            book_authors = []
+            book_authors: List[str] = []
             if title and source == "crossref":
                 title, book_authors = clean_book_review_title(title)
 
             if not title:
-                citation_text = metadata.get("citation")
+                citation_text = str(metadata.get("citation") or "")
                 extracted_title = extract_title_from_citation(citation_text)
                 if extracted_title:
                     title = extracted_title
@@ -224,10 +224,15 @@ class CitationGraph:
                 # Use book authors extracted from title instead of reviewer
                 authors = book_authors
             elif not authors:
-                citation_text = metadata.get("citation")
+                citation_text = str(metadata.get("citation") or "")
                 extracted_authors = extract_authors_from_citation(citation_text)
                 if extracted_authors:
                     authors = extracted_authors
+
+            if isinstance(authors, str):
+                authors = [author.strip() for author in authors.split(",") if author.strip()]
+            elif not isinstance(authors, list):
+                authors = []
 
             quality_score = metadata.get("quality_score")
             if quality_score is None:

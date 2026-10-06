@@ -32,6 +32,8 @@ import requests
 
 from .logger import get_logger
 
+PydanticValidationError: Optional[Type[Exception]]
+
 # Import for type checking Pydantic validation errors
 try:
     from pydantic import ValidationError as PydanticValidationError
@@ -283,6 +285,8 @@ def retry_with_backoff(
         if jitter:
             delay *= random.uniform(0.5, 1.5)
     """
+    if max_retries < 1:
+        raise ValueError("max_retries must be at least 1")
 
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
@@ -388,6 +392,8 @@ def retry_with_backoff(
                 },
             )
 
+            if last_exception is None:
+                raise RuntimeError("Retry loop ended without an exception")
             raise last_exception
 
         return wrapper

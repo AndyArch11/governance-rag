@@ -62,6 +62,14 @@ class TestRerankerModule:
         assert reranker._model is None  # Lazy loading
         assert reranker._model_loaded is False
 
+    def test_rerank_fails_clearly_when_model_is_unavailable(self):
+        """A failed lazy initialisation does not dereference a missing model."""
+        reranker = CrossEncoderReranker(model_name="test", enable_cache=False)
+        reranker._model_loaded = True
+
+        with pytest.raises(RuntimeError, match="model is unavailable"):
+            reranker.rerank("test", [{"doc_id": "doc-1", "text": "content"}])
+
     @patch("scripts.search.reranker.logger")
     def test_reranker_lazy_loading(self, mock_logger):
         """Test that model is loaded on first rerank call."""

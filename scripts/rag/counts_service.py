@@ -1,11 +1,14 @@
 import sqlite3
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
+get_cache_client: Callable[..., Any] | None
 try:
     # Prefer the shared cache client if available
-    from scripts.utils.db_factory import get_cache_client  # type: ignore
+    from scripts.utils.db_factory import get_cache_client as _get_cache_client
 except Exception:
     get_cache_client = None  # Fallback to direct sqlite connection when testing
+else:
+    get_cache_client = _get_cache_client
 
 
 class CountsService:
@@ -26,11 +29,7 @@ class CountsService:
     def __init__(self, conn: Optional[sqlite3.Connection] = None) -> None:
         self._external_conn = conn is not None
         self._cache_client = None  # Track cache client for cleanup
-        try:
-            self.conn = conn or self._get_connection()
-        except Exception as e:
-            self.conn = None
-            raise e
+        self.conn = conn or self._get_connection()
 
     def _bm25_index_columns(self) -> List[str]:
         """Return column names for bm25_index, handling environments with differing schemas.
@@ -46,7 +45,7 @@ class CountsService:
             return []
 
     def _get_connection(self) -> sqlite3.Connection:
-        if get_cache_client:
+        if get_cache_client is not None:
             # The cache client exposes a sqlite3 connection via .conn
             self._cache_client = get_cache_client(enable_cache=True)
             # Defensive: support both .conn and direct connection return

@@ -166,7 +166,6 @@ When writing technical documentation or comments:
 │   ├── academic_references.db      # Academic reference cache
 │   ├── academic_citation_graph.db  # Citation graph database
 │   └── academic_terminology.db     # Domain terminology database
-├── repos/             # default location for ingest_git.py to clone repos to
 ├── scripts/           # Main application code (see Module Structure below)
 └── tests/             # pytest unit and integration tests
 ```

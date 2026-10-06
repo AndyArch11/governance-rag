@@ -23,8 +23,9 @@ import logging
 import time
 from contextlib import contextmanager
 from functools import wraps
-from typing import Any, Dict, Generator, Optional
+from typing import Any, Dict, Generator, Optional, TypedDict
 
+from scripts.utils.logger import create_module_logger
 from scripts.utils.monitoring import (
     get_perf_metrics,
     get_token_counter,
@@ -33,13 +34,183 @@ from scripts.utils.monitoring import (
 )
 
 logger = logging.getLogger(__name__)
+_, audit = create_module_logger("llm")
+
+
+class LLMCallMetrics(TypedDict):
+    """Mutable metrics recorded for a single LLM call.
+
+    Attributes:
+        input_tokens (int): Number of input tokens.
+        output_tokens (int): Number of output tokens.
+        error (bool): Whether the call resulted in an error.
+        error_message (str | None): Error message if any.
+    """
+
+    input_tokens: int
+    output_tokens: int
+    error: bool
+    error_message: str | None
+
+
+def record_llm_usage(
+    operation: str,
+    component: str,
+    model: str,
+    prompt: str,
+    *,
+    response: str | None = None,
+    success: bool,
+    attempt: int = 1,
+    latency_ms: float | None = None,
+    failure_reason: str | None = None,
+) -> Dict[str, Any]:
+    """Audit estimated tokens for one LLM attempt without recording prompt content.
+    Args:
+        operation (str): The name of the operation being performed.
+        component (str): The component invoking the LLM.
+        model (str): The model name.
+        prompt (str): The input prompt.
+        response (str | None): The LLM response, if any.
+        success (bool): Whether the call was successful.
+        attempt (int): The attempt number.
+        latency_ms (float | None): The latency in milliseconds.
+        failure_reason (str | None): The reason for failure, if any.
+
+    Returns:
+        Dict[str, Any]: The recorded usage metrics.
+    """
+    usage: Dict[str, Any] = {
+        "operation": operation,
+        "component": component,
+        "model": model,
+        "input_tokens": max(1, len(prompt) // 4) if prompt else 0,
+        "output_tokens": (max(1, len(response) // 4) if response else 0) if success else 0,
+        "token_source": "estimated",
+        "success": success,
+        "attempt": attempt,
+    }
+    if latency_ms is not None:
+        usage["latency_ms"] = int(latency_ms)
+    if failure_reason:
+        usage["failure_reason"] = failure_reason
+    try:
+        audit("llm_usage", usage)
+    except Exception as exc:
+        logger.warning("Failed to audit LLM usage for %s: %s", operation, exc)
+    return usage
+
+
+def invoke_with_usage(
+    client: Any,
+    prompt: str,
+    *,
+    operation: str,
+    component: str,
+    attempt: int = 1,
+) -> str:
+    """Invoke one LLM attempt and audit estimated token usage on success or failure.
+
+    Args:
+        client (Any): The LLM client to invoke.
+        prompt (str): The input prompt.
+        operation (str): The name of the operation being performed.
+        component (str): The component invoking the LLM.
+        attempt (int): The attempt number.
+
+    Returns:
+        str: The LLM response text.
+    """
+    model = str(getattr(client, "model", None) or getattr(client, "model_name", None) or "unknown")
+    started_at = time.perf_counter()
+    try:
+        if callable(client):
+            response = client(prompt)
+        elif hasattr(client, "invoke"):
+            response = client.invoke(prompt)
+        else:
+            raise TypeError("LLM client must be callable or expose invoke()")
+    except Exception as exc:
+        record_llm_usage(
+            operation,
+            component,
+            model,
+            prompt,
+            success=False,
+            attempt=attempt,
+            latency_ms=(time.perf_counter() - started_at) * 1000,
+            failure_reason=type(exc).__name__,
+        )
+        raise
+
+    response_text = str(response)
+    record_llm_usage(
+        operation,
+        component,
+        model,
+        prompt,
+        response=response_text,
+        success=True,
+        attempt=attempt,
+        latency_ms=(time.perf_counter() - started_at) * 1000,
+    )
+    return response_text
+
+
+def record_embedding_usage(
+    operation: str,
+    component: str,
+    model: str,
+    texts: list[str],
+    *,
+    success: bool,
+    attempt: int = 1,
+    latency_ms: float | None = None,
+    failure_reason: str | None = None,
+) -> Dict[str, Any]:
+    """Audit estimated input tokens for one embedding request.
+
+    Args:
+        operation (str): The name of the operation being performed.
+        component (str): The component invoking the embedding model.
+        model (str): The embedding model name.
+        texts (list[str]): The input texts to be embedded.
+        success (bool): Whether the embedding request was successful.
+        attempt (int): The attempt number.
+        latency_ms (float | None): The latency in milliseconds.
+        failure_reason (str | None): The reason for failure, if any.
+
+    Returns:
+        Dict[str, Any]: The recorded usage metrics.
+    """
+    character_count = sum(len(text) for text in texts)
+    usage: Dict[str, Any] = {
+        "operation": operation,
+        "component": component,
+        "model": f"embedding:{model}",
+        "input_tokens": max(1, character_count // 4) if character_count else 0,
+        "output_tokens": 0,
+        "token_source": "estimated",
+        "success": success,
+        "attempt": attempt,
+        "item_count": len(texts),
+    }
+    if latency_ms is not None:
+        usage["latency_ms"] = int(latency_ms)
+    if failure_reason:
+        usage["failure_reason"] = failure_reason
+    try:
+        audit("llm_usage", usage)
+    except Exception as exc:
+        logger.warning("Failed to audit embedding usage for %s: %s", operation, exc)
+    return usage
 
 
 @contextmanager
 def instrument_ollama_call(
     model: str,
     context: Optional[Dict[str, Any]] = None,
-) -> Generator[Dict[str, Any], None, None]:
+) -> Generator[LLMCallMetrics, None, None]:
     """Context manager for instrumenting Ollama LLM calls.
 
     Tracks token usage, latency, and errors for Ollama generation calls.
@@ -69,7 +240,7 @@ def instrument_ollama_call(
             except Exception:
                 pass
 
-    metrics = {
+    metrics: LLMCallMetrics = {
         "input_tokens": 0,
         "output_tokens": 0,
         "error": False,
@@ -125,7 +296,7 @@ def instrument_ollama_call(
 def instrument_claude_call(
     model: str,
     context: Optional[Dict[str, Any]] = None,
-) -> Generator[Dict[str, Any], None, None]:
+) -> Generator[LLMCallMetrics, None, None]:
     """Context manager for instrumenting Claude API calls.
 
     Tracks token usage from Claude responses via usage field.
@@ -156,7 +327,7 @@ def instrument_claude_call(
             except Exception:
                 pass
 
-    metrics = {
+    metrics: LLMCallMetrics = {
         "input_tokens": 0,
         "output_tokens": 0,
         "error": False,

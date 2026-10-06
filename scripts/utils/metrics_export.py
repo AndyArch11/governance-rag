@@ -340,7 +340,7 @@ class MetricsCollector:
         """
         self._trim_old_entries()
 
-        model_stats = defaultdict(
+        model_stats: Dict[str, Dict[str, Any]] = defaultdict(
             lambda: {
                 "calls": 0,
                 "tokens": 0,

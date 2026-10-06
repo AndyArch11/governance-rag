@@ -51,9 +51,7 @@ def get_vector_client(prefer: str = "chroma") -> Tuple[Any, bool]:
     # Try ChromaDB backend
     if "chroma" in prefer_order:
         try:
-            from chromadb import (  # type: ignore  # noqa: WPS433
-                PersistentClient as ChromaDBPersistentClient,
-            )
+            from chromadb import PersistentClient as ChromaDBPersistentClient  # noqa: WPS433
 
             chroma_client = ChromaDBPersistentClient
         except Exception as exc:

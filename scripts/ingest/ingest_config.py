@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Optional, Set
 
 from scripts.utils.config import BaseConfig
+from scripts.utils.llm_model_config import get_configured_context_window, get_configured_llm_model
 from scripts.utils.logger import get_logger
 
 
@@ -34,7 +35,8 @@ class IngestConfig(BaseConfig):
       - ENABLE_SEMANTIC_DRIFT_DETECTION
       - ENABLE_CHUNK_HEURISTIC_SKIP
       - MAX_WORKERS, PROGRESS_LOG_INTERVAL, LLM_RATE_LIMIT
-      - INGEST_LLM_MODEL, INGEST_VALIDATOR_LLM_MODEL
+    - INGEST_LLM_MODEL, INGEST_VALIDATOR_LLM_MODEL: Supported Ollama models
+    - INGEST_CONTEXT_WINDOW_TOKENS, INGEST_VALIDATOR_CONTEXT_WINDOW_TOKENS
       - EMBEDDING_BATCH_SIZE, EMBEDDING_CACHE_ENABLED
       - TABLE_CHUNK_MAX_LLM_CHARS: Max table chunk size allowed on LLM validation/repair paths
       - PRESERVE_DOMAIN_KEYWORDS: Comma-separated keywords to preserve
@@ -87,10 +89,21 @@ class IngestConfig(BaseConfig):
         self.llm_rate_limit = self.get_float("LLM_RATE_LIMIT", 10.0)
 
         # LLM configuration
-        self.llm_model_name = self.get_str("INGEST_LLM_MODEL", "mistral")
-        self.validator_llm_model_name = self.get_str(
+        self.llm_model_name = get_configured_llm_model(self, "INGEST_LLM_MODEL")
+        self.validator_llm_model_name = get_configured_llm_model(
+            self,
             "INGEST_VALIDATOR_LLM_MODEL",
             self.llm_model_name,
+        )
+        self.llm_context_window_tokens = get_configured_context_window(
+            self,
+            self.llm_model_name,
+            "INGEST_CONTEXT_WINDOW_TOKENS",
+        )
+        self.validator_llm_context_window_tokens = get_configured_context_window(
+            self,
+            self.validator_llm_model_name,
+            "INGEST_VALIDATOR_CONTEXT_WINDOW_TOKENS",
         )
 
         # Embedding generation
@@ -184,7 +197,8 @@ class IngestConfig(BaseConfig):
         self.logger: Optional[Any] = None  # IngestLogger instance
         self.args: Optional[argparse.Namespace] = None  # CLI arguments
         self.include_url_seeds: bool = False  # Set from CLI or config
-        self.version_lock: Optional[threading.Lock] = None  # Threading lock for version assignment
+        self.version_lock = threading.Lock()  # Threading lock for version assignment
+        self.bm25_stage_rag_data_path: Optional[Path] = None
 
 
 _INGEST_CONFIG: Optional[IngestConfig] = None

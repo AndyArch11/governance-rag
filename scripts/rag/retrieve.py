@@ -25,9 +25,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 # Collection typing (best-effort)
 try:
-    from chromadb.api.models.Collection import (  # type: ignore  # noqa: WPS433,E402
-        Collection as ChromaDBCollection,
-    )
+    from chromadb.api.models.Collection import Collection as ChromaDBCollection  # noqa: WPS433,E402
 except Exception:
     ChromaDBCollection = Any  # type: ignore
 
@@ -38,55 +36,91 @@ except Exception:
 
 Collection = Union[ChromaDBCollection, ChromaSQLiteCollection, Any]
 
+
+def _collection_get(collection: Collection, **kwargs: Any) -> Dict[str, Any]:
+    """Read records through the common ChromaDB and SQLite collection contract."""
+    collection_backend: Any = collection
+    return collection_backend.get(**kwargs)
+
+
+def _collection_query(collection: Collection, **kwargs: Any) -> Dict[str, Any]:
+    """Query records through the common ChromaDB and SQLite collection contract."""
+    collection_backend: Any = collection
+    return collection_backend.query(**kwargs)
+
+
 from scripts.utils.logger import create_module_logger
 
 from .context_cache import get_context_cache
 
 get_logger, audit = create_module_logger("rag")
+from scripts.utils.llm_instrumentation import record_embedding_usage
 from scripts.utils.metrics_export import get_metrics_collector
 from scripts.utils.monitoring import get_perf_metrics, init_monitoring
 from scripts.utils.rate_limiter import get_rate_limiter
 from scripts.utils.retry_utils import retry_chromadb_call, retry_ollama_call
 
+batch_get_parents_for_children: Any | None = None
 try:
-    from scripts.ingest.vectors import batch_get_parents_for_children
+    from scripts.ingest.vectors import batch_get_parents_for_children as _batch_get_parents
 except ImportError:
-    batch_get_parents_for_children = None
+    pass
+else:
+    batch_get_parents_for_children = _batch_get_parents
 
+BM25Retriever: Any | None = None
 try:
-    from scripts.search.bm25_retrieval import BM25Retriever
+    from scripts.search.bm25_retrieval import BM25Retriever as _BM25Retriever
 except ImportError:
-    BM25Retriever = None
+    pass
+else:
+    BM25Retriever = _BM25Retriever
 
+RankerResult: Any | None = None
+RerankerConfig: Any | None = None
+rerank_results: Any | None = None
 try:
-    from scripts.search.reranker import RankerResult, RerankerConfig, rerank_results
+    from scripts.search.reranker import RankerResult as _RankerResult
+    from scripts.search.reranker import RerankerConfig as _RerankerConfig
+    from scripts.search.reranker import rerank_results as _rerank_results
 except ImportError:
-    RerankerConfig = None
-    rerank_results = None
-    RankerResult = None
+    pass
+else:
+    RankerResult = _RankerResult
+    RerankerConfig = _RerankerConfig
+    rerank_results = _rerank_results
 
+HybridSearchWeights: Any | None = None
+get_weight_manager: Any | None = None
 try:
-    from scripts.rag.hybrid_search_weights import HybridSearchWeights, get_weight_manager
+    from scripts.rag.hybrid_search_weights import HybridSearchWeights as _HybridSearchWeights
+    from scripts.rag.hybrid_search_weights import get_weight_manager as _get_weight_manager
 except ImportError:
-    get_weight_manager = None
-    HybridSearchWeights = None
+    pass
+else:
+    HybridSearchWeights = _HybridSearchWeights
+    get_weight_manager = _get_weight_manager
 
+get_query_expander: Any | None = None
+get_expansion_cache: Any | None = None
 try:
-    from scripts.rag.query_expansion import get_expansion_cache, get_query_expander
+    from scripts.rag.query_expansion import get_expansion_cache as _get_expansion_cache
+    from scripts.rag.query_expansion import get_query_expander as _get_query_expander
 except ImportError:
-    get_query_expander = None
-    get_expansion_cache = None
+    pass
+else:
+    get_query_expander = _get_query_expander
+    get_expansion_cache = _get_expansion_cache
 
+apply_persona_reranking: Any | None = None
 try:
-    from scripts.search.persona_retrieval import apply_persona_reranking
+    from scripts.search.persona_retrieval import apply_persona_reranking as _apply_persona_reranking
 except ImportError:
-    apply_persona_reranking = None
+    pass
+else:
+    apply_persona_reranking = _apply_persona_reranking
 
-try:
-    from scripts.ingest.vectors import EMBEDDING_MODEL_NAME
-except Exception:
-    # TODO: Address string literal usage below., reconsider testing approach requiring this.
-    EMBEDDING_MODEL_NAME = "mxbai-embed-large"
+from scripts.utils.embedding_model_config import EMBEDDING_MODEL_NAME
 
 # Initialise monitoring
 init_monitoring()
@@ -110,7 +144,7 @@ class EmbeddingDimensionMismatch(ValueError):
 def _get_collection_embedding_dim(collection: Collection) -> Optional[int]:
     """Return embedding dimension for a collection, or None if empty/unavailable."""
     try:
-        sample = collection.get(limit=1, include=["embeddings"])
+        sample = _collection_get(collection, limit=1, include=["embeddings"])
         embeddings = sample.get("embeddings") or []
         if embeddings and len(embeddings) > 0:
             return len(embeddings[0])
@@ -124,6 +158,140 @@ def _get_collection_embedding_dim(collection: Collection) -> Optional[int]:
 # ------------------------------
 
 
+def _expand_thesis_graph_candidates(
+    collection: Collection,
+    seed_metadata: List[Dict],
+    logger: Any,
+) -> Tuple[List[str], List[Dict]]:
+    """Fetch thesis-graph neighbours for inclusion in hybrid ranking.
+
+    Args:
+        collection (Collection): The collection to query for thesis graph neighbours.
+        seed_metadata (List[Dict]): Metadata of the seed chunks.
+        logger (Any): Logger instance for logging.
+
+    Returns:
+        Tuple[List[str], List[Dict]]: A tuple containing a list of expanded document texts and their corresponding metadata.
+    """
+    thesis_ids = {
+        str(meta.get("thesis_id") or meta.get("doc_id"))
+        for meta in seed_metadata
+        if isinstance(meta, dict) and meta.get("source_kind") == "thesis_document"
+    }
+    if len(thesis_ids) != 1:
+        return [], []
+
+    thesis_id = next(iter(thesis_ids))
+    seed_chunk_ids = list(
+        dict.fromkeys(
+            str(meta["chroma_chunk_id"])
+            for meta in seed_metadata
+            if isinstance(meta, dict)
+            and meta.get("source_kind") == "thesis_document"
+            and str(meta.get("thesis_id") or meta.get("doc_id")) == thesis_id
+            and meta.get("chroma_chunk_id")
+        )
+    )
+    if not seed_chunk_ids:
+        return [], []
+
+    try:
+        from scripts.rag.rag_config import RAGConfig
+        from scripts.thesis_graph.thesis_evidence_graph import (
+            expand_evidence_chunk_ids,
+            get_thesis_graph_path,
+        )
+
+        config = RAGConfig()
+        expanded_ids = expand_evidence_chunk_ids(
+            get_thesis_graph_path(Path(config.thesis_graphs_dir), thesis_id),
+            thesis_id,
+            seed_chunk_ids,
+            max_chunks=config.thesis_graph_max_chunks,
+        )
+        if not expanded_ids:
+            return [], []
+
+        graph_results = _collection_get(
+            collection,
+            ids=expanded_ids,
+            include=["documents", "metadatas"],
+        )
+        graph_candidates: Dict[str, Tuple[str, Dict]] = {}
+        for chunk_id, document, metadata in zip(
+            graph_results.get("ids", []),
+            graph_results.get("documents", []),
+            graph_results.get("metadatas", []),
+        ):
+            graph_metadata = dict(metadata)
+            graph_metadata["chroma_chunk_id"] = chunk_id
+            graph_metadata["retrieval_method"] = "thesis_graph"
+            graph_candidates[chunk_id] = (document, graph_metadata)
+
+        ordered_candidates = [
+            graph_candidates[chunk_id] for chunk_id in expanded_ids if chunk_id in graph_candidates
+        ]
+        return (
+            [document for document, _ in ordered_candidates],
+            [metadata for _, metadata in ordered_candidates],
+        )
+    except Exception as thesis_graph_error:
+        logger.debug(f"Thesis graph expansion skipped: {thesis_graph_error}")
+        return [], []
+
+
+def _attach_thesis_graph_provenance(metadatas: List[Dict], logger: Any) -> List[Dict]:
+    """Attach section-to-citation graph paths to retrieved thesis chunks.
+    Args:
+        metadatas (List[Dict]): List of metadata dictionaries for retrieved chunks.
+        logger (Any): Logger instance for logging.
+
+    Returns:
+        List[Dict]: Updated list of metadata dictionaries with attached graph provenance if available.
+    """
+    thesis_ids = {
+        str(meta.get("thesis_id") or meta.get("doc_id"))
+        for meta in metadatas
+        if isinstance(meta, dict) and meta.get("source_kind") == "thesis_document"
+    }
+    if len(thesis_ids) != 1:
+        return metadatas
+
+    thesis_id = next(iter(thesis_ids))
+    chunk_ids = list(
+        dict.fromkeys(
+            str(meta.get("chroma_chunk_id") or meta.get("chunk_id"))
+            for meta in metadatas
+            if isinstance(meta, dict)
+            and meta.get("source_kind") == "thesis_document"
+            and (meta.get("chroma_chunk_id") or meta.get("chunk_id"))
+        )
+    )
+    if not chunk_ids:
+        return metadatas
+
+    try:
+        from scripts.rag.rag_config import RAGConfig
+        from scripts.thesis_graph.thesis_evidence_graph import (
+            get_chunk_provenance_paths,
+            get_thesis_graph_path,
+        )
+
+        config = RAGConfig()
+        graph_path = get_thesis_graph_path(Path(config.thesis_graphs_dir), thesis_id)
+        paths_by_chunk = get_chunk_provenance_paths(graph_path, thesis_id, chunk_ids)
+        for metadata in metadatas:
+            if not isinstance(metadata, dict):
+                continue
+            chunk_id = str(metadata.get("chroma_chunk_id") or metadata.get("chunk_id") or "")
+            paths = paths_by_chunk.get(chunk_id)
+            if paths:
+                metadata["graph_provenance"] = "; ".join(paths)
+    except Exception as provenance_error:
+        logger.debug(f"Thesis graph provenance skipped: {provenance_error}")
+    return metadatas
+
+
 def _combine_results(
     vector_chunks: List[str],
     vector_metadata: List[Dict],
@@ -134,6 +302,8 @@ def _combine_results(
     k: int,
     logger,
     use_weights: bool = True,
+    graph_chunks: Optional[List[str]] = None,
+    graph_metadata: Optional[List[Dict]] = None,
 ) -> Tuple[List[str], List[Dict], int, int]:
     """Combine vector/keyword/counts results with optional weighted combination.
 
@@ -141,7 +311,17 @@ def _combine_results(
     for logging/audit. This helper is pure with respect to inputs and is easy to unit test.
 
     Args:
-        use_weights: If True, use HybridSearchWeightManager for intelligent combination
+        vector_chunks (List[str]): List of chunks retrieved via vector search.
+        vector_metadata (List[Dict]): Corresponding metadata for vector chunks.
+        keyword_chunks (List[str]): List of chunks retrieved via keyword search.
+        keyword_metadata (List[Dict]): Corresponding metadata for keyword chunks.
+        counts_chunks (List[str]): List of chunks retrieved via counts-based search.
+        counts_metadata (List[Dict]): Corresponding metadata for counts chunks.
+        k (int): Maximum number of chunks to return.
+        logger (Any): Logger instance for logging.
+        use_weights (bool, optional): Whether to use weighted combination. Defaults to True.
+        graph_chunks (Optional[List[str]], optional): List of chunks retrieved from the graph. Defaults to None.
+        graph_metadata (Optional[List[Dict]], optional): Corresponding metadata for graph chunks. Defaults to None.
 
     Returns:
         Tuple of (final_chunks, final_metadata, vector_count, keyword_count)
@@ -181,6 +361,9 @@ def _combine_results(
                 keyword_metadata=keyword_metadata,
                 keyword_scores=keyword_scores,
                 k=k,
+                graph_chunks=graph_chunks or [],
+                graph_metadata=graph_metadata or [],
+                graph_scores=[1.0 / (i + 1) for i in range(len(graph_chunks or []))],
             )
 
             combined_chunks.extend(weighted_chunks)
@@ -215,6 +398,14 @@ def _combine_results(
                 combined_chunks.append(chunk)
                 meta_copy = dict(meta) if meta else {}
                 meta_copy["retrieval_method"] = "keyword"
+                combined_metadata.append(meta_copy)
+
+        for chunk, meta in zip(graph_chunks or [], graph_metadata or []):
+            if chunk not in seen_chunks and len(combined_chunks) < k * 2:
+                seen_chunks.add(chunk)
+                combined_chunks.append(chunk)
+                meta_copy = dict(meta) if meta else {}
+                meta_copy["retrieval_method"] = "thesis_graph"
                 combined_metadata.append(meta_copy)
 
     final_chunks = combined_chunks[:k]
@@ -343,22 +534,54 @@ def _apply_learned_reranking(
     return chunks, metadata
 
 
-@retry_ollama_call(max_retries=3, initial_delay=1.0, operation_name="embed_query")
 def _embed_query(query: str, model_name: str) -> List[float]:
     """Embed a query string using Ollama with retry and rate limit."""
     from langchain_ollama import OllamaEmbeddings
 
-    limiter = get_rate_limiter()
-    if limiter:
-        limiter.acquire()
+    attempt = 0
 
-    embed_model = OllamaEmbeddings(model=model_name)
-    try:
-        return embed_model.embed_query(query)
-    except AttributeError:
-        if hasattr(embed_model, "embed_documents"):
-            return embed_model.embed_documents([query])[0]
-        raise
+    @retry_ollama_call(max_retries=3, initial_delay=1.0, operation_name="embed_query")
+    def embed_once() -> List[float]:
+        nonlocal attempt
+        attempt += 1
+        limiter = get_rate_limiter()
+        if limiter:
+            limiter.acquire()
+
+        embed_model = OllamaEmbeddings(model=model_name)
+        started_at = time.perf_counter()
+        try:
+            try:
+                embedding = embed_model.embed_query(query)
+            except AttributeError:
+                if not hasattr(embed_model, "embed_documents"):
+                    raise
+                embedding = embed_model.embed_documents([query])[0]
+        except Exception as exc:
+            record_embedding_usage(
+                "retrieve.query_embedding",
+                "rag_retrieval",
+                model_name,
+                [query],
+                success=False,
+                attempt=attempt,
+                latency_ms=(time.perf_counter() - started_at) * 1000,
+                failure_reason=type(exc).__name__,
+            )
+            raise
+
+        record_embedding_usage(
+            "retrieve.query_embedding",
+            "rag_retrieval",
+            model_name,
+            [query],
+            success=True,
+            attempt=attempt,
+            latency_ms=(time.perf_counter() - started_at) * 1000,
+        )
+        return embedding
+
+    return embed_once()
 
 
 @retry_chromadb_call(max_retries=3, initial_delay=0.5, operation_name="vector_similarity_search")
@@ -389,7 +612,8 @@ def _query_collection(
                 conditions.append({key: value})
             where_clause = {"$and": conditions} if len(conditions) > 1 else conditions[0]
 
-    return collection.query(
+    return _collection_query(
+        collection,
         query_embeddings=[query_embedding],
         n_results=k,
         where=where_clause,
@@ -409,7 +633,7 @@ def _bm25_search_with_fallback(
         query: Search query
         collection: ChromaDB collection
         k: Number of results to return
-        filters: Optional metadata filters (e.g., {"language": "java", "source_category": "code"})
+        filters: Optional metadata filters (e.g., {"source_kind": "thesis_document"})
 
     Returns:
         Tuple of (chunks, metadata, chunk_ids) sorted by relevance
@@ -441,13 +665,17 @@ def _bm25_search_with_fallback(
                     for doc_id, score in results:
                         try:
                             # Get chunk from collection
-                            chunk_data = collection.get(
-                                ids=[doc_id], include=["documents", "metadatas"]
+                            chunk_data = _collection_get(
+                                collection, ids=[doc_id], include=["documents", "metadatas"]
                             )
 
                             if chunk_data["ids"] and chunk_data["documents"]:
-                                chunks.append(chunk_data["documents"][0])
                                 meta = chunk_data["metadatas"][0] if chunk_data["metadatas"] else {}
+                                if filters and not all(
+                                    meta.get(key) == value for key, value in filters.items()
+                                ):
+                                    continue
+                                chunks.append(chunk_data["documents"][0])
                                 meta["bm25_score"] = score
                                 # Add synthetic distance for explainability (BM25 scores are positive, normalise to 0-1 range as distance)
                                 # Higher BM25 score = lower distance (better match)
@@ -497,7 +725,7 @@ def _keyword_search_fallback(
         query: Search query
         collection: ChromaDB collection
         k: Number of results to return
-        filters: Optional metadata filters (e.g., {"language": "java", "source_category": "code"})
+        filters: Optional metadata filters (e.g., {"source_kind": "thesis_document"})
 
     Returns:
         Tuple of (chunks, metadata, chunk_ids) sorted by relevance
@@ -520,7 +748,8 @@ def _keyword_search_fallback(
     # Get all child chunks (they're the searchable ones)
     # We limit to a reasonable batch size to avoid memory issues
     try:
-        all_chunks = collection.get(
+        all_chunks = _collection_get(
+            collection,
             where=where_clause,  # Always include chunk_type filter
             limit=10000,  # Reasonable limit for keyword search
             include=["documents", "metadatas"],
@@ -681,6 +910,7 @@ def _run_counts_branch(
 
         # Prefer longer tokens (likely more specific terms) over generic words
         # Sort by length descending, then take the first (longest)
+        term: Optional[str]
         if subject_tokens:
             subject_tokens.sort(key=len, reverse=True)
             term = subject_tokens[0]
@@ -749,7 +979,7 @@ def _run_vector_search(
     query: str,
     collection: Collection,
     k: int,
-    code_filters: Dict[str, Any],
+    filters: Dict[str, Any],
     embedding_model_name: str,
     logger,
 ) -> Tuple[List[str], List[Dict[str, Any]]]:
@@ -778,7 +1008,7 @@ def _run_vector_search(
 
     try:
         results = _query_collection(
-            collection, query_embedding, k, embedding_model_name, filters=code_filters
+            collection, query_embedding, k, embedding_model_name, filters=filters
         )
     except (TypeError, ValueError, EmbeddingDimensionMismatch) as e:
         logger.warning(f"Vector search failed, will rely on keyword search: {e}")
@@ -793,14 +1023,19 @@ def _run_vector_search(
     vector_chunks = documents[0] if documents else []
     vector_metadata = metadatas[0] if metadatas else []
     vector_distances = distances[0] if distances else []
+    vector_ids = (results.get("ids") or [[]])[0]
 
     # Merge distances into metadata for explainability
     for i, meta in enumerate(vector_metadata):
+        if not isinstance(meta, dict):
+            continue
+        if i < len(vector_ids):
+            meta["chroma_chunk_id"] = vector_ids[i]
         if i < len(vector_distances):
             meta["distance"] = vector_distances[i]
 
     if vector_chunks:
-        filter_info = f" (filters: {code_filters})" if code_filters else ""
+        filter_info = f" (filters: {filters})" if filters else ""
         logger.info(f"Vector search retrieved {len(vector_chunks)} chunks{filter_info}")
 
     return vector_chunks, vector_metadata
@@ -810,7 +1045,7 @@ def _run_keyword_search(
     query: str,
     collection: Collection,
     k: int,
-    code_filters: Dict[str, Any],
+    filters: Dict[str, Any],
     use_hybrid: bool,
     has_vector_results: bool,
     logger,
@@ -820,11 +1055,11 @@ def _run_keyword_search(
         return [], []
 
     keyword_chunks, keyword_metadata, _ = _bm25_search_with_fallback(
-        query, collection, k, filters=code_filters
+        query, collection, k, filters=filters
     )
 
     if keyword_chunks:
-        filter_info = f" (filters: {code_filters})" if code_filters else ""
+        filter_info = f" (filters: {filters})" if filters else ""
         logger.info(
             f"✓ Keyword search activated: found {len(keyword_chunks)} term matches{filter_info}"
         )
@@ -834,7 +1069,7 @@ def _run_keyword_search(
                 "query": query[:100],
                 "matches_found": len(keyword_chunks),
                 "reason": "hybrid_search" if has_vector_results else "vector_search_failed",
-                "filters_applied": bool(code_filters),
+                "filters_applied": bool(filters),
             },
         )
 
@@ -845,12 +1080,10 @@ def retrieve(
     query: str,
     collection: Collection,
     k: int = 5,
-    language_filter: Optional[str] = None,
-    source_category_filter: Optional[str] = None,
+    filters: Optional[Dict[str, Any]] = None,
     persona: Optional[str] = None,
     domain: Optional[str] = None,
-    enable_code_detection: bool = True,
-    allow_code_category: bool = True,
+    enable_thesis_graph: bool = False,
 ) -> Tuple[List[str], List[Dict]]:
     """Retrieve semantically similar chunks for a query using hybrid search.
 
@@ -861,23 +1094,17 @@ def retrieve(
     Vector search provides semantic understanding while keyword search catches
     exact term matches that embeddings might miss.
 
-    Supports explicit code-specific filtering via language_filter and
-    source_category_filter parameters. Also respects dashboard context signals
-    that control whether automatic code detection should be applied.
+    Passes caller-supplied metadata filters through to vector and keyword search.
 
     Args:
         query: User question or query text.
         collection: ChromaDB collection to search.
         k: Number of results to retrieve (default: 5).
-        language_filter: Filter to specific programming language (e.g., "java", "groovy").
-        source_category_filter: Filter to specific source category (e.g., "code", "governance_doc").
+        filters: Optional explicit metadata filters (ChromaDB where conditions).
         persona: Optional persona name ("supervisor", "assessor", "researcher") to apply
             persona-aware filtering and reranking when metadata is available.
         domain: Optional domain for domain-specific term expansion (e.g., 'aboriginal_torres_strait_islander').
-        enable_code_detection: Whether to auto-detect code queries from query text.
-            If False, code category/language will not be auto-suggested (dashboard signal).
-        allow_code_category: Whether code results are allowed in returned chunks.
-            If False, code chunks will be filtered out (dashboard signal).
+        enable_thesis_graph: Expand thesis-scoped results with graph-linked evidence.
 
     Returns:
         Tuple of (chunks, metadata):
@@ -893,11 +1120,10 @@ def retrieve(
         >>> len(chunks)
         5
 
-        >>> # Code-specific retrieval
-        >>> chunks, meta = retrieve("Show Java services", collection, language_filter="java")
-
-        >>> # Academic persona with code detection disabled
-        >>> chunks, meta = retrieve("Rate the methodology", collection, enable_code_detection=False)
+        >>> chunks, meta = retrieve(
+        ...     "Rate the methodology", collection,
+        ...     filters={"source_kind": "thesis_document"}
+        ... )
     """
     # Get config for defaults
     try:
@@ -912,12 +1138,9 @@ def retrieve(
         enable_learned_reranking = False
         reranker_model = "BAAI/bge-reranker-base"
 
-    # Build filters dict from language and category filters
-    filters = {}
-    if language_filter:
-        filters["language"] = language_filter.lower()
-    if source_category_filter:
-        filters["source_category"] = source_category_filter.lower()
+    # Preserve explicit filters from callers such as the dashboard, then layer
+    # convenience filters on top.
+    filters = filters.copy() if filters else {}
 
     # Delegate to comprehensive retrieve_with_filters
     return retrieve_with_filters(
@@ -925,13 +1148,8 @@ def retrieve(
         collection=collection,
         k=k,
         filters=filters if filters else None,
-        language_filter=None,  # Already in filters dict
-        source_category_filter=None,  # Already in filters dict
         persona=persona,
         domain=domain,
-        auto_detect_filters=enable_code_detection,  # Pass dashboard signal
-        enable_code_detection=enable_code_detection,  # Additional context signal
-        allow_code_category=allow_code_category,  # Additional context signal
         enable_hybrid_search=True,  # retrieve() always uses hybrid search
         enable_reranking=False,  # Lightweight reranking disabled by default
         enable_learned_reranking=enable_learned_reranking,
@@ -939,6 +1157,7 @@ def retrieve(
         fetch_neighbours=False,  # Don't fetch neighbours by default
         enable_caching=False,  # Caching disabled for simple retrieve()
         enable_graph=False,  # Graph expansion disabled for simple retrieve()
+        enable_thesis_graph=enable_thesis_graph,
         enable_parent_child=enable_parent_child,
         cache_dir=None,
     )
@@ -946,37 +1165,15 @@ def retrieve(
 
 def detect_filters_from_query(
     query: str,
-    enable_code_detection: bool = True,
-    allow_code_category: bool = True,
-    persona: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Auto-detect metadata filters from natural language query.
 
-    Analyses query text for keywords that suggest specific content types,
-    categories, technical domains, and programming languages. Constructs
+        Analyses query text for keywords that suggest documentation categories,
+        technical domains, and content types. Constructs
     ChromaDB filter conditions to narrow search space.
-
-    Respects dashboard context signals:
-    - If enable_code_detection is False (Code-Aware Context disabled), skips
-      automatic code query detection
-    - If allow_code_category is False (Code unchecked in Result Type), does not
-      suggest code category filters
-    - If persona is academic mode (supervisor/assessor/researcher), disables
-      code detection as academic queries should not be misclassified as code
-
-    Supports code-specific queries like:
-    - "Show me Java services" → filters to Java code
-    - "Find payment APIs" → filters to code with endpoints
-    - "Which services use Okta?" → filters to code with dependencies
 
     Args:
         query: Natural language query text
-        enable_code_detection: Whether to allow automatic code detection.
-            Dashboard signal: False when Code-Aware Context is disabled.
-        allow_code_category: Whether code category is allowed in results.
-            Dashboard signal: False when "Code" is unchecked in Result Type filter.
-        persona: Optional persona name ("supervisor", "assessor", "researcher").
-            Academic personas should not enable code detection.
 
     Returns:
         Dictionary of ChromaDB where conditions
@@ -985,18 +1182,8 @@ def detect_filters_from_query(
         >>> detect_filters_from_query("Show me API security policies")
         {'source_category': 'governance', 'is_api_reference': True}
 
-        >>> detect_filters_from_query("Find Java microservices")
-        {'source_category': 'code', 'language': 'java'}
-
-        >>> # Academic persona disables code detection
-        >>> detect_filters_from_query(
-        ...     "Rate the methodology",
-        ...     enable_code_detection=False,
-        ...     persona="assessor"
-        ... )
-        {}  # No code filters applied
     """
-    filters = {}
+    filters: Dict[str, Any] = {}
     query_lower = query.lower()
 
     # Academic corpus indicators (thesis, papers, dissertations)
@@ -1030,120 +1217,7 @@ def detect_filters_from_query(
         "analysis",
     ]
 
-    # Only match explicit programming/API patterns
-    explicit_code_terms = [
-        "microservice",
-        "/api/",
-        "rest api",
-        "soap api",
-        "graphql",
-        "endpoint",
-        "controller class",
-        "java class",
-        "python class",
-        "function definition",
-        "code snippet",
-        "implementation code",
-        "service class",
-    ]
-
     academic_like = any(term in query_lower for term in academic_terms)
-    code_like = any(term in query_lower for term in explicit_code_terms)
-
-    # ==========================================
-    # CODE-SPECIFIC FILTER DETECTION
-    # ==========================================
-    # Only apply code detection if:
-    # 1. Code detection is enabled by dashboard (enable_code_detection=True)
-    # 2. Code category is allowed in results (allow_code_category=True)
-    # 3. Not an academic query (unless explicitly matching code terms)
-    if enable_code_detection and allow_code_category and (not academic_like or code_like):
-        # Language detection - check more specific languages first
-        language_keywords = {
-            "groovy": ["groovy", "spock"],  # Check groovy before gradle
-            "java": ["java", "spring", "maven", "junit", "gradle"],
-            "kotlin": ["kotlin", "kotlinx"],
-            "python": ["python", "django", "flask", "pytest"],
-            "go": ["go", "golang", "goroutine"],
-            "rust": ["rust", "cargo", "tokio"],
-            "javascript": ["javascript", "nodejs", "npm", "ts", "typescript"],
-            "sql": ["sql", "plsql", "tsql", "hive"],
-            "xml": ["xml", "xpath", "xsd"],
-            "yaml": ["yaml", "yml", "helm"],
-            "json": ["json", "jsonpath"],
-        }
-
-        for lang, keywords in language_keywords.items():
-            if any(kw in query_lower for kw in keywords):
-                filters["language"] = lang
-                filters["source_category"] = "code"
-                break
-
-        # Code-related queries - be specific
-        if any(
-            term in query_lower
-            for term in [
-                "source code",
-                "code snippet",
-                "code example",
-                "implementation code",
-                "microservice",
-                "api endpoint",
-            ]
-        ):
-            if "source_category" not in filters:
-                filters["source_category"] = "code"
-
-        # Service detection (implies code) - require technical qualifiers
-        if any(
-            term in query_lower
-            for term in ["microservice", "web service", "rest service", "api service"]
-        ):
-            filters["source_category"] = "code"
-
-        # Dependency detection - require technical qualifiers
-        if any(
-            term in query_lower
-            for term in [
-                "maven dependency",
-                "npm package",
-                "pip install",
-                "gradle",
-                "library import",
-                "package import",
-            ]
-        ):
-            filters["source_category"] = "code"
-
-        # API/Endpoint detection - require explicit patterns
-        if any(
-            term in query_lower
-            for term in [
-                "/api/",
-                "rest api",
-                "soap endpoint",
-                "graphql",
-                "http request",
-                "http response",
-                "api controller",
-            ]
-        ):
-            filters["source_category"] = "code"
-
-        # Internal calls/references detection - require code-specific context
-        # (Removed generic "call", "calls", "uses" to avoid academic false positives)
-        if any(
-            term in query_lower
-            for term in ["function call", "method invocation", "api call", "service invocation"]
-        ):
-            if "source_category" not in filters:
-                filters["source_category"] = "code"
-
-        # Fallback: if query matched explicit_code_terms but no specific pattern,
-        # still mark as code category
-        if code_like and "source_category" not in filters:
-            filters["source_category"] = "code"
-
     # ==========================================
     # GOVERNANCE/DOCUMENTATION FILTERS
     # ==========================================
@@ -1173,7 +1247,7 @@ def detect_filters_from_query(
             "http response",
         ]
     ):
-        if not academic_like or code_like:
+        if not academic_like:
             filters["is_api_reference"] = True
 
     # Configuration queries
@@ -1187,50 +1261,6 @@ def detect_filters_from_query(
     # Table/structured data
     if any(term in query_lower for term in ["table", "list", "matrix", "comparison"]):
         filters["contains_table"] = True
-
-    return filters
-
-
-def build_code_filters(
-    language: Optional[str] = None,
-    include_dependencies: bool = False,
-    include_endpoints: bool = False,
-    include_services: bool = False,
-) -> Dict[str, Any]:
-    """Build explicit code-specific metadata filters.
-
-    Creates ChromaDB where conditions for code document filtering.
-    Useful for targeted code searches like "Show me all Java services".
-
-    Args:
-        language: Programming language filter (e.g., "java", "groovy")
-        include_dependencies: Only return code with external dependencies
-        include_endpoints: Only return code with REST/API endpoints
-        include_services: Only return code that's a service
-
-    Returns:
-        Dictionary of ChromaDB where conditions
-
-    Example:
-        >>> filters = build_code_filters(language="java", include_endpoints=True)
-        >>> chunks, meta = retrieve_with_filters("auth", collection, filters=filters)
-    """
-    filters = {"source_category": "code"}
-
-    if language:
-        filters["language"] = language.lower()
-
-    if include_dependencies:
-        # Could add a has_dependencies boolean field when ingesting code
-        filters["has_dependencies"] = True
-
-    if include_endpoints:
-        # Could add an has_endpoints boolean field when ingesting code
-        filters["has_endpoints"] = True
-
-    if include_services:
-        # Services typically have certain naming patterns or markers
-        filters["is_service"] = True
 
     return filters
 
@@ -1274,8 +1304,6 @@ def calculate_rerank_score(chunk: str, metadata: Dict, query: str, distance: flo
         base_score += 0.15
     if "config" in query_lower and metadata.get("is_configuration"):
         base_score += 0.15
-    if "code" in query_lower and metadata.get("contains_code"):
-        base_score += 0.1
 
     # Length preference (moderate-length chunks are often more useful)
     chunk_tokens = len(chunk.split())
@@ -1292,13 +1320,9 @@ def retrieve_with_filters(
     collection: Collection,
     k: int = 5,
     filters: Optional[Dict[str, Any]] = None,
-    language_filter: Optional[str] = None,
-    source_category_filter: Optional[str] = None,
     persona: Optional[str] = None,
     domain: Optional[str] = None,
     auto_detect_filters: bool = True,
-    enable_code_detection: bool = True,
-    allow_code_category: bool = True,
     enable_hybrid_search: bool = True,
     enable_reranking: bool = False,
     enable_learned_reranking: bool = True,
@@ -1306,6 +1330,7 @@ def retrieve_with_filters(
     fetch_neighbours: bool = False,
     enable_caching: bool = True,
     enable_graph: bool = True,
+    enable_thesis_graph: bool = False,
     enable_parent_child: bool = True,
     cache_dir: Optional[Path] = None,
 ) -> Tuple[List[str], List[Dict]]:
@@ -1329,15 +1354,9 @@ def retrieve_with_filters(
         collection: ChromaDB collection
         k: Number of final results to return
         filters: Explicit metadata filters (ChromaDB where conditions)
-        language_filter: Filter to specific programming language (e.g., "java", "python")
-        source_category_filter: Filter to source category (e.g., "code", "governance")
         persona: Optional persona name ("supervisor", "assessor", "researcher")
         domain: Optional domain for domain-specific term expansion (e.g., 'aboriginal_torres_strait_islander')
         auto_detect_filters: Automatically detect filters from query
-        enable_code_detection: Whether to allow auto-detection of code queries (dashboard signal).
-            If False, code category/language will not be auto-suggested.
-        allow_code_category: Whether code results are allowed in returned chunks (dashboard signal).
-            If False, code chunks will be filtered out regardless.
         enable_hybrid_search: Use hybrid vector + keyword search
         enable_reranking: Apply lightweight re-ranking
         enable_learned_reranking: Use cross-encoder reranking
@@ -1345,6 +1364,7 @@ def retrieve_with_filters(
         fetch_neighbours: Fetch prev/next chunks for expanded context
         enable_caching: Use context cache for hot entities
         enable_graph: Expand with graph-connected chunks
+        enable_thesis_graph: Expand thesis-scoped results through the thesis evidence graph
         enable_parent_child: Replace matched children with parent chunks
         cache_dir: Directory for cache file (default: rag_data/)
 
@@ -1356,7 +1376,7 @@ def retrieve_with_filters(
         ...     "API authentication config",
         ...     collection,
         ...     k=5,
-        ...     language_filter="java",
+        ...     filters={"source_kind": "thesis_document"},
         ...     enable_graph=True,
         ...     persona="assessor"
         ... )
@@ -1367,6 +1387,15 @@ def retrieve_with_filters(
         raise ValueError("Query cannot be empty")
     if k < 1:
         raise ValueError(f"k must be >= 1, got {k}")
+
+    candidate_k = min(k * 3, 50) if persona else k
+    if candidate_k > k:
+        logger.info(
+            "Retrieving %d candidates for persona '%s' before selecting %d final chunks",
+            candidate_k,
+            persona,
+            k,
+        )
 
     # Apply domain-specific query expansion if domain provided
     expanded_query = query
@@ -1391,23 +1420,42 @@ def retrieve_with_filters(
     # Use expanded query for remainder of retrieval
     query = expanded_query
 
-    # Track retrieval start time
+    # Build the complete retrieval scope before consulting the context cache.
+    # A query-only cache key can otherwise return unfiltered results to a
+    # thesis-only request, bypassing the caller's source constraints.
+    combined_filters = filters.copy() if filters else {}
+    if auto_detect_filters:
+        auto_filters = detect_filters_from_query(query)
+        for key, value in auto_filters.items():
+            if key not in combined_filters:
+                combined_filters[key] = value
+
     retrieval_start = time.perf_counter()
     cache_hit = False
 
-    # Try cache first if enabled
     if enable_caching:
         from .context_cache import get_context_cache
 
-        # Use rag_data as default cache directory for consistency with other caches
         if cache_dir is None:
             from .rag_config import RAGConfig
 
             config = RAGConfig()
             cache_dir = Path(config.rag_data_path)
 
-        # Simple entity extraction for cache key
-        cache_key = query.lower().strip()[:100]  # Use query as cache key
+        cache_scope = {
+            "query": query.lower().strip(),
+            "k": k,
+            "filters": combined_filters,
+            "persona": persona,
+            "enable_hybrid_search": enable_hybrid_search,
+            "enable_reranking": enable_reranking,
+            "enable_learned_reranking": enable_learned_reranking,
+            "enable_graph": enable_graph,
+            "enable_thesis_graph": enable_thesis_graph,
+            "enable_parent_child": enable_parent_child,
+            "fetch_neighbours": fetch_neighbours,
+        }
+        cache_key = json.dumps(cache_scope, sort_keys=True, default=str)
         cache = get_context_cache(cache_dir=cache_dir, enabled=True)
 
         cached_context = cache.get(cache_key)
@@ -1452,41 +1500,14 @@ def retrieve_with_filters(
         except Exception as e:
             logger.warning(f"Graph retrieval unavailable: {e}")
 
-    # Build combined filters from all sources
-    combined_filters = filters.copy() if filters else {}
-
-    # Add explicit language/category filters if provided
-    if language_filter:
-        combined_filters["language"] = language_filter.lower()
-    if source_category_filter:
-        combined_filters["source_category"] = source_category_filter.lower()
-
-    # Auto-detect additional filters from query if enabled
-    if auto_detect_filters:
-        auto_filters = detect_filters_from_query(
-            query,
-            enable_code_detection=enable_code_detection,
-            allow_code_category=allow_code_category,
-            persona=persona,
-        )
-        # Auto-detected filters don't override explicit ones
-        for key, value in auto_filters.items():
-            if key not in combined_filters:
-                combined_filters[key] = value
-
     # Log filters for debugging
     if combined_filters:
         logger.info(f"Applying filters: {combined_filters}")
         audit("retrieve_filters", {"query": query[:100], "filters": combined_filters})
 
-    # Get embedding model name
-    try:
-        from scripts.ingest.vectors import EMBEDDING_MODEL_NAME
-    except Exception:
-        EMBEDDING_MODEL_NAME = "mxbai-embed-large"
-
     # 0. Agentic SQL counts branch
-    counts_chunks, counts_metadata = [], []
+    counts_chunks: List[str] = []
+    counts_metadata: List[Dict[str, Any]] = []
     try:
         counts_chunks, counts_metadata = _run_counts_branch(query, k, logger)
         if counts_chunks:
@@ -1498,19 +1519,20 @@ def retrieve_with_filters(
     vector_chunks, vector_metadata = _run_vector_search(
         query,
         collection,
-        k,
+        candidate_k,
         combined_filters,
         EMBEDDING_MODEL_NAME,
         logger,
     )
 
     # 2. Keyword/BM25 search (if hybrid enabled or vector search failed)
-    keyword_chunks, keyword_metadata = [], []
+    keyword_chunks: List[str] = []
+    keyword_metadata: List[Dict[str, Any]] = []
     if enable_hybrid_search:
         keyword_chunks, keyword_metadata = _run_keyword_search(
             query,
             collection,
-            k,
+            candidate_k,
             combined_filters,
             enable_hybrid_search,
             bool(vector_chunks),
@@ -1523,6 +1545,15 @@ def retrieve_with_filters(
     except Exception:
         use_hybrid_weights = False
 
+    graph_chunks: List[str] = []
+    graph_metadata: List[Dict[str, Any]] = []
+    if enable_thesis_graph:
+        graph_chunks, graph_metadata = _expand_thesis_graph_candidates(
+            collection,
+            vector_metadata + keyword_metadata,
+            logger,
+        )
+
     documents, metadatas, vector_count, keyword_count = _combine_results(
         vector_chunks,
         vector_metadata,
@@ -1530,10 +1561,14 @@ def retrieve_with_filters(
         keyword_metadata,
         counts_chunks,
         counts_metadata,
-        k,
+        candidate_k,
         logger,
         use_weights=use_hybrid_weights,
+        graph_chunks=graph_chunks,
+        graph_metadata=graph_metadata,
     )
+    if enable_thesis_graph:
+        metadatas = _attach_thesis_graph_provenance(metadatas, logger)
 
     if not documents:
         logger.info("Retrieved 0 chunks for query")
@@ -1585,14 +1620,29 @@ def retrieve_with_filters(
                 for new_id in new_ids[:k]:  # Limit expansion
                     try:
                         # Query by chunk_id metadata
-                        graph_results = collection.get(
-                            where={"chunk_id": new_id}, include=["documents", "metadatas"]
+                        graph_results = _collection_get(
+                            collection,
+                            where={"chunk_id": new_id},
+                            include=["documents", "metadatas"],
                         )
                         if graph_results.get("documents"):
                             documents.append(graph_results["documents"][0])
                             metadatas.append(graph_results["metadatas"][0])
                     except Exception as e:
                         logger.debug(f"Failed to fetch graph chunk {new_id}: {e}")
+
+    # Persona rules must operate on a wider candidate pool, otherwise they can
+    # only reorder the already selected k chunks and cannot affect membership.
+    if persona and apply_persona_reranking:
+        try:
+            documents, metadatas = apply_persona_reranking(
+                documents,
+                metadatas,
+                persona,
+                k,
+            )
+        except Exception as persona_err:
+            logger.debug(f"Persona reranking skipped: {persona_err}")
 
     # Re-rank if enabled
     if enable_reranking:
@@ -1666,18 +1716,6 @@ def retrieve_with_filters(
             )
         except Exception as e:
             logger.warning(f"Learned reranking failed: {e}")
-
-    # Apply persona-aware reranking if requested
-    if persona and apply_persona_reranking:
-        try:
-            documents, metadatas = apply_persona_reranking(
-                documents,
-                metadatas,
-                persona,
-                k,
-            )
-        except Exception as persona_err:
-            logger.debug(f"Persona reranking skipped: {persona_err}")
 
     # Cache results if enabled and this appears to be a hot query
     if enable_caching and not cache_hit:
@@ -1800,7 +1838,11 @@ def fetch_chunk_neighbours(
     neighbour_data = {}
     if neighbour_ids:
         try:
-            results = collection.get(ids=list(neighbour_ids), include=["documents", "metadatas"])
+            results = _collection_get(
+                collection,
+                ids=list(neighbour_ids),
+                include=["documents", "metadatas"],
+            )
             for idx, chunk_id in enumerate(results.get("ids", [])):
                 neighbour_data[chunk_id] = {
                     "text": results["documents"][idx],
@@ -1837,73 +1879,31 @@ def explain_retrieval(
     metadatas: List[Dict],
     k: int,
 ) -> Dict[str, Any]:
-    """Generate explainability data for retrieval results.
+    """Summarise retrieval methods, similarity and source-kind coverage."""
+    del query
+    similarities: List[Optional[float]] = []
+    for metadata in metadatas:
+        safe_metadata = metadata if isinstance(metadata, dict) else {}
+        distance = safe_metadata.get("distance")
+        similarity = 1.0 - min(distance, 1.0) if distance is not None else None
+        similarities.append(round(similarity, 3) if similarity is not None else None)
 
-    Provides transparency into why specific chunks were retrieved,
-    including similarity scores, ranking factors, and metadata insights.
-
-    Args:
-        query: The user query
-        chunks: Retrieved chunks
-        metadatas: Chunk metadata with distance/scores
-        k: Number of results requested
-
-    Returns:
-        Dict with explainability data:
-            - retrieval_method: How chunks were retrieved
-            - ranking_explanation: Why chunks are ordered this way
-            - similarity_scores: List of similarity values
-            - confidence_level: Overall confidence (high/medium/low)
-            - metadata_insights: Key metadata patterns
-    """
-    logger = get_logger()
-
-    # Extract similarity scores (lower distance = higher similarity)
-    similarities = []
-    for meta in metadatas:
-        safe_meta = meta if isinstance(meta, dict) else {}
-        if safe_meta.get("distance") is not None:
-            # Convert distance to similarity (0-1 scale)
-            similarity = 1.0 - min(safe_meta["distance"], 1.0)
-            similarities.append(round(similarity, 3))
-        else:
-            similarities.append(None)
-
-    # Determine retrieval methods used
-    retrieval_methods = set()
-    for meta in metadatas:
-        safe_meta = meta if isinstance(meta, dict) else {}
-        method = safe_meta.get("retrieval_method", "vector")
-        retrieval_methods.add(method)
-
-    # Calculate confidence level
-    valid_sims = [s for s in similarities if s is not None]
-    if valid_sims:
-        avg_similarity = sum(valid_sims) / len(valid_sims)
-        if avg_similarity >= 0.7:
-            confidence = "high"
-        elif avg_similarity >= 0.5:
-            confidence = "medium"
-        else:
-            confidence = "low"
+    retrieval_methods = {
+        (metadata if isinstance(metadata, dict) else {}).get("retrieval_method", "vector")
+        for metadata in metadatas
+    }
+    valid_similarities = [score for score in similarities if score is not None]
+    if valid_similarities:
+        average_similarity = sum(valid_similarities) / len(valid_similarities)
+        confidence = (
+            "high"
+            if average_similarity >= 0.7
+            else "medium" if average_similarity >= 0.5 else "low"
+        )
     else:
+        average_similarity = 0.0
         confidence = "unknown"
 
-    # Extract metadata insights
-    source_categories = set()
-    languages = set()
-    services = set()
-
-    for meta in metadatas:
-        safe_meta = meta if isinstance(meta, dict) else {}
-        if safe_meta.get("source_category"):
-            source_categories.add(safe_meta["source_category"])
-        if safe_meta.get("language"):
-            languages.add(safe_meta["language"])
-        if safe_meta.get("service_name"):
-            services.add(safe_meta["service_name"])
-
-    # Build ranking explanation
     ranking_parts = []
     if "vector" in retrieval_methods:
         ranking_parts.append("semantic similarity")
@@ -1911,25 +1911,25 @@ def explain_retrieval(
         ranking_parts.append("keyword matching")
     if "graph" in retrieval_methods:
         ranking_parts.append("graph relationships")
-
     ranking_explanation = (
         f"Ranked by {' + '.join(ranking_parts)}" if ranking_parts else "Ranked by relevance"
     )
+    if valid_similarities:
+        ranking_explanation += f". Top match has {max(valid_similarities):.1%} similarity."
 
-    if valid_sims:
-        top_score = max(valid_sims)
-        ranking_explanation += f". Top match has {top_score:.1%} similarity."
-
+    source_kinds = {
+        metadata["source_kind"]
+        for metadata in metadatas
+        if isinstance(metadata, dict) and isinstance(metadata.get("source_kind"), str)
+    }
     return {
-        "retrieval_method": list(retrieval_methods),
+        "retrieval_method": sorted(retrieval_methods),
         "ranking_explanation": ranking_explanation,
         "similarity_scores": similarities,
         "confidence_level": confidence,
-        "avg_similarity": round(sum(valid_sims) / len(valid_sims), 3) if valid_sims else 0.0,
+        "avg_similarity": round(average_similarity, 3),
         "metadata_insights": {
-            "source_categories": list(source_categories),
-            "languages": list(languages),
-            "services": list(services),
+            "source_kinds": sorted(source_kinds),
             "total_chunks": len(chunks),
             "k_requested": k,
         },

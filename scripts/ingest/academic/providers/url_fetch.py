@@ -13,8 +13,8 @@ TODO: Use newspaper3k or similar library for more robust HTML parsing and metada
 import logging
 import re
 from datetime import datetime, timezone
-from typing import List, Optional
-from urllib.parse import urlparse
+from typing import Any, Dict, List, Optional
+from urllib.parse import urljoin, urlparse
 
 import requests
 
@@ -42,6 +42,8 @@ class URLFetchProvider(BaseProvider):
 
     Note: This is a last resort provider with lower confidence
     """
+
+    max_redirects = 5
 
     def __init__(self):
         self.name = "url_fetch"
@@ -88,22 +90,41 @@ class URLFetchProvider(BaseProvider):
             return Reference(
                 ref_id=f"url_unresolved_{hash(citation_text)}",
                 raw_citation=citation_text,
+                title=self._title_from_citation(citation_text),
+                doi=doi,
+                authors=authors or [],
+                year=year,
                 resolved=False,
                 status=ReferenceStatus.UNRESOLVED,
                 metadata_provider=self.name,
+                link_status="unresolved",
             )
 
         try:
             return self._resolve_by_url(url, citation_text)
-        except (RecoverableError, FatalError):
+        except (RecoverableError, FatalError) as exc:
+            title = self._title_from_citation(citation_text)
+            use_logger.warning("URL lookup failed for reference %r: %s", title, exc)
             # Return unresolved reference
             return Reference(
                 ref_id=f"url_unresolved_{hash(url)}",
                 raw_citation=citation_text,
+                title=title,
+                doi=doi,
+                authors=authors or [],
+                year=year,
                 resolved=False,
                 status=ReferenceStatus.UNRESOLVED,
                 metadata_provider=self.name,
+                link_status="unresolved",
             )
+
+    @staticmethod
+    def _title_from_citation(citation_text: str) -> Optional[str]:
+        """Extract the cited work's title without using an HTTP error response."""
+        from ..graph import extract_title_from_citation
+
+        return extract_title_from_citation(citation_text)
 
     def _extract_url(self, text: str) -> Optional[str]:
         """Extract URL from citation text, cleaning up spaces and line breaks."""
@@ -132,17 +153,42 @@ class URLFetchProvider(BaseProvider):
         }
 
         try:
-            response = self._request_with_retry("GET", url, headers=headers)
+            current_url = url
+            visited_urls = {current_url}
+            redirect_count = 0
+            response = self._request_with_retry(
+                "GET", current_url, headers=headers, allow_redirects=False
+            )
+            while 300 <= response.status_code < 400:
+                location = response.headers.get("Location")
+                if not location:
+                    raise FatalError(
+                        f"Redirect response from {current_url} did not include a Location header"
+                    )
+                if redirect_count >= self.max_redirects:
+                    raise FatalError(f"Too many redirects while resolving URL: {url}")
+
+                redirect_url = urljoin(current_url, location)
+                if redirect_url in visited_urls:
+                    raise FatalError(f"Redirect loop while resolving URL: {url}")
+                visited_urls.add(redirect_url)
+                redirect_count += 1
+                current_url = redirect_url
+                response = self._request_with_retry(
+                    "GET", current_url, headers=headers, allow_redirects=False
+                )
+
+            final_url = getattr(response, "url", None) or current_url
 
             # Check content type
             content_type = response.headers.get("Content-Type", "").lower()
 
             if "pdf" in content_type:
                 # Handle PDF - extract from headers/URL only
-                return self._parse_pdf_metadata(url, response)
+                return self._parse_pdf_metadata(final_url, response)
             elif "html" in content_type or not content_type:
                 # Parse HTML
-                return self._parse_html_metadata(url, response.text, original_citation)
+                return self._parse_html_metadata(final_url, response.text, original_citation)
             else:
                 raise FatalError(f"Unsupported content type: {content_type}")
 
@@ -153,7 +199,7 @@ class URLFetchProvider(BaseProvider):
 
     def _parse_html_metadata(self, url: str, html: str, original_citation: str) -> Reference:
         """Parse metadata from HTML page."""
-        metadata = {
+        metadata: Dict[str, Any] = {
             "title": None,
             "authors": [],
             "year": None,
@@ -259,16 +305,29 @@ class URLFetchProvider(BaseProvider):
         # Compute quality score (lower for URL fetch)
         quality_score = self._compute_quality_score(metadata)
 
+        title_value = metadata.get("title")
+        title = title_value if isinstance(title_value, str) else original_citation[:200]
+        authors_value = metadata.get("authors")
+        authors = (
+            [str(author) for author in authors_value] if isinstance(authors_value, list) else []
+        )
+        year_value = metadata.get("year")
+        resolved_year = year_value if isinstance(year_value, int) else None
+        abstract_value = metadata.get("abstract")
+        abstract = abstract_value[:500] if isinstance(abstract_value, str) else ""
+        doi_value = metadata.get("doi")
+        doi = doi_value if isinstance(doi_value, str) else None
+
         return Reference(
             ref_id=ref_id,
             raw_citation=original_citation,
-            title=metadata["title"],
-            authors=metadata["authors"],
-            year=metadata["year"],
-            abstract=metadata["abstract"][:500] if metadata["abstract"] else "",
+            title=title,
+            authors=authors,
+            year=resolved_year,
+            abstract=abstract,
             venue=venue,
             venue_type=venue_type,
-            doi=metadata["doi"],
+            doi=doi,
             reference_type=reference_type,
             resolved=True,
             status=ReferenceStatus.RESOLVED,

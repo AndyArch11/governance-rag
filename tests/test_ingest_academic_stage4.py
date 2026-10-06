@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+from scripts.ingest import ingest_academic as ingest_academic_module
+from scripts.ingest.academic.downloader import DownloadResult
 from scripts.ingest.ingest_academic import stage_download_references
 
 
@@ -62,3 +64,44 @@ def test_stage_download_references_calls_web(monkeypatch):
     updated = stage_download_references(refs, config, logger)
     assert updated[0]["download_status"] == "success"
     assert updated[0]["artifact_path"] == "/tmp/x.html"
+
+
+def test_stage_download_references_reports_structured_progress(monkeypatch):
+    events = []
+    results = iter(
+        [
+            DownloadResult(success=True, path="/tmp/one.html"),
+            DownloadResult(success=False, error="http_404"),
+        ]
+    )
+    monkeypatch.setattr(
+        ingest_academic_module,
+        "audit",
+        lambda event, data: events.append((event, data)),
+    )
+    monkeypatch.setattr(
+        ingest_academic_module,
+        "download_web_content",
+        lambda url, dest_dir: next(results),
+    )
+    config = SimpleNamespace(dry_run=False, cache_dir="/tmp", max_pdf_size_mb=50)
+    refs = [
+        {"reference_type": "online", "url": "https://example.com/one"},
+        {"reference_type": "online", "url": "https://example.com/two"},
+        {"reference_type": "academic"},
+    ]
+
+    updated = stage_download_references(refs, config, DummyLogger())
+
+    assert [reference["download_status"] for reference in updated] == [
+        "success",
+        "http_404",
+        "skipped",
+    ]
+    checkpoints = [data for event, data in events if event == "progress_checkpoint"]
+    assert checkpoints[0]["stage"] == "reference_download"
+    assert checkpoints[-1]["items_done"] == 3
+    assert checkpoints[-1]["items_total"] == 3
+    assert checkpoints[-1]["succeeded"] == 1
+    assert checkpoints[-1]["failed"] == 1
+    assert checkpoints[-1]["skipped"] == 1

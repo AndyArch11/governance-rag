@@ -1,0 +1,376 @@
+{
+  "$schema": "./cultural_lens.schema.json",
+  "profile_id": "aboriginal_torres_strait_islander",
+  "name": "Aboriginal and Torres Strait Islander (Australia)",
+  "version": "0.1.0",
+  "status": "draft",
+  "extends": null,
+  "description": "Initial draft base profile for theses addressing Aboriginal and Torres Strait Islander peoples, knowledges and health. Aboriginal peoples and Torres Strait Islander peoples are distinct, and practices differ between nations, communities and regions; nation- or community-specific nuances belong in child profiles that extend this one. All entries require review by people with the relevant cultural authority before the profile is approved.",
+  "applies_to": {
+    "peoples": ["Aboriginal peoples", "Torres Strait Islander peoples"],
+    "nations_or_language_groups": [],
+    "regions": ["Australia"],
+    "notes": "Add child profiles for specific nations, communities or regions where protocols differ."
+  },
+  "governance": {
+    "authored_by": [{"name": "TBC", "role": "Initial draft (generated scaffold)", "date": "2026-10-03"}],
+    "reviewed_by": [],
+    "approved_on": null,
+    "review_due": null,
+    "usage_permissions": "TBC by reviewers.",
+    "contains_restricted_content": false,
+    "change_log": [
+      {"version": "0.1.0", "date": "2026-10-03", "summary": "Initial draft scaffold for review."}
+    ]
+  },
+  "domain_terms_ref": "aboriginal_torres_strait_islander",
+  "detection": {
+    "indicator_terms": [
+      "Aboriginal",
+      "Torres Strait Islander",
+      "First Nations",
+      "Country",
+      "kinship",
+      "Elders",
+      "social and emotional wellbeing",
+      "community-controlled"
+    ],
+    "positionality_indicators": [
+      "I am a * woman",
+      "I am a * man",
+      "my Country",
+      "my mob",
+      "as a non-Indigenous researcher"
+    ],
+    "methodology_indicators": [
+      "yarning",
+      "dadirri",
+      "Indigenous standpoint",
+      "Indigenist research",
+      "decolonising methodology",
+      "community-led",
+      "participatory action research"
+    ],
+    "ethics_indicators": [
+      "AIATSIS Code of Ethics",
+      "NHMRC Ethical conduct in research with Aboriginal and Torres Strait Islander Peoples",
+      "Aboriginal Health and Medical Research Council",
+      "community consent",
+      "Indigenous Data Sovereignty"
+    ],
+    "min_confidence": 0.6
+  },
+  "frameworks": [
+    {
+      "id": "aiatsis_code_2020",
+      "title": "AIATSIS Code of Ethics for Aboriginal and Torres Strait Islander Research",
+      "issuer": "Australian Institute of Aboriginal and Torres Strait Islander Studies",
+      "year": 2020,
+      "url": "",
+      "key_principles": [
+        "Indigenous self-determination",
+        "Indigenous leadership",
+        "Impact and value",
+        "Sustainability and accountability"
+      ],
+      "relevance": "Primary ethical framework for research with Aboriginal and Torres Strait Islander peoples."
+    },
+    {
+      "id": "nhmrc_2018",
+      "title": "Ethical conduct in research with Aboriginal and Torres Strait Islander Peoples and communities",
+      "issuer": "National Health and Medical Research Council",
+      "year": 2018,
+      "url": "",
+      "key_principles": [
+        "Spirit and integrity",
+        "Cultural continuity",
+        "Equity",
+        "Reciprocity",
+        "Respect",
+        "Responsibility"
+      ],
+      "relevance": "Health research ethics guidance."
+    },
+    {
+      "id": "maiam_nayri_wingara_2018",
+      "title": "Indigenous Data Sovereignty Principles",
+      "issuer": "Maiam nayri Wingara Indigenous Data Sovereignty Collective",
+      "year": 2018,
+      "url": "",
+      "key_principles": [],
+      "relevance": "Governance of data about Aboriginal and Torres Strait Islander peoples."
+    },
+    {
+      "id": "care_principles",
+      "title": "CARE Principles for Indigenous Data Governance",
+      "issuer": "Global Indigenous Data Alliance",
+      "year": 2019,
+      "url": "",
+      "key_principles": ["Collective benefit", "Authority to control", "Responsibility", "Ethics"],
+      "relevance": "International Indigenous data governance principles."
+    },
+    {
+      "id": "sewb_framework",
+      "title": "Social and emotional wellbeing framework (Gee, Dudgeon, Schultz, Hart and Kelly, 2014)",
+      "issuer": "Working Together (2nd edition)",
+      "year": 2014,
+      "url": "",
+      "key_principles": [
+        "Connection to body",
+        "Connection to mind and emotions",
+        "Connection to family and kinship",
+        "Connection to community",
+        "Connection to culture",
+        "Connection to Country",
+        "Connection to spirituality and ancestors"
+      ],
+      "relevance": "Holistic model of wellbeing relevant to healing concepts."
+    }
+  ],
+  "concepts": [
+    {
+      "id": "country",
+      "label": "Country",
+      "aliases": ["land", "sea Country", "saltwater Country"],
+      "description": "Relational connection to land, waters, sky and all they hold; not equivalent to 'land' as property.",
+      "related": [
+        {"concept_id": "healing", "relation": "supports"},
+        {"concept_id": "kinship", "relation": "interconnected_with"},
+        {"concept_id": "spirituality", "relation": "interconnected_with"}
+      ],
+      "review_status": "draft"
+    },
+    {
+      "id": "kinship",
+      "label": "Kinship",
+      "aliases": ["family", "mob", "kin"],
+      "description": "Systems of relationships, roles and obligations between people, and with Country.",
+      "related": [
+        {"concept_id": "healing", "relation": "supports"},
+        {"concept_id": "community", "relation": "interconnected_with"}
+      ],
+      "review_status": "draft"
+    },
+    {
+      "id": "healing",
+      "label": "Healing",
+      "aliases": ["cultural healing", "healing practices"],
+      "description": "Holistic restoration of wellbeing across physical, social, emotional, cultural and spiritual dimensions.",
+      "related": [
+        {"concept_id": "sewb", "relation": "contributes_to"},
+        {"concept_id": "culture", "relation": "grounded_in"}
+      ],
+      "review_status": "draft"
+    },
+    {
+      "id": "sewb",
+      "label": "Social and emotional wellbeing",
+      "aliases": ["SEWB"],
+      "description": "Holistic concept of health encompassing connections to body, mind, family, community, culture, Country and spirituality.",
+      "related": [],
+      "review_status": "draft"
+    },
+    {
+      "id": "culture",
+      "label": "Culture",
+      "aliases": ["cultural practice", "cultural knowledge"],
+      "description": "",
+      "related": [],
+      "review_status": "draft"
+    },
+    {
+      "id": "community",
+      "label": "Community",
+      "aliases": ["community-controlled"],
+      "description": "",
+      "related": [],
+      "review_status": "draft"
+    },
+    {
+      "id": "spirituality",
+      "label": "Spirituality and ancestors",
+      "aliases": ["the Dreaming"],
+      "description": "",
+      "related": [],
+      "review_status": "draft"
+    },
+    {
+      "id": "elders",
+      "label": "Elders",
+      "aliases": ["Elders past and present", "Aunty", "Uncle"],
+      "description": "Recognised knowledge holders and leaders.",
+      "related": [{"concept_id": "community", "relation": "guides"}],
+      "review_status": "draft"
+    }
+  ],
+  "terminology": {
+    "preferred_terms": [
+      {
+        "use": "Aboriginal and Torres Strait Islander peoples",
+        "instead_of": ["Aborigines", "ATSI"],
+        "note": "Avoid abbreviations; recognise distinct peoples.",
+        "review_status": "draft"
+      },
+      {
+        "use": "the Dreaming",
+        "instead_of": ["Dreamtime"],
+        "note": "Preferences vary between communities; confirm with reviewers.",
+        "review_status": "draft"
+      }
+    ],
+    "capitalisation": [
+      {"term": "Aboriginal"},
+      {"term": "Torres Strait Islander"},
+      {"term": "Indigenous"},
+      {"term": "First Nations"},
+      {"term": "Country", "note": "When referring to the cultural concept."},
+      {"term": "Elder"}
+    ],
+    "spelling_variants": [],
+    "avoid_terms": [
+      {
+        "term": "half-caste",
+        "reason": "Offensive historical classification.",
+        "suggested_alternative": "",
+        "allow_in_quotation": true
+      },
+      {
+        "term": "full-blood",
+        "reason": "Offensive historical classification.",
+        "suggested_alternative": "",
+        "allow_in_quotation": true
+      },
+      {
+        "term": "Aborigines",
+        "reason": "Outdated collective noun.",
+        "suggested_alternative": "Aboriginal people(s)",
+        "allow_in_quotation": true
+      }
+    ]
+  },
+  "sensitivities": [
+    {
+      "id": "deceased_persons",
+      "type": "deceased_persons",
+      "description": "Names, images and voices of deceased people may cause distress and may be restricted in some communities.",
+      "detection_terms": ["passed away", "deceased", "late"],
+      "applies_to": ["text", "images", "captions", "answers"],
+      "handling": "flag_for_review",
+      "notice_text": "This content may contain names, images or voices of people who have died."
+    },
+    {
+      "id": "restricted_knowledge",
+      "type": "restricted_knowledge",
+      "description": "Knowledge that is restricted by gender, age, initiation status or community protocol.",
+      "detection_terms": ["men's business", "women's business", "secret", "sacred"],
+      "applies_to": ["text", "images", "captions", "answers"],
+      "handling": "flag_for_review",
+      "notice_text": "This content may include culturally restricted knowledge."
+    },
+    {
+      "id": "sacred_sites",
+      "type": "sacred_sites_or_objects",
+      "description": "Locations or descriptions of sacred sites and objects.",
+      "detection_terms": ["sacred site"],
+      "applies_to": ["text", "images", "captions"],
+      "handling": "flag_for_review",
+      "notice_text": ""
+    }
+  ],
+  "emphasised_topics": [
+    {
+      "topic": "Connection to Country, kin and culture in healing",
+      "concept_ids": ["country", "kinship", "culture", "healing"],
+      "rationale": "Healing is understood relationally rather than solely at the individual level.",
+      "weight": 2.0
+    },
+    {
+      "topic": "Community involvement and self-determination",
+      "concept_ids": ["community", "elders"],
+      "rationale": "",
+      "weight": 1.5
+    }
+  ],
+  "assessment_criteria": [
+    {
+      "id": "community_engagement_and_governance",
+      "criterion": "Community engagement and governance",
+      "description": "Evidence that communities were involved in shaping, governing and approving the research.",
+      "evidence_indicators": ["community reference group", "advisory group", "co-designed", "community-controlled organisation"],
+      "framework_refs": ["aiatsis_code_2020", "nhmrc_2018"],
+      "severity_if_absent": "warning",
+      "review_status": "draft"
+    },
+    {
+      "id": "positionality",
+      "criterion": "Researcher positionality",
+      "description": "The researcher states their standpoint and relationship to the communities involved.",
+      "evidence_indicators": ["positionality", "standpoint", "my Country", "non-Indigenous researcher"],
+      "framework_refs": [],
+      "severity_if_absent": "info",
+      "review_status": "draft"
+    },
+    {
+      "id": "culturally_grounded_methodology",
+      "criterion": "Culturally grounded methodology",
+      "description": "Methods are appropriate to the communities involved and justified with reference to Indigenous methodologies.",
+      "evidence_indicators": ["yarning", "dadirri", "Indigenous standpoint", "Indigenist"],
+      "framework_refs": ["aiatsis_code_2020"],
+      "severity_if_absent": "info",
+      "review_status": "draft"
+    },
+    {
+      "id": "data_sovereignty_and_consent",
+      "criterion": "Consent and data sovereignty",
+      "description": "Consent processes and the governance, ownership and return of data and knowledge are addressed.",
+      "evidence_indicators": ["consent", "data sovereignty", "data governance", "returned to community"],
+      "framework_refs": ["maiam_nayri_wingara_2018", "care_principles"],
+      "severity_if_absent": "warning",
+      "review_status": "draft"
+    },
+    {
+      "id": "reciprocity_and_benefit",
+      "criterion": "Reciprocity and benefit",
+      "description": "The research describes benefits to, and reciprocal relationships with, the communities involved.",
+      "evidence_indicators": ["benefit", "reciprocity", "capacity building", "translation to community"],
+      "framework_refs": ["nhmrc_2018", "aiatsis_code_2020"],
+      "severity_if_absent": "warning",
+      "review_status": "draft"
+    },
+    {
+      "id": "strengths_based_framing",
+      "criterion": "Strengths-based framing",
+      "description": "Findings and discussion avoid deficit framing and recognise community strengths and knowledges.",
+      "evidence_indicators": ["strengths-based", "resilience", "cultural strength"],
+      "framework_refs": [],
+      "severity_if_absent": "info",
+      "review_status": "draft"
+    }
+  ],
+  "research_question_framings": [
+    {
+      "framing": "Research aims or purposes defined with or by community",
+      "indicators": ["the aim of this research", "the community wanted to know", "purpose of this yarn"],
+      "classify_as": "aim"
+    },
+    {
+      "framing": "Guiding yarning topics",
+      "indicators": ["yarning topics", "yarns focused on", "guiding questions"],
+      "classify_as": "guiding_question"
+    }
+  ],
+  "deficit_framing_indicators": [
+    "gap",
+    "disadvantage",
+    "non-compliance",
+    "at-risk population",
+    "hard to reach"
+  ],
+  "answer_guidance": [
+    "Use the terminology and framing used by the thesis and its participants.",
+    "Recognise that wellbeing and healing may be described relationally, including connections to Country, kin, culture, community and spirituality.",
+    "Do not generalise practices from one community or nation to all Aboriginal and Torres Strait Islander peoples.",
+    "Avoid deficit framing; describe strengths where the source does.",
+    "Do not speculate about restricted, sacred or ceremonial knowledge."
+  ]
+}

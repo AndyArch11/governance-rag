@@ -60,6 +60,7 @@ def get_word_cloud_data(
 
     # Find max frequency for normalisation
     max_freq = max(freq for _, freq, _ in top_words) if top_words else 1
+    result: Dict[str, Any] | List[Dict[str, Any]]
 
     if format == "array":
         result = [

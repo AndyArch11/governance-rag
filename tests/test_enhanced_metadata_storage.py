@@ -199,8 +199,10 @@ class TestEnhancedMetadataExtraction:
         assert metadata.parent_section is not None
         assert metadata.section_depth > 0
 
-    def test_create_enhanced_metadata_code_detection(self, sample_document_with_sections):
-        """Test code detection in enhanced metadata."""
+    def test_create_enhanced_metadata_keeps_code_fences_as_text(
+        self, sample_document_with_sections
+    ):
+        """Generic chunk metadata does not classify code fences."""
         from scripts.ingest.chunk import create_enhanced_metadata
 
         chunk = """```bash
@@ -216,9 +218,9 @@ myapp --setup
             doc_type="documentation",
         )
 
-        assert metadata.contains_code is True
-        assert metadata.code_language in ["bash", "shell"]
-        assert metadata.content_type == "code"
+        assert metadata.content_type == "text"
+        assert not hasattr(metadata, "contains_code")
+        assert not hasattr(metadata, "code_language")
 
     def test_create_enhanced_metadata_api_reference(self, sample_document_with_sections):
         """Test API reference detection in enhanced metadata."""
@@ -309,7 +311,6 @@ class TestStoreChunksWithEnhancedMetadata:
 
             # Content classification
             assert "content_type" in chunk_meta
-            assert "contains_code" in chunk_meta
             assert "contains_table" in chunk_meta
 
             # Technical metadata
@@ -376,7 +377,7 @@ class TestStoreParentChunksWithEnhancedMetadata:
         assert "content_type" in chunk_meta
         # Verify at least some of the enhanced fields are present
         # (not all fields may be populated depending on content)
-        enhanced_fields = ["section_depth", "contains_code", "contains_table", "technical_entities"]
+        enhanced_fields = ["section_depth", "contains_table", "technical_entities"]
         assert sum(1 for field in enhanced_fields if field in chunk_meta) >= 2
         assert "technical_entities" in chunk_meta
 
@@ -440,7 +441,7 @@ class TestStoreChildChunksWithEnhancedMetadata:
         assert "parent_section" in chunk_meta
         # Verify enhanced metadata exists (even if some fields might be empty)
         enhanced_fields_present = sum(
-            1 for field in ["content_type", "section_depth", "contains_code"] if field in chunk_meta
+            1 for field in ["content_type", "section_depth"] if field in chunk_meta
         )
         assert (
             enhanced_fields_present >= 1
@@ -450,6 +451,53 @@ class TestStoreChildChunksWithEnhancedMetadata:
         # Technical entities should be stored as JSON
         entities = json.loads(chunk_meta["technical_entities"])
         assert "/api/v1/users" in entities
+
+    def test_store_child_chunks_maps_supplied_source_span_to_structure(
+        self, mock_collections, monkeypatch
+    ):
+        """Child metadata is derived from its stored source span, not text rediscovery."""
+        from scripts.ingest import vectors
+        from scripts.ingest.pdfparser import extract_structure_from_text
+
+        monkeypatch.setattr(vectors, "_create_embed_model", lambda: MockEmbeddings())
+        full_text = (
+            "## Chapter 1: Introduction\n\nOpening text.\n\n## Chapter 2: Methods\n\nMethod text."
+        )
+        child_text = "Method text."
+        source_start = full_text.index(child_text)
+        document_structure = extract_structure_from_text(full_text)
+
+        vectors.store_child_chunks(
+            doc_id="thesis-001",
+            child_chunks=[
+                {
+                    "id": "child_0_0",
+                    "text": child_text,
+                    "parent_id": "parent_0",
+                    "source_start": source_start,
+                    "source_end": source_start + len(child_text),
+                }
+            ],
+            chunk_collection=mock_collections["chunk_collection"],
+            base_metadata={
+                "doc_id": "thesis-001",
+                "source": "/theses/thesis-001.pdf",
+                "source_kind": "thesis_document",
+                "version": 1,
+                "hash": "abc123",
+                "doc_type": "academic_reference",
+                "embedding_model": "mxbai-embed-large",
+            },
+            full_text=full_text,
+            doc_type="academic_reference",
+            document_structure=document_structure,
+        )
+
+        chunk_meta = mock_collections["chunk_collection"].add_calls[0]["metadatas"][0]
+        assert chunk_meta["source_start"] == source_start
+        assert chunk_meta["source_end"] == source_start + len(child_text)
+        assert chunk_meta["chapter"] == "Chapter 2"
+        assert "Chapter 2: Methods" in chunk_meta["heading_path"]
 
 
 # =========================
@@ -520,7 +568,6 @@ class TestEnhancedMetadataRetrieval:
 
             # Content classification
             assert "content_type" in chunk_meta
-            assert "contains_code" in chunk_meta
 
             # Technical metadata
             assert "technical_entities" in chunk_meta

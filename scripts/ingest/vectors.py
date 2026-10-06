@@ -21,24 +21,27 @@ import re
 import textwrap
 import time
 from collections import Counter
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Tuple, Union
 
 from langchain_ollama import OllamaEmbeddings
 from pydantic import ValidationError
 
+from scripts.utils.llm_instrumentation import invoke_with_usage
 from scripts.utils.retry_utils import retry_chromadb_call, retry_ollama_call
 
 # Collection typing (best-effort)
 try:
-    from chromadb.api.models.Collection import (  # type: ignore  # noqa: WPS433,E402
-        Collection as ChromaDBCollection,
-    )
-    from chromadb.errors import InvalidArgumentError
+    from chromadb.api.models.Collection import Collection as ChromaDBCollection  # noqa: WPS433,E402
 except Exception:
     ChromaDBCollection = Any  # type: ignore
 
-    class InvalidArgumentError(Exception):  # Fallback exception
-        pass
+InvalidArgumentError: type[Exception] = ValueError
+try:
+    from chromadb.errors import InvalidArgumentError as _ChromaInvalidArgumentError
+except ImportError:
+    pass
+else:
+    InvalidArgumentError = _ChromaInvalidArgumentError
 
 
 try:
@@ -49,6 +52,11 @@ except Exception:
 Collection = Union[ChromaDBCollection, ChromaSQLiteCollection, Any]
 CollectionType = Collection  # Alias for backward compatibility
 
+from scripts.utils.embedding_model_config import (
+    EMBEDDING_MODEL_MAX_TOKEN_LIMIT,
+    EMBEDDING_MODEL_NAME,
+    EXPECTED_EMBEDDING_DIM,
+)
 from scripts.utils.logger import create_module_logger
 from scripts.utils.logger import get_logger as get_global_logger
 
@@ -73,10 +81,30 @@ from .llm_cache import LLMCache
 from .preprocess import get_LLM_validator
 
 # Import enhanced metadata for RAG optimisation
+create_enhanced_metadata: Any | None = None
 try:
-    from .chunk import create_enhanced_metadata
+    from .chunk import create_enhanced_metadata as _create_enhanced_metadata
 except ImportError:
-    create_enhanced_metadata = None  # Gracefully handle if not available
+    pass
+else:
+    create_enhanced_metadata = _create_enhanced_metadata
+
+
+def _get_enhanced_metadata_factory() -> Any | None:
+    """Resolve enhanced metadata creation after circular imports have completed.
+
+    Returns:
+        The enhanced metadata creation function if available, else None.
+    """
+    global create_enhanced_metadata
+    if create_enhanced_metadata is None:
+        try:
+            from .chunk import create_enhanced_metadata as metadata_factory
+        except ImportError:
+            return None
+        create_enhanced_metadata = metadata_factory
+    return create_enhanced_metadata
+
 
 if TYPE_CHECKING:
     pass
@@ -85,35 +113,15 @@ if TYPE_CHECKING:
 # Tune based on your use case: higher = stricter matching
 SIMILARITY_THRESHOLD: float = 0.4
 
-# Embedding model identifier (used for metadata and cache namespace)
-# mxbai-embed-large: 1024-dim, better semantic understanding than nomic-embed-text
-EMBEDDING_MODEL_NAME: str = "mxbai-embed-large"
-
-# Expected embedding dimension for EMBEDDING_MODEL_NAME
-# Used for validation: mxbai-embed-large = 1024, all-minilm = 384
-EXPECTED_EMBEDDING_DIMENSION: dict = {
-    "mxbai-embed-large": 1024,
-    "nomic-embed-text": 768,
-    "all-minilm": 384,
-}
-EXPECTED_EMBEDDING_DIM: int = EXPECTED_EMBEDDING_DIMENSION.get(EMBEDDING_MODEL_NAME, 1024)
-
 # Hard limit to avoid exceeding ChromaDB's max batch size (default ~5461)
 CHROMADB_ADD_BATCH_LIMIT: int = 5000
 
 # Embedding model context length (maximum tokens it can process)
-# mxbai-embed-large has a 512-token context limit
-# We use a conservative limit (300 tokens) to account for:
+# The configured model's limit comes from embedding_config.py. We use a
+# conservative 60% allowance to account for:
 # - Token estimation variance (academic text has more tokens per char)
 # - Batch processing overhead
 # - Safety margin for edge cases
-EMBEDDING_MODEL_MAX_TOKENS: dict = {
-    "mxbai-embed-large": 512,
-    "nomic-embed-text": 2048,
-    "all-minilm": 256,
-}
-EMBEDDING_MODEL_MAX_TOKEN_LIMIT: int = EMBEDDING_MODEL_MAX_TOKENS.get(EMBEDDING_MODEL_NAME, 512)
-
 # Conservative usable token limit (use only 60% of actual limit)
 # This accounts for: special chars, punctuation, multilingual content
 EMBEDDING_USABLE_TOKEN_LIMIT: int = max(100, int(EMBEDDING_MODEL_MAX_TOKEN_LIMIT * 0.6))
@@ -130,6 +138,45 @@ TABLE_CHUNK_MAX_LLM_CHARS: int = int(os.environ.get("TABLE_CHUNK_MAX_LLM_CHARS",
 
 # Initialise monitoring
 init_monitoring()
+
+
+def _audit_embedding_usage(
+    operation: str,
+    texts: List[str],
+    latency_ms: float,
+    success: bool,
+    failure_reason: str | None = None,
+) -> None:
+    """Record estimated input-token usage for an actual embedding request.
+
+    Args:
+        operation (str): The name of the embedding operation.
+        texts (List[str]): The list of input texts to be embedded.
+        latency_ms (float): The latency of the embedding operation in milliseconds.
+        success (bool): Whether the embedding operation was successful.
+        failure_reason (str | None, optional): The reason for failure, if any.
+
+    """
+    character_count = sum(len(text) for text in texts)
+    estimated_input_tokens = max(1, character_count // 4) if character_count else 0
+    event_data: Dict[str, Any] = {
+        "operation": operation,
+        "component": "vector_ingestion",
+        "model": EMBEDDING_MODEL_NAME,
+        "input_tokens": estimated_input_tokens,
+        "output_tokens": 0,
+        "token_source": "estimated",
+        "item_count": len(texts),
+        "latency_ms": int(latency_ms),
+        "success": success,
+        "cache_hit": False,
+    }
+    if failure_reason:
+        event_data["failure_reason"] = failure_reason
+    try:
+        audit("llm_usage", event_data)
+    except Exception as exc:
+        get_logger().warning("Failed to record embedding usage: %s", exc)
 
 
 def _is_table_chunk(text: str) -> bool:
@@ -339,6 +386,16 @@ def _calculate_truncation_stats(texts: List[str]) -> Dict[str, Any]:
     return _finalise_truncation_stats(stats)
 
 
+def _add_to_collection(collection: Collection, **kwargs: Any) -> None:
+    """Add records through the shared ChromaDB and SQLite collection interface.
+
+    ChromaDB and the SQLite fallback accept the same runtime payload but expose
+    incompatible third-party type signatures for embeddings and metadata.
+    """
+    collection_backend: Any = collection
+    collection_backend.add(**kwargs)
+
+
 def _add_to_collection_in_batches(
     chunk_collection: Collection,
     ids: List[str],
@@ -361,7 +418,7 @@ def _add_to_collection_in_batches(
         }
         if embeddings is not None:
             collection_kwargs["embeddings"] = embeddings[start:end]
-        chunk_collection.add(**collection_kwargs)
+        _add_to_collection(chunk_collection, **collection_kwargs)
 
 
 token_counter = get_token_counter()
@@ -506,9 +563,19 @@ def detect_semantic_drift(
     validator_llm = get_LLM_validator()  # reuse LLM validator in preprocess module
 
     # Apply retry logic to LLM invocation
+    attempt = 0
+
     @retry_ollama_call(max_retries=3, initial_delay=1.0, operation_name="detect_semantic_drift")
     def _invoke_llm():
-        return validator_llm.invoke(prompt)
+        nonlocal attempt
+        attempt += 1
+        return invoke_with_usage(
+            validator_llm,
+            prompt,
+            operation="vectors.detect_semantic_drift",
+            component="vector_ingestion",
+            attempt=attempt,
+        )
 
     raw = _invoke_llm()
     result = extract_first_json_block(raw)
@@ -561,7 +628,7 @@ def validate_chunk(chunk_id: str, text: str, doc_id: str) -> ChunkSchema:
 
 
 def filter_and_merge_small_chunks(
-    chunks: List[str], min_char_threshold: int = 100, doc_id: str = None
+    chunks: List[str], min_char_threshold: int = 100, doc_id: Optional[str] = None
 ) -> Tuple[List[str], Dict[str, int]]:
     """Filter out and merge small chunks before LLM processing.
 
@@ -737,9 +804,19 @@ def validate_chunk_semantics(
     validator_llm = get_LLM_validator()  # reuse LLM validator in preprocess module
 
     # Apply retry logic to LLM invocation
+    attempt = 0
+
     @retry_ollama_call(max_retries=3, initial_delay=1.0, operation_name="validate_chunk_semantics")
     def _invoke_llm():
-        return validator_llm.invoke(prompt)
+        nonlocal attempt
+        attempt += 1
+        return invoke_with_usage(
+            validator_llm,
+            prompt,
+            operation="vectors.validate_chunk_semantics",
+            component="vector_ingestion",
+            attempt=attempt,
+        )
 
     raw = _invoke_llm()
     result = extract_first_json_block(raw)  # reuse shared JSON extractor (scripts.utils.json_utils)
@@ -814,9 +891,19 @@ def repair_chunk_with_llm(
     validator_llm = get_LLM_validator()  # reuse LLM validator in preprocess module
 
     # Apply retry logic to LLM invocation
+    attempt = 0
+
     @retry_ollama_call(max_retries=3, initial_delay=1.0, operation_name="repair_chunk_with_llm")
     def _invoke_llm():
-        return validator_llm.invoke(prompt)
+        nonlocal attempt
+        attempt += 1
+        return invoke_with_usage(
+            validator_llm,
+            prompt,
+            operation="vectors.repair_chunk_with_llm",
+            component="vector_ingestion",
+            attempt=attempt,
+        )
 
     repaired = _invoke_llm()
     result = repaired.strip()
@@ -1059,6 +1146,8 @@ def process_and_validate_chunks(
         - Filters out very small chunks (saves LLM calls)
     """
     logger = get_logger()
+    if doc_type == "academic_reference":
+        logger.info("Starting validation for reference %s (%d chunks)", doc_id, len(chunks))
 
     # Stage 0: Pre-filter small chunks before any LLM work
     # This saves expensive LLM validation calls on fragments
@@ -1550,12 +1639,22 @@ def generate_chunk_embeddings_batch(
                                 f"Check EMBEDDING_MODEL_NAME in vectors.py"
                             )
                     latency_ms = (time.perf_counter() - start_time) * 1000
+                    _audit_embedding_usage(
+                        "embedding.chunk_batch", truncated_batch, latency_ms, True
+                    )
 
                     # Record in adaptive rate limiter if enabled
                     if limiter:
                         limiter.record_request(latency_ms=latency_ms, success=True, status_code=200)
                 except Exception as e:
                     latency_ms = (time.perf_counter() - start_time) * 1000
+                    _audit_embedding_usage(
+                        "embedding.chunk_batch",
+                        truncated_batch,
+                        latency_ms,
+                        False,
+                        type(e).__name__,
+                    )
                     if limiter:
                         limiter.record_request(
                             latency_ms=latency_ms, success=False, error_type=type(e).__name__
@@ -1593,7 +1692,7 @@ def generate_chunk_embeddings_batch(
                 metrics_collector.record_llm_call(
                     model=f"embedding:{EMBEDDING_MODEL_NAME}",
                     input_tokens=estimated_tokens,
-                    output_tokens=len(batch) * 1024,  # Each embedding is 1024 dims
+                    output_tokens=0,
                     latency_ms=latency_ms,
                     success=True,
                 )
@@ -1711,9 +1810,17 @@ def generate_chunk_embeddings_batch(
 
             time.sleep(0.05)  # 50ms delay between batches
 
+            start_time = time.perf_counter()
             try:
                 batch_embs = _embed_documents_with_fallback(embed_model, truncated_batch)
             except Exception as e:
+                _audit_embedding_usage(
+                    "embedding.chunk_batch",
+                    truncated_batch,
+                    (time.perf_counter() - start_time) * 1000,
+                    False,
+                    type(e).__name__,
+                )
                 # Dump failed batch for analysis
                 try:
                     debug_dir = "/tmp/embedding_debug"
@@ -1734,6 +1841,12 @@ def generate_chunk_embeddings_batch(
                 except Exception as dump_exc:
                     logger.warning(f"Failed to dump failed batch: {dump_exc}")
                 raise e
+            _audit_embedding_usage(
+                "embedding.chunk_batch",
+                truncated_batch,
+                (time.perf_counter() - start_time) * 1000,
+                True,
+            )
             all_embeddings.extend(batch_embs)
 
         return all_embeddings, final_truncation_stats
@@ -1821,6 +1934,7 @@ def store_chunks_in_chroma(
 
     # Ensure key_topics is JSON-encoded string for Chroma
     key_topics = metadata.get("key_topics", [])
+    key_topic_list = key_topics if isinstance(key_topics, list) else []
     key_topics_str = json.dumps(key_topics)
 
     # Check for semantic drift from previous version
@@ -1835,7 +1949,7 @@ def store_chunks_in_chroma(
                 old_summary=previous_version["summary"],
                 new_summary=metadata.get("summary", ""),
                 old_topics=previous_version["key_topics"],
-                new_topics=key_topics_str,
+                new_topics=key_topic_list,
                 doc_hash=file_hash,
                 llm_cache=llm_cache,
             )
@@ -1887,47 +2001,10 @@ def store_chunks_in_chroma(
         "source_category": metadata.get("source_category") or "",
         "timestamp": timestamp,
     }
-
-    # Add repository metadata for cross-repo clustering (code ingestion)
-    if metadata.get("repository"):
-        base_metadata["repository"] = metadata["repository"]
-    if metadata.get("project_key"):
-        base_metadata["project"] = metadata["project_key"]
-    if metadata.get("branch"):
-        base_metadata["branch"] = metadata["branch"]
-
-    # Add code-specific metadata if present (for code documents)
-    if metadata.get("source_category") == "code":
-        # Code parser fields from ParseResult
-        if "language" in metadata:
-            base_metadata["language"] = metadata["language"]
-        if "service_name" in metadata:
-            base_metadata["service_name"] = metadata["service_name"] or metadata.get(
-                "service_name", ""
-            )
-        if "service_type" in metadata:
-            base_metadata["service_type"] = metadata["service_type"] or ""
-        if "external_dependencies" in metadata:
-            # Store as JSON string for ChromaDB compatibility
-            deps = metadata["external_dependencies"]
-            base_metadata["dependencies"] = json.dumps(deps) if isinstance(deps, list) else deps
-        if "internal_calls" in metadata:
-            calls = metadata["internal_calls"]
-            base_metadata["internal_calls"] = (
-                json.dumps(calls) if isinstance(calls, list) else calls
-            )
-        if "endpoints" in metadata:
-            eps = metadata["endpoints"]
-            base_metadata["endpoints"] = json.dumps(eps) if isinstance(eps, list) else eps
-        if "database_refs" in metadata:
-            dbs = metadata["database_refs"]
-            base_metadata["db"] = json.dumps(dbs) if isinstance(dbs, list) else dbs
-        if "message_queues" in metadata:
-            queues = metadata["message_queues"]
-            base_metadata["queue"] = json.dumps(queues) if isinstance(queues, list) else queues
-        if "exports" in metadata:
-            exports = metadata["exports"]
-            base_metadata["exports"] = json.dumps(exports) if isinstance(exports, list) else exports
+    if metadata.get("source_kind"):
+        base_metadata["source_kind"] = metadata["source_kind"]
+    if metadata.get("ref_id"):
+        base_metadata["ref_id"] = str(metadata["ref_id"])
 
     ids = []
     docs = []
@@ -1987,9 +2064,7 @@ def store_chunks_in_chroma(
                 chunk_meta["prev_chunk_id"] = enhanced.prev_chunk_id or ""
                 chunk_meta["next_chunk_id"] = enhanced.next_chunk_id or ""
                 chunk_meta["technical_entities"] = json.dumps(enhanced.technical_entities)
-                chunk_meta["code_language"] = enhanced.code_language or ""
                 chunk_meta["contains_table"] = enhanced.contains_table
-                chunk_meta["contains_code"] = enhanced.contains_code
                 chunk_meta["contains_diagram"] = enhanced.contains_diagram
                 chunk_meta["is_api_reference"] = enhanced.is_api_reference
                 chunk_meta["is_configuration"] = enhanced.is_configuration
@@ -2031,6 +2106,8 @@ def store_chunks_in_chroma(
         # All documents must use the same embedding model (EMBEDDING_MODEL_NAME)
         import sys
 
+        if doc_type == "academic_reference":
+            logger.info("Starting embedding for reference chunks %s (%d chunks)", doc_id, len(docs))
         logger.error(f"🚨 ABOUT TO EMBED {len(docs)} chunks for {doc_id}")
         sys.stdout.flush()
         sys.stderr.flush()
@@ -2078,7 +2155,8 @@ def store_chunks_in_chroma(
                         sanitised[k] = str(v)
                 sanitised_metas.append(sanitised)
 
-            chunk_collection.add(
+            _add_to_collection(
+                chunk_collection,
                 ids=ids,
                 documents=docs,
                 metadatas=sanitised_metas,
@@ -2149,6 +2227,16 @@ def store_chunks_in_chroma(
             )
         logger.info(f"Document summary for {doc_id}: {len(summary_text)} chars")
 
+    def _generate_synthetic_embedding() -> List[float]:
+        """Generate a deterministic embedding when Ollama is unavailable."""
+        hash_bytes = hashlib.sha256(doc_id.encode()).digest()
+        embedding = [float(byte) / 255.0 for byte in hash_bytes]
+        while len(embedding) < EXPECTED_EMBEDDING_DIM:
+            embedding.extend(
+                embedding[: min(len(embedding), EXPECTED_EMBEDDING_DIM - len(embedding))]
+            )
+        return embedding[:EXPECTED_EMBEDDING_DIM]
+
     # Check cache for document embedding
     if embedding_cache and embedding_cache.enabled:
         doc_embedding = embedding_cache.get(_cache_key(summary_text))
@@ -2160,17 +2248,32 @@ def store_chunks_in_chroma(
             def _generate_doc_embedding():
                 import time
 
+                if doc_type == "academic_reference":
+                    logger.info("Starting embedding for reference summary %s", doc_id)
                 start_time = time.perf_counter()
-                embed_model = _create_embed_model()
-                embedding = _embed_documents_with_fallback(embed_model, [summary_text])[0]
+                try:
+                    embed_model = _create_embed_model()
+                    embedding = _embed_documents_with_fallback(embed_model, [summary_text])[0]
+                except Exception as exc:
+                    _audit_embedding_usage(
+                        "embedding.document_summary",
+                        [summary_text],
+                        (time.perf_counter() - start_time) * 1000,
+                        False,
+                        type(exc).__name__,
+                    )
+                    raise
                 latency_ms = (time.perf_counter() - start_time) * 1000
+                _audit_embedding_usage(
+                    "embedding.document_summary", [summary_text], latency_ms, True
+                )
 
                 # Record metrics
                 estimated_tokens = len(summary_text) // 4
                 metrics_collector.record_llm_call(
                     model=f"embedding:{EMBEDDING_MODEL_NAME}",
                     input_tokens=estimated_tokens,
-                    output_tokens=1024,  # 1024-dim embedding
+                    output_tokens=0,
                     latency_ms=latency_ms,
                     success=True,
                 )
@@ -2201,38 +2304,35 @@ def store_chunks_in_chroma(
         def _generate_doc_embedding():
             import time
 
+            if doc_type == "academic_reference":
+                logger.info("Starting embedding for reference summary %s", doc_id)
             start_time = time.perf_counter()
-            embed_model = _create_embed_model()
-            embedding = embed_model.embed_documents([summary_text])[0]
+            try:
+                embed_model = _create_embed_model()
+                embedding = embed_model.embed_documents([summary_text])[0]
+            except Exception as exc:
+                _audit_embedding_usage(
+                    "embedding.document_summary",
+                    [summary_text],
+                    (time.perf_counter() - start_time) * 1000,
+                    False,
+                    type(exc).__name__,
+                )
+                raise
             latency_ms = (time.perf_counter() - start_time) * 1000
+            _audit_embedding_usage("embedding.document_summary", [summary_text], latency_ms, True)
 
             # Record metrics
             estimated_tokens = len(summary_text) // 4
             metrics_collector.record_llm_call(
                 model=f"embedding:{EMBEDDING_MODEL_NAME}",
                 input_tokens=estimated_tokens,
-                output_tokens=1024,
+                output_tokens=0,
                 latency_ms=latency_ms,
                 success=True,
             )
 
             return embedding
-
-        # For academic references without embeddings service, generate synthetic embedding
-        def _generate_synthetic_embedding():
-            import hashlib
-
-            # Generate deterministic embedding based on doc_id for academic references
-            hash_bytes = hashlib.sha256(doc_id.encode()).digest()
-            # Convert hash bytes to embedding vector (first 384 floats matching embedding model dimension)
-            embedding = [float(b) / 255.0 for b in hash_bytes]
-            # Pad to embedding dimension (1024 for mxbai-embed-large)
-            embedding_dimension = 1024
-            while len(embedding) < embedding_dimension:
-                embedding.extend(
-                    embedding[: min(len(embedding), embedding_dimension - len(embedding))]
-                )
-            return embedding[:embedding_dimension]
 
         try:
             doc_embedding = _generate_doc_embedding()
@@ -2249,15 +2349,11 @@ def store_chunks_in_chroma(
     # TODO should doc_metadata also store the doc_embedding? Chroma does not handle it as a raw value.
 
     source_category = metadata.get("source_category") or ""
-    if not source_category and metadata.get("language"):
-        source_category = "code"
 
     doc_metadata = {
         "doc_id": doc_id,
         "source": source_path,
         "file_path": metadata.get("file_path") or source_path,
-        "repository": metadata.get("repository"),
-        "project": metadata.get("project"),
         "version": version,
         "doc_type": doc_type,
         "embedding_model": EMBEDDING_MODEL_NAME,
@@ -2268,32 +2364,10 @@ def store_chunks_in_chroma(
         "source_category": source_category,
         "timestamp": timestamp,
     }
-
-    # Add code-specific metadata to document-level metadata (same as base_metadata for chunks)
-    if "language" in metadata:
-        doc_metadata["language"] = metadata["language"]
-    if "service_name" in metadata:
-        doc_metadata["service_name"] = metadata["service_name"]
-    if "service_type" in metadata:
-        doc_metadata["service_type"] = metadata["service_type"]
-    if "external_dependencies" in metadata:
-        deps = metadata["external_dependencies"]
-        doc_metadata["dependencies"] = deps if isinstance(deps, str) else json.dumps(deps)
-    if "internal_calls" in metadata:
-        calls = metadata["internal_calls"]
-        doc_metadata["internal_calls"] = calls if isinstance(calls, str) else json.dumps(calls)
-    if "endpoints" in metadata:
-        eps = metadata["endpoints"]
-        doc_metadata["endpoints"] = eps if isinstance(eps, str) else json.dumps(eps)
-    if "database_refs" in metadata:
-        dbs = metadata["database_refs"]
-        doc_metadata["db"] = dbs if isinstance(dbs, str) else json.dumps(dbs)
-    if "message_queues" in metadata:
-        queues = metadata["message_queues"]
-        doc_metadata["queue"] = queues if isinstance(queues, str) else json.dumps(queues)
-    if "exports" in metadata:
-        exports = metadata["exports"]
-        doc_metadata["exports"] = exports if isinstance(exports, str) else json.dumps(exports)
+    if metadata.get("source_kind"):
+        doc_metadata["source_kind"] = metadata["source_kind"]
+    if metadata.get("ref_id"):
+        doc_metadata["ref_id"] = str(metadata["ref_id"])
 
     # Add document to ChromaDB with retry logic
     # Use versioned ID to allow multiple versions of the same document
@@ -2318,7 +2392,8 @@ def store_chunks_in_chroma(
         max_retries=5, initial_delay=0.5, operation_name=f"doc_collection.add({versioned_doc_id})"
     )
     def _add_document(embedding_vector: List[float]):
-        doc_collection.add(
+        _add_to_collection(
+            doc_collection,
             ids=[versioned_doc_id],
             embeddings=[embedding_vector],
             metadatas=[doc_metadata_sanitised],
@@ -2400,11 +2475,16 @@ def get_existing_doc_hash(doc_id: str, chunk_collection: Collection) -> Optional
             where={"$and": [{"doc_id": doc_id}, {"embedding_model": EMBEDDING_MODEL_NAME}]},
             include=["metadatas"],
         )
-        if not results or len(results["metadatas"]) == 0:
+        metadata_records = results.get("metadatas") if results else None
+        if not isinstance(metadata_records, list) or not metadata_records:
             return None
 
         # All chunks for a doc share the same hash, take the first
-        return results["metadatas"][0].get("hash")
+        first_metadata = metadata_records[0]
+        if not isinstance(first_metadata, Mapping):
+            return None
+        stored_hash = first_metadata.get("hash")
+        return stored_hash if isinstance(stored_hash, str) else None
     except Exception as e:
         # If query fails (e.g., fresh collection with no data), treat as not found
         # This prevents "Missing field" errors on newly created collections
@@ -2464,6 +2544,7 @@ def store_parent_chunks(
     dry_run: bool = False,
     full_text: str = "",
     doc_type: str = "unknown",
+    document_structure: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     """Store parent chunks without embeddings for context retrieval.
 
@@ -2479,6 +2560,7 @@ def store_parent_chunks(
         dry_run: If True, simulate without writing to database.
         full_text: Full document text for enhanced metadata extraction.
         doc_type: Document type for metadata extraction.
+        document_structure: Source PDF headings used to map chunks to sections.
 
     Side Effects:
         - Writes parent chunks to chunk_collection (without embeddings)
@@ -2502,6 +2584,7 @@ def store_parent_chunks(
     ids = []
     docs = []
     metas = []
+    metadata_factory = _get_enhanced_metadata_factory()
 
     for chunk_idx, parent in enumerate(parent_chunks):
         parent_id = f"{doc_id}-{parent['id']}"
@@ -2513,17 +2596,29 @@ def store_parent_chunks(
         parent_meta["parent_id"] = parent_id
         parent_meta["child_ids"] = json.dumps(parent["child_ids"])
         parent_meta["chunk_type"] = "parent"
+        parent_meta["sequence_number"] = chunk_idx
+        parent_meta["source_start"] = parent.get("source_start", -1)
+        parent_meta["source_end"] = parent.get("source_end", -1)
 
         # Extract enhanced metadata if available
-        if create_enhanced_metadata and full_text:
+        if metadata_factory and full_text:
             try:
-                enhanced = create_enhanced_metadata(
+                chunk_char_start = parent.get("source_start")
+                if not isinstance(chunk_char_start, int):
+                    chunk_char_start = full_text.find(parent["text"][:100])
+                chunk_char_end = parent.get("source_end")
+                if not isinstance(chunk_char_end, int):
+                    chunk_char_end = chunk_char_start + len(parent["text"])
+                enhanced = metadata_factory(
                     chunk_text=parent["text"],
                     chunk_index=chunk_idx,
                     total_chunks=len(parent_chunks),
                     doc_id=doc_id,
                     full_text=full_text,
                     doc_type=doc_type,
+                    document_structure=document_structure,
+                    chunk_char_start=chunk_char_start if chunk_char_start >= 0 else None,
+                    chunk_char_end=chunk_char_end if chunk_char_start >= 0 else None,
                 )
                 # Add enhanced fields to metadata
                 parent_meta["heading_path"] = enhanced.heading_path or ""
@@ -2532,11 +2627,9 @@ def store_parent_chunks(
                 parent_meta["chapter"] = getattr(enhanced, "chapter", "") or ""
                 parent_meta["section_depth"] = enhanced.section_depth or 0
                 parent_meta["content_type"] = enhanced.content_type
-                parent_meta["contains_code"] = enhanced.contains_code
                 parent_meta["contains_table"] = enhanced.contains_table
                 parent_meta["contains_diagram"] = enhanced.contains_diagram
                 parent_meta["technical_entities"] = json.dumps(enhanced.technical_entities)
-                parent_meta["code_language"] = enhanced.code_language or ""
                 parent_meta["is_api_reference"] = enhanced.is_api_reference
                 parent_meta["is_configuration"] = enhanced.is_configuration
             except Exception as e:
@@ -2617,12 +2710,14 @@ def store_parent_chunks(
 
 def store_child_chunks(
     doc_id: str,
-    child_chunks: List[Dict[str, str]],
+    child_chunks: List[Dict[str, Any]],
     chunk_collection: Collection,
     base_metadata: Dict[str, Any],
     dry_run: bool = False,
     full_text: str = "",
     doc_type: str = "unknown",
+    document_structure: Optional[List[Dict[str, Any]]] = None,
+    chunk_type: str = "child",
 ) -> None:
     """Store child chunks with embeddings for semantic search.
 
@@ -2638,6 +2733,8 @@ def store_child_chunks(
         dry_run: If True, simulate without writing to database.
         full_text: Full document text for enhanced metadata extraction.
         doc_type: Document type for metadata extraction.
+        document_structure: Source PDF headings used to map chunks to sections.
+        chunk_type: Stored chunk type; defaults to ordinary child chunks.
 
     Side Effects:
         - Writes child chunks to chunk_collection (WITH embeddings via ChromaDB)
@@ -2661,6 +2758,7 @@ def store_child_chunks(
     ids = []
     docs = []
     metas = []
+    metadata_factory = _get_enhanced_metadata_factory()
 
     for chunk_idx, child in enumerate(child_chunks):
         # Construct child ID with doc_id prefix: "{doc_id}-{child_id}"
@@ -2670,20 +2768,42 @@ def store_child_chunks(
 
         child_meta = base_metadata.copy()
         child_meta["is_parent"] = False
-        child_meta["chunk_type"] = "child"
-        # Store parent reference as constructed parent ID: "{doc_id}-parent_{idx}"
-        child_meta["parent_id"] = f"{doc_id}-{child['parent_id']}"
+        child_meta["chunk_type"] = chunk_type
+        child_meta["sequence_number"] = chunk_idx
+        child_meta["source_start"] = child.get("source_start", -1)
+        child_meta["source_end"] = child.get("source_end", -1)
+        if chunk_type == "child":
+            child_meta["parent_id"] = f"{doc_id}-{child['parent_id']}"
+
+        for key, value in child.get("metadata", {}).items():
+            if isinstance(value, (str, int, float, bool)):
+                child_meta[key] = value
 
         # Extract enhanced metadata if available
-        if create_enhanced_metadata and full_text:
+        if metadata_factory and full_text:
             try:
-                enhanced = create_enhanced_metadata(
+                source_start = child.get("source_start")
+                chunk_char_start: int = (
+                    source_start
+                    if isinstance(source_start, int)
+                    else full_text.find(child["text"][:100])
+                )
+                source_end = child.get("source_end")
+                chunk_char_end: int = (
+                    source_end
+                    if isinstance(source_end, int)
+                    else chunk_char_start + len(child["text"])
+                )
+                enhanced = metadata_factory(
                     chunk_text=child["text"],
                     chunk_index=chunk_idx,
                     total_chunks=len(child_chunks),
                     doc_id=doc_id,
                     full_text=full_text,
                     doc_type=doc_type,
+                    document_structure=document_structure,
+                    chunk_char_start=chunk_char_start if chunk_char_start >= 0 else None,
+                    chunk_char_end=chunk_char_end if chunk_char_start >= 0 else None,
                 )
                 # Add enhanced fields to metadata
                 child_meta["heading_path"] = enhanced.heading_path or ""
@@ -2692,11 +2812,9 @@ def store_child_chunks(
                 child_meta["chapter"] = getattr(enhanced, "chapter", "") or ""
                 child_meta["section_depth"] = enhanced.section_depth or 0
                 child_meta["content_type"] = enhanced.content_type
-                child_meta["contains_code"] = enhanced.contains_code
                 child_meta["contains_table"] = enhanced.contains_table
                 child_meta["contains_diagram"] = enhanced.contains_diagram
                 child_meta["technical_entities"] = json.dumps(enhanced.technical_entities)
-                child_meta["code_language"] = enhanced.code_language or ""
                 child_meta["is_api_reference"] = enhanced.is_api_reference
                 child_meta["is_configuration"] = enhanced.is_configuration
             except Exception as e:
@@ -2713,7 +2831,30 @@ def store_child_chunks(
 
     try:
         # Generate embeddings for all child chunk texts
-        embeddings = embed_model.embed_documents(docs)
+        if doc_type == "academic_reference":
+            logger.info(
+                "Starting embedding for reference child chunks %s (%d chunks)",
+                doc_id,
+                len(docs),
+            )
+        embedding_start = time.perf_counter()
+        try:
+            embeddings = embed_model.embed_documents(docs)
+        except Exception as exc:
+            _audit_embedding_usage(
+                "embedding.child_chunks",
+                docs,
+                (time.perf_counter() - embedding_start) * 1000,
+                False,
+                type(exc).__name__,
+            )
+            raise
+        _audit_embedding_usage(
+            "embedding.child_chunks",
+            docs,
+            (time.perf_counter() - embedding_start) * 1000,
+            True,
+        )
 
         # Store child chunks with manually generated embeddings
         _add_to_collection_in_batches(
@@ -2814,29 +2955,46 @@ def get_parent_for_child(
     try:
         # Get child chunk to find parent_id
         child_result = chunk_collection.get(ids=[child_chunk_id], include=["metadatas"])
+        child_metadatas = child_result.get("metadatas") if child_result else None
 
-        if not child_result or not child_result["metadatas"]:
+        if not isinstance(child_metadatas, list) or not child_metadatas:
             logger.warning(f"Child chunk not found: {child_chunk_id}")
             return None
 
-        child_meta = child_result["metadatas"][0]
+        child_meta = child_metadatas[0]
+        if not isinstance(child_meta, Mapping):
+            logger.warning(f"Child chunk metadata is invalid: {child_chunk_id}")
+            return None
         parent_id = child_meta.get("parent_id")
 
-        if not parent_id:
+        if not isinstance(parent_id, str) or not parent_id:
             logger.debug(f"No parent_id for child chunk: {child_chunk_id}")
             return None
 
         # Retrieve parent chunk
         parent_result = chunk_collection.get(ids=[parent_id], include=["documents", "metadatas"])
+        parent_documents = parent_result.get("documents") if parent_result else None
+        parent_metadatas = parent_result.get("metadatas") if parent_result else None
 
-        if not parent_result or not parent_result["documents"]:
+        if (
+            not isinstance(parent_documents, list)
+            or not parent_documents
+            or not isinstance(parent_metadatas, list)
+            or not parent_metadatas
+        ):
             logger.warning(f"Parent chunk not found: {parent_id}")
+            return None
+
+        parent_text = parent_documents[0]
+        parent_metadata = parent_metadatas[0]
+        if not isinstance(parent_text, str) or not isinstance(parent_metadata, Mapping):
+            logger.warning(f"Parent chunk data is invalid: {parent_id}")
             return None
 
         return {
             "id": parent_id,
-            "text": parent_result["documents"][0],
-            "metadata": parent_result["metadatas"][0],
+            "text": parent_text,
+            "metadata": dict(parent_metadata),
         }
 
     except Exception as e:
@@ -2885,18 +3043,21 @@ def batch_get_parents_for_children(
     try:
         # Get all child chunks to extract parent_ids
         children_result = chunk_collection.get(ids=unique_child_ids, include=["metadatas"])
+        child_ids = children_result.get("ids") if children_result else None
+        child_metadatas = children_result.get("metadatas") if children_result else None
 
-        if not children_result or not children_result["metadatas"]:
+        if not isinstance(child_ids, list) or not isinstance(child_metadatas, list):
             return {}
 
         # Build mapping of child_id -> parent_id
-        child_to_parent = {}
-        parent_ids = set()
+        child_to_parent: Dict[str, str] = {}
+        parent_ids: set[str] = set()
 
-        for idx, child_id in enumerate(children_result["ids"]):
-            child_meta = children_result["metadatas"][idx]
+        for child_id, child_meta in zip(child_ids, child_metadatas):
+            if not isinstance(child_id, str) or not isinstance(child_meta, Mapping):
+                continue
             parent_id = child_meta.get("parent_id")
-            if parent_id:
+            if isinstance(parent_id, str) and parent_id:
                 child_to_parent[child_id] = parent_id
                 parent_ids.add(parent_id)
 
@@ -2907,17 +3068,32 @@ def batch_get_parents_for_children(
         parents_result = chunk_collection.get(
             ids=list(parent_ids), include=["documents", "metadatas"]
         )
+        parent_result_ids = parents_result.get("ids") if parents_result else None
+        parent_documents = parents_result.get("documents") if parents_result else None
+        parent_metadatas = parents_result.get("metadatas") if parents_result else None
 
-        if not parents_result or not parents_result["documents"]:
+        if (
+            not isinstance(parent_result_ids, list)
+            or not isinstance(parent_documents, list)
+            or not isinstance(parent_metadatas, list)
+        ):
             return {}
 
         # Build parent_id -> parent data mapping
-        parents_map = {}
-        for idx, parent_id in enumerate(parents_result["ids"]):
+        parents_map: Dict[str, Dict[str, Any]] = {}
+        for parent_id, parent_text, parent_metadata in zip(
+            parent_result_ids, parent_documents, parent_metadatas
+        ):
+            if (
+                not isinstance(parent_id, str)
+                or not isinstance(parent_text, str)
+                or not isinstance(parent_metadata, Mapping)
+            ):
+                continue
             parents_map[parent_id] = {
                 "id": parent_id,
-                "text": parents_result["documents"][idx],
-                "metadata": parents_result["metadatas"][idx],
+                "text": parent_text,
+                "metadata": dict(parent_metadata),
             }
 
         # Map children to their parents

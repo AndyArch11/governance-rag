@@ -55,7 +55,7 @@ REPEATING_PATTERNS = [
 ]
 
 
-def _extract_confluence_metadata(text: str) -> tuple[str, dict]:
+def _extract_confluence_metadata(text: str) -> tuple[str, dict[str, Any]]:
     """Extract and remove Confluence metadata from text.
 
     Args:
@@ -64,7 +64,7 @@ def _extract_confluence_metadata(text: str) -> tuple[str, dict]:
     Returns:
         Tuple of (cleaned_text, metadata_dict)
     """
-    metadata = {}
+    metadata: dict[str, Any] = {}
     lines = text.split("\n")
     content_lines = []
 
@@ -583,14 +583,14 @@ def extract_text_from_html(path: str) -> str:
     for tag in soup.find_all(["div", "section", "aside"]):
         if tag is None or not hasattr(tag, "attrs") or tag.attrs is None:
             continue
-        classes = tag.get("class", [])
-        elem_id = tag.get("id", "")
-
-        # Handle potential None values from BeautifulSoup
-        if classes is None:
-            classes = []
-        if elem_id is None:
-            elem_id = ""
+        raw_classes = tag.get("class")
+        classes = (
+            [raw_classes]
+            if isinstance(raw_classes, str)
+            else list(raw_classes) if raw_classes is not None else []
+        )
+        raw_id = tag.get("id")
+        elem_id = raw_id if isinstance(raw_id, str) else ""
 
         for nav_pattern in ["nav", "header", "footer", "breadcrumb", "toc", "menu", "sidebar"]:
             if (

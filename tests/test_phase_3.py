@@ -23,6 +23,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.ui.layout_engine import (
     CircularLayout,
+    ForceDirected3DLayout,
     ForceDirectedLayout,
     HierarchicalLayout,
 )
@@ -155,6 +156,31 @@ class TestForceDirectedLayout:
 
         # More iterations should produce valid layouts
         assert len(pos1) == len(pos2) == len(nodes)
+
+
+class TestForceDirected3DLayout:
+    """Tests for deterministic three-dimensional semantic graph layouts."""
+
+    def test_layout_is_deterministic_and_three_dimensional(self, small_graph):
+        """A fixed seed creates stable finite coordinates for every node."""
+        nodes, edges = small_graph
+        first_positions = ForceDirected3DLayout(iterations=20, seed=17).compute_layout(nodes, edges)
+        second_positions = ForceDirected3DLayout(iterations=20, seed=17).compute_layout(
+            nodes, edges
+        )
+
+        assert first_positions == second_positions
+        assert set(first_positions) == set(nodes)
+        assert all(len(position) == 3 for position in first_positions.values())
+        assert all(
+            abs(coordinate) < 1e6
+            for position in first_positions.values()
+            for coordinate in position
+        )
+
+    def test_layout_handles_empty_graph(self):
+        """An empty graph produces no three-dimensional positions."""
+        assert ForceDirected3DLayout().compute_layout({}, []) == {}
 
 
 class TestHierarchicalLayout:

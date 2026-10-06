@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import re
 from dataclasses import dataclass
 from typing import Iterable, List, Optional
@@ -21,7 +22,7 @@ STOP_SECTION_PATTERN = re.compile(
     re.IGNORECASE,
 )
 DOI_PATTERN = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+\b", re.IGNORECASE)
-YEAR_PATTERN = re.compile(r"\b(19|20)\d{2}\b")
+YEAR_PATTERN = re.compile(r"\b(19|20)\d{2}[a-z]?\b")
 # Key pattern: (YYYY). marks the boundary between authors and citation content
 YEAR_DOT_PATTERN = re.compile(r"\((?:19|20)\d{2}[a-z]?\)\.")
 NUMBERED_REF_PATTERN = re.compile(r"^(\[\d+\]|[1-9]\d{0,2}\.|\d+\))\s+")
@@ -58,14 +59,32 @@ ORG_REF_PATTERN = re.compile(
 # Year variant pattern: (2019a), (2019b), etc. at start of line
 # Catches continuation of multi-year citations
 YEAR_VARIANT_PATTERN = re.compile(r"^\((?:19|20)\d{2}[a-z]\)")
+LEGAL_REF_START_PATTERN = (
+    r"[A-Z][A-Za-z&'’\-/\.]+(?:\s+[A-Z][A-Za-z&'’\-/\.]+){0,10}\s*Act\s*(?:18|19|20)\d{2}"
+)
+LEGAL_REF_PATTERN = re.compile(r"^" + LEGAL_REF_START_PATTERN)
+APOSTROPHE_AUTHOR_START_PATTERN = r"[A-Z][A-Za-z'’\-]+,\s*[^\W\d_]"
+COMPACT_UNICODE_AUTHOR_YEAR_PATTERN = r"[A-Z][A-Za-z'’\-]+[^\W\d_]\.\s*\((?:19|20)\d{2}[a-z]?\)"
+APOSTROPHE_AUTHOR_PATTERN = re.compile(
+    r"^(?:" + APOSTROPHE_AUTHOR_START_PATTERN + r"|" + COMPACT_UNICODE_AUTHOR_YEAR_PATTERN + r")"
+)
+TITLE_REF_START_PATTERN = (
+    r"(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,8}|[A-Z][a-z]+(?:[A-Z][a-z]+)+)"
+    r"[^\n]{0,120}\((?:19|20)\d{2}[a-z]?\)"
+)
+TITLE_REF_PATTERN = re.compile(r"^" + TITLE_REF_START_PATTERN)
 
 # Potential reference starts for inline boundary detection
 REF_START_PATTERN = re.compile(
     r"(?:"
     r"[^\W\d_][^\W\d_\-'’]*(?:-[^\W\d_][^\W\d_\-'’]*)?,\s*[A-Z]"
-    r"|[^\W\d_][^\W\d_\-'’]*(?:-[^\W\d_][^\W\d_\-'’]*)?\s+[A-Z]\."
+    r"|"
+    + APOSTROPHE_AUTHOR_START_PATTERN
+    + r"|"
+    + COMPACT_UNICODE_AUTHOR_YEAR_PATTERN
+    + r"|[^\W\d_][^\W\d_\-'’]*(?:-[^\W\d_][^\W\d_\-'’]*)?\s+[A-Z]\."
     r"|[^\W\d_][^\W\d_&'’\-/\.,]*(?:\s+[^\W\d_&'’\-/\.,]+)*(?:,?\s*\([A-Za-z&]{2,}\))?\.?\s*\(\d{4}[a-z]?\)"
-    r"|\((?:19|20)\d{2}[a-z]\)"
+    r"|" + LEGAL_REF_START_PATTERN + r"|" + TITLE_REF_START_PATTERN + r"|\((?:19|20)\d{2}[a-z]\)"
     r")"
 )
 URL_REF_SPLIT_PATTERN = re.compile(
@@ -80,11 +99,32 @@ PERIOD_REF_SPLIT_PATTERN = re.compile(
     r"\.\s+(?=" + REF_START_PATTERN.pattern + r")|"
     r"\.(?=[A-Z]'[A-Z])"  # Period before capital-apostrophe-capital (e.g., ".D'Cruz")
 )
+HYPHENATED_REFERENCE_BOUNDARY_PATTERN = re.compile(
+    r"(?:^|\s)?-\s*(?=" + REF_START_PATTERN.pattern + r")"
+)
+URL_TITLE_BOUNDARY_PATTERN = re.compile(
+    r"(?<=\d)-(?=[A-Z][a-z]+(?:[A-Z][a-z]+)+[^\n]{0,200}\((?:19|20)\d{2}[a-z]?\))"
+)
+COMPACT_AUTHOR_YEAR_PATTERN = re.compile(
+    r"^[A-Z][A-Za-z'’\-]+,\s*[A-Z](?:\.[A-Z])*\.?\s*\((?:19|20)\d{2}[a-z]?\)"
+)
 
 TOC_DOT_LEADER_PATTERN = re.compile(r"\.{3,}\s*\d+\s*$")
+PROTECTED_CITATION_TOKEN_PATTERN = re.compile(
+    r"(?:https?://|doi:)\S+|&[A-Za-z0-9]+;",
+    re.IGNORECASE,
+)
 
 
 def _is_heading(line: str) -> bool:
+    """Determine if a line is a heading based on stop section patterns.
+
+    Args:
+        line: A single line of text from the document.
+
+    Returns:
+        True if the line appears to be a heading, False otherwise.
+    """
     if not line:
         return False
     if STOP_SECTION_PATTERN.search(line):
@@ -93,10 +133,26 @@ def _is_heading(line: str) -> bool:
 
 
 def _is_toc_line(line: str) -> bool:
+    """Determine if a line is part of a table of contents based on dot leader pattern.
+
+    Args:
+        line: A single line of text from the document.
+
+    Returns:
+        True if the line appears to be a table of contents entry, False otherwise.
+    """
     return bool(TOC_DOT_LEADER_PATTERN.search(line))
 
 
 def _split_reference_lines(section_text: str) -> Iterable[str]:
+    """Split a section of text into individual reference lines.
+
+    Args:
+        section_text: A section of text potentially containing multiple reference entries.
+
+    Yields:
+        Cleaned reference lines one by one.
+    """
     for line in section_text.splitlines():
         cleaned = " ".join(line.strip().split())
         if cleaned:
@@ -135,6 +191,10 @@ def _insert_spaces_in_cojoined_text(text: str) -> str:
     processed_words = []
 
     for word in words:
+        if re.match(r"^(?:https?://|doi:|10\.)", word, re.IGNORECASE):
+            processed_words.append(word)
+            continue
+
         if len(word) >= 18:
             # PRIMARY FIX: Insert space before capital letter that follows lowercase
             # "AustralianBureauofStatistics" -> "Australian Bureau of Statistics"
@@ -153,13 +213,150 @@ def _insert_spaces_in_cojoined_text(text: str) -> str:
     return " ".join(processed_words)
 
 
+def _repair_cojoined_title_words(text: str) -> str:
+    """Restore spaces in long alphabetic runs produced by PDF text extraction.
+
+    This is intentionally limited to citation-like text and words with no
+    punctuation, preserving DOIs, URLs, author initials, and page ranges.
+
+    Args:
+        text: Text potentially containing cojoined words from PDF extraction.
+
+    Returns:
+        Text with spaces inserted at likely word boundaries for long alphabetic runs.
+    """
+    try:
+        import wordninja
+    except ImportError:
+        return text
+
+    def _repair_token(word: str, minimum_length: int = 16) -> str:
+        """Split a cojoined title token when it meets the safety threshold.
+
+        Args:
+            word: The word to potentially split if it meets the minimum length requirement.
+            minimum_length: The minimum length a word must have to be considered for splitting.
+
+        Returns:
+            The word with spaces inserted at likely word boundaries if it meets the safety threshold.
+        """
+        if len(word.replace("'", "").replace("’", "")) < minimum_length:
+            return word
+        normalised_word = word.replace("’", "'")
+        parts = wordninja.split(normalised_word)
+        invalid_short_parts = [
+            part for part in parts if len(part) == 1 and part.lower() not in {"a", "i"}
+        ]
+        if len(parts) < 2 or invalid_short_parts:
+            return word
+        return " ".join(parts)
+
+    def _repair(match: re.Match[str]) -> str:
+        """Repair one long citation title run.
+
+        Args:
+            match: A regex match object containing a long citation title run.
+
+        Returns:
+            The repaired word with spaces inserted at likely word boundaries if necessary.
+        """
+        return _repair_token(match.group(0))
+
+    def _repair_after_punctuation(match: re.Match[str]) -> str:
+        """Repair a short title token only when citation punctuation precedes it.
+
+        Args:
+            match: A regex match object containing a short title token following citation punctuation.
+
+        Returns:
+            The repaired word with spaces inserted at likely word boundaries if necessary.
+        """
+        return _repair_token(match.group(0), minimum_length=6)
+
+    repaired = re.sub(r"\b[A-Za-z0-9]+(?:['’][A-Za-z0-9]+)?\b", _repair, text)
+    repaired = re.sub(r"(?<=[,;:!?])([A-Za-z]{6,})\b", _repair_after_punctuation, repaired)
+
+    # Parentheses are title delimiters, not part of a word. Repair adjoining
+    # runs at the lower punctuation threshold while preserving parentheses.
+    def _repair_parenthetical(match: re.Match[str]) -> str:
+        """Repair a cojoined title run that is parenthesised.
+
+        Args:
+            match: A regex match object containing a parenthesised title run.
+
+        Returns:
+            The repaired title run with spaces inserted at likely word boundaries if necessary.
+        """
+        return (
+            f"{_repair_token(match.group(1), minimum_length=6)} "
+            f"({_repair_token(match.group(2), minimum_length=6)}) "
+            f"{_repair_token(match.group(3), minimum_length=6)}"
+        )
+
+    return re.sub(
+        r"([A-Za-z0-9'’]{6,})\(([^()]+)\)([A-Za-z0-9'’]{6,})",
+        _repair_parenthetical,
+        repaired,
+    )
+
+
+def _repair_citation_punctuation_spacing(text: str) -> str:
+    """Restore spacing lost around citation punctuation without altering URLs.
+
+    Possessive endings, commas, colons, and opening curly quotes have stable
+    prose spacing rules. URL tokens are kept unchanged so DOI and web paths
+    retain their required punctuation.
+
+    Args:
+        text: Citation text potentially missing spaces around punctuation.
+
+    Returns:
+        Text with corrected spacing around citation punctuation.
+    """
+
+    def _repair_segment(segment: str) -> str:
+        segment = re.sub(r"(?<=[A-Za-z]['’]s)(?=\S)", " ", segment)
+        segment = re.sub(r"(?<!\s)‘", " ‘", segment)
+        segment = re.sub(r",(?=\S)", ", ", segment)
+        segment = re.sub(r"\s*&\s*", " & ", segment)
+        return re.sub(r":(?=\S)", ": ", segment)
+
+    parts: List[str] = []
+    position = 0
+    for match in PROTECTED_CITATION_TOKEN_PATTERN.finditer(text):
+        parts.append(_repair_segment(text[position : match.start()]))
+        parts.append(match.group(0))
+        position = match.end()
+    parts.append(_repair_segment(text[position:]))
+    return "".join(parts)
+
+
+def _repair_url_spaces(text: str) -> str:
+    """Remove extraction spaces that were inserted inside URL tokens."""
+    return re.sub(
+        r"https?://(?:[a-zA-Z0-9\-._~:/?#\[\]@!$&\'()*+,;=]|\s|%[0-9A-Fa-f]{2})+",
+        lambda match: match.group(0).replace(" ", ""),
+        text,
+    )
+
+
 def _split_reference_blocks(section_text: str) -> List[str]:
     """
     Split references by looking for author name patterns that signal new references.
 
     After observing the PDF: references end with DOI/URL or page numbers,
     then a new reference starts with "LastName, F." pattern.
+
+    Args:
+        section_text: A section of text potentially containing multiple reference entries.
+
+    Returns:
+        A list of reference blocks extracted from the section text.
     """
+    section_text = html.unescape(section_text)
+    section_text = section_text.replace(r"\_", "_")
+    section_text = URL_TITLE_BOUNDARY_PATTERN.sub("\n", section_text)
+    section_text = HYPHENATED_REFERENCE_BOUNDARY_PATTERN.sub("\n", section_text)
     blocks: List[str] = []
     current_lines: List[str] = []
 
@@ -183,6 +380,14 @@ def _split_reference_blocks(section_text: str) -> List[str]:
             # Check for multi-author list: "LastName, F., LastName, F., & LastName, F."
             # This is a strong indicator of a new reference
             if MULTI_AUTHOR_PATTERN.match(line):
+                starts_new_ref = True
+            # Check for legal instruments before the generic author matcher, as
+            # "Act1909" does not use the conventional "(YYYY)." form.
+            elif LEGAL_REF_PATTERN.match(line):
+                starts_new_ref = True
+            elif APOSTROPHE_AUTHOR_PATTERN.match(line):
+                starts_new_ref = True
+            elif TITLE_REF_PATTERN.match(line):
                 starts_new_ref = True
             # Check for year variant: (2019a), (2019b), etc.
             # This catches multi-year citations where org/author already in previous block
@@ -236,9 +441,14 @@ def _split_reference_blocks(section_text: str) -> List[str]:
     # Clean up trailing PDF page numbers from blocks
     cleaned_blocks = []
     for block in blocks:
+        block = block.replace(r"\_", "_")
         # Cojoining fix only applies to words >= 20 characters
         # This preserves legitimate multi-part names while fixing PDF corruption
-        block = _insert_spaces_in_cojoined_text(block)
+        block = _repair_citation_punctuation_spacing(
+            _repair_cojoined_title_words(_insert_spaces_in_cojoined_text(block))
+        )
+        block = _repair_url_spaces(block)
+        block = re.sub(r"^\s*-\s*", "", block)
 
         # Remove standalone trailing page numbers (e.g., "... Management, 8(2), 81-89. 369")
         # Pattern: ends with period/URL/DOI followed by whitespace and 1-4 digit number
@@ -257,6 +467,14 @@ def _split_reference_blocks(section_text: str) -> List[str]:
         # e.g., "https://example.com/path %20 more" or "...%E 2%80%93..."
         # This comprehensive regex finds URLs with internal spaces and consolidates them
         def fix_url_spaces(match):
+            """Fix URLs with embedded spaces.
+
+            Args:
+                match: A regex match object containing a URL with potential internal spaces.
+
+            Returns:
+                The URL with internal spaces removed and percent-encoded characters corrected.
+            """
             url = match.group(0)
             # Remove all internal spaces from URL
             url = url.replace(" ", "")
@@ -291,6 +509,14 @@ def _split_reference_blocks(section_text: str) -> List[str]:
         # This fixes cases like ".../toolkitAustralian Indigenous..." or "...doi...Braun, V."
         # Also handles concatenated org names: "...latest-releaseAustralianBureau..." -> "...latest-release Australian..."
         def insert_space_after_identifier(text: str) -> str:
+            """Insert a space after URLs/DOIs if a new reference starts immediately after.
+
+            Args:
+                text: The input text potentially containing concatenated URLs/DOIs and references.
+
+            Returns:
+                The text with spaces inserted after URLs/DOIs where necessary.
+            """
             # Smarter URL pattern: stops before capital letter that starts author names
             # Pattern ends URL when followed by [A-Z][a-z] (author name) to prevent greedy matching
             # e.g., "...163604-13D'Cruz" -> URL ends at "13", not including "D'Cruz"
@@ -365,6 +591,9 @@ def _split_reference_blocks(section_text: str) -> List[str]:
                     AUTHOR_LEAD_PATTERN.match(candidate)
                     or NO_COMMA_AUTHOR_PATTERN.match(candidate)
                     or ORG_REF_PATTERN.match(candidate)
+                    or LEGAL_REF_PATTERN.match(candidate)
+                    or APOSTROPHE_AUTHOR_PATTERN.match(candidate)
+                    or TITLE_REF_PATTERN.match(candidate)
                     or YEAR_VARIANT_PATTERN.match(candidate)
                 )
                 prefix_has_year = bool(YEAR_PATTERN.search(prefix))
@@ -393,6 +622,9 @@ def _split_reference_blocks(section_text: str) -> List[str]:
                     AUTHOR_LEAD_PATTERN.match(candidate)
                     or NO_COMMA_AUTHOR_PATTERN.match(candidate)
                     or ORG_REF_PATTERN.match(candidate)
+                    or LEGAL_REF_PATTERN.match(candidate)
+                    or APOSTROPHE_AUTHOR_PATTERN.match(candidate)
+                    or TITLE_REF_PATTERN.match(candidate)
                     or YEAR_VARIANT_PATTERN.match(candidate)
                 )
                 prefix_has_year = bool(YEAR_PATTERN.search(prefix))
@@ -445,6 +677,7 @@ def _split_reference_blocks(section_text: str) -> List[str]:
             # Multiple (YYYY). or (YYYY), detected - likely merged references
             # Split at each year pattern, looking backwards for author names
             sub_blocks = []
+            prev_end = 0
 
             for i, match in enumerate(year_positions):
                 if i == 0:
@@ -500,6 +733,9 @@ def _split_reference_blocks(section_text: str) -> List[str]:
                         AUTHOR_LEAD_PATTERN.match(sub_ref)
                         or NO_COMMA_AUTHOR_PATTERN.match(sub_ref)
                         or ORG_REF_PATTERN.match(sub_ref)
+                        or LEGAL_REF_PATTERN.match(sub_ref)
+                        or APOSTROPHE_AUTHOR_PATTERN.match(sub_ref)
+                        or TITLE_REF_PATTERN.match(sub_ref)
                         or NUMBERED_REF_PATTERN.match(sub_ref)
                     )
                     if starts_valid or i == 0:  # Always keep first sub-block
@@ -513,6 +749,14 @@ def _split_reference_blocks(section_text: str) -> List[str]:
 
 
 def _filter_reference_candidates(lines: Iterable[str]) -> List[str]:
+    """Filter lines that are likely to be reference candidates.
+
+    Args:
+        lines: An iterable of lines from a section of text.
+
+    Returns:
+        A list of lines that are likely to be references.
+    """
     candidates: List[str] = []
     for line in lines:
         if len(line) < 15:
@@ -535,6 +779,14 @@ def _filter_reference_candidates(lines: Iterable[str]) -> List[str]:
 
 
 def _is_reference_like(block: str) -> bool:
+    """Determine if a block of text resembles a reference entry.
+
+    Args:
+        block: A block of text potentially representing a reference.
+
+    Returns:
+        True if the block appears to be a reference, False otherwise.
+    """
     if len(block) < 25:
         return False
     lower = block.lower()
@@ -553,12 +805,25 @@ def _is_reference_like(block: str) -> bool:
         or AUTHOR_LEAD_PATTERN.match(block)
         or NO_COMMA_AUTHOR_PATTERN.match(block)
         or ORG_REF_PATTERN.match(block)
+        or COMPACT_AUTHOR_YEAR_PATTERN.match(block)
+        or APOSTROPHE_AUTHOR_PATTERN.match(block)
+        or TITLE_REF_PATTERN.match(block)
     )
-    return (has_year or has_identifier) and has_structure
+    # Legal instruments and organisational web resources often have a stable
+    # URL but no conventional author/year prefix. Retain them for provider
+    # resolution instead of discarding a valid bibliography entry.
+    return bool((has_year or has_identifier) and (has_structure or has_identifier))
 
 
 def _has_malformed_author(block: str) -> bool:
-    """Detect references with incomplete or malformed author information."""
+    """Detect references with incomplete or malformed author information.
+
+    Args:
+        block: A block of text potentially representing a reference.
+
+    Returns:
+        True if the reference has malformed author information, False otherwise.
+    """
     # Strip numbered prefix if present ([1], 1., etc.)
     cleaned = NUMBERED_REF_PATTERN.sub("", block)
 
@@ -582,7 +847,13 @@ def _has_malformed_author(block: str) -> bool:
 
 
 def _is_orphaned_journal_reference(block: str) -> bool:
-    """Detect journal-only references without author information (incomplete extractions)."""
+    """Detect journal-only references without author information (incomplete extractions).
+    Args:
+        block: A block of text potentially representing a reference.
+
+    Returns:
+        True if the block is an orphaned journal reference, False otherwise.
+    """
     # Strip numbered prefix if present ([1], 1., etc.)
     cleaned = NUMBERED_REF_PATTERN.sub("", block)
 
@@ -610,6 +881,14 @@ def _is_orphaned_journal_reference(block: str) -> bool:
 
 
 def _extract_candidates_from_section(section: str) -> List[str]:
+    """Extract candidate reference lines from a section of text.
+
+    Args:
+        section: A section of text potentially containing reference lines.
+
+    Returns:
+        A list of candidate reference lines extracted from the section.
+    """
     blocks = _split_reference_blocks(section)
 
     candidates: List[str] = []
@@ -671,11 +950,17 @@ def extract_citations(text: str) -> List[ParsedCitation]:
     for line in best_candidates:
         # Cojoining fix only applies to words >= 20 characters
         # This preserves legitimate multi-part names while fixing real PDF corruption
-        cleaned_line = _insert_spaces_in_cojoined_text(line)
+        cleaned_line = _repair_citation_punctuation_spacing(
+            _repair_cojoined_title_words(_insert_spaces_in_cojoined_text(line))
+        )
+        cleaned_line = _repair_url_spaces(cleaned_line)
 
         doi_match = DOI_PATTERN.search(cleaned_line)
         citations.append(
-            ParsedCitation(raw_text=cleaned_line, doi=doi_match.group(0) if doi_match else None)
+            ParsedCitation(
+                raw_text=cleaned_line,
+                doi=doi_match.group(0).rstrip(".,;:-") if doi_match else None,
+            )
         )
 
     return citations

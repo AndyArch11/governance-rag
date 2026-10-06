@@ -24,8 +24,13 @@ class CrossrefProvider(BaseProvider):
     timeout = 10  # seconds
 
     def resolve(
-        self, citation_text: str, year: Optional[int] = None, doi: Optional[str] = None, logger=None
-    ) -> Reference:
+        self,
+        citation_text: str,
+        year: Optional[int] = None,
+        doi: Optional[str] = None,
+        authors: Optional[List[str]] = None,
+        logger=None,
+    ) -> Optional[Reference]:
         """
         Resolve citation via Crossref.
 
@@ -38,6 +43,7 @@ class CrossrefProvider(BaseProvider):
             citation_text: Raw citation or title
             year: Publication year (optional)
             doi: DOI if available (optional)
+            authors: Author list (accepted for provider-chain compatibility)
             logger: Optional logger instance for status messages
 
         Returns:
@@ -95,7 +101,9 @@ class CrossrefProvider(BaseProvider):
 
         return self._parse_crossref_work(data["message"], doi_clean)
 
-    def _resolve_by_title(self, title: str, year: Optional[int] = None, logger=None) -> Reference:
+    def _resolve_by_title(
+        self, title: str, year: Optional[int] = None, logger=None
+    ) -> Optional[Reference]:
         """
         Resolve by title and year (fallback).
 
@@ -105,7 +113,7 @@ class CrossrefProvider(BaseProvider):
             logger: Optional logger instance
 
         Returns:
-            Resolved Reference
+            Resolved Reference, or None when no confident match is available
 
         Raises:
             FatalError: No matches found

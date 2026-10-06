@@ -20,7 +20,7 @@ import logging
 import re
 from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from scripts.search.text_preprocessing import PreprocessingStrategy, TextPreprocessor
 
@@ -151,7 +151,7 @@ class BM25Retriever:
 
         return sorted_results[:top_k]
 
-    def get_stats(self) -> Dict[str, any]:
+    def get_stats(self) -> Dict[str, Any]:
         """Get BM25 index statistics.
 
         Returns:

@@ -6,12 +6,57 @@ parallel graph building with mocked edge generation.
 """
 
 import json
+import logging
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import networkx as nx
 import pytest
 
 from scripts.consistency_graph import build_consistency_graph as bcg
+from scripts.utils import logger as utils_logger
+
+
+@pytest.fixture(autouse=True)
+def isolate_consistency_log(tmp_path, monkeypatch):
+    """Route graph-builder test logs to pytest storage, not operational logs."""
+    logger = bcg.get_logger()
+    file_handlers = [
+        handler for handler in logger.handlers if isinstance(handler, RotatingFileHandler)
+    ]
+    original_handler_settings = [
+        (
+            handler.baseFilename,
+            handler.maxBytes,
+            handler.backupCount,
+            handler.level,
+            handler.formatter,
+        )
+        for handler in file_handlers
+    ]
+    for handler in file_handlers:
+        logger.removeHandler(handler)
+        handler.close()
+
+    test_handler = RotatingFileHandler(tmp_path / "consistency.log")
+    test_handler.setLevel(logging.INFO)
+    test_handler.setFormatter(utils_logger.formatter)
+    logger.addHandler(test_handler)
+    monkeypatch.setattr(bcg, "unload_validator_model", lambda: True)
+
+    yield
+
+    logger.removeHandler(test_handler)
+    test_handler.close()
+    for filename, max_bytes, backup_count, level, formatter in original_handler_settings:
+        original_handler = RotatingFileHandler(
+            filename,
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+        )
+        original_handler.setLevel(level)
+        original_handler.setFormatter(formatter)
+        logger.addHandler(original_handler)
 
 
 class TestNormalisation:
@@ -25,6 +70,41 @@ class TestNormalisation:
         assert bcg.normalise_relationship("something else") == "consistent"
 
 
+class TestPromptOrdering:
+    def test_comparison_prompt_places_static_contract_before_documents(self):
+        """Comparison prompts retain a reusable instruction prefix before document input."""
+        prompt = bcg.build_prompt(
+            "first document content",
+            "second document content",
+            {"source_category": "governance", "doc_type": "policy", "version": 1},
+            {"source_category": "governance", "doc_type": "standard", "version": 2},
+        )
+
+        assert prompt.index('"relationship"') < prompt.index("first document content")
+        assert prompt.index("first document content") < prompt.index("second document content")
+
+    def test_cluster_prompt_places_static_contract_before_cluster_inputs(self, monkeypatch):
+        """Cluster prompts retain reusable instructions before dynamic cluster content."""
+        captured_prompts = []
+        monkeypatch.setattr(
+            bcg,
+            "call_llm",
+            lambda prompt: captured_prompts.append(prompt)
+            or '{"label": "test", "description": "test", "summary": "test"}',
+        )
+
+        bcg.llm_label_cluster(
+            docs=[{"doc_id": "doc-1", "version": 1, "summary": "dynamic cluster text"}],
+            severities=[0.8],
+            topics=[],
+            cluster_type="risk",
+        )
+
+        prompt = captured_prompts[0]
+        assert prompt.index("Return ONLY JSON:") < prompt.index("CLUSTER INPUTS:")
+        assert prompt.index("CLUSTER INPUTS:") < prompt.index("dynamic cluster text")
+
+
 class TestJsonHelpers:
     def test_repair_and_extract_first_json_block(self):
         raw_text = 'Extra text before {"a": 1,\n "b": 2,}\nTrailing'
@@ -34,6 +114,22 @@ class TestJsonHelpers:
 
 
 class TestSeverityAndMetrics:
+    def test_unload_validator_model_uses_zero_keep_alive(self, monkeypatch):
+        """Validator cleanup asks Ollama to unload the configured model."""
+        calls = []
+
+        class FakeClient:
+            def generate(self, **kwargs):
+                calls.append(kwargs)
+
+        assert bcg._request_validator_model_unload(FakeClient) is True
+        assert calls == [{"model": bcg.VALIDATOR_LLM_MODEL, "keep_alive": 0}]
+
+    def test_parallelism_factor_allows_aggregate_worker_time_above_wall_clock(self):
+        """Concurrent worker time is correctly represented as a factor above wall time."""
+        assert bcg._calculate_parallelism_factor(3348.0, 845.0) == pytest.approx(3.9621, abs=0.0001)
+        assert bcg._calculate_parallelism_factor(10.0, 0.0) == 0.0
+
     def test_compute_edge_severity_scales(self):
         # conflict should have the highest base weight
         sev_conflict = bcg.compute_edge_severity("conflict", confidence=1.0, similarity=1.0)
@@ -154,17 +250,11 @@ class TestClusters:
             severities,
             topics,
             cluster_type,
-            is_code_cluster=False,
-            code_languages=None,
-            code_services=None,
         ):
             called["docs"] = docs
             called["severities"] = severities
             called["topics"] = topics
             called["cluster_type"] = cluster_type
-            called["is_code_cluster"] = is_code_cluster
-            called["code_languages"] = code_languages
-            called["code_services"] = code_services
             return ("L", "D", "S")
 
         monkeypatch.setattr(bcg, "llm_label_cluster", fake_llm_label_cluster)
@@ -174,10 +264,9 @@ class TestClusters:
         assert meta[0]["description"] == "D"
         assert meta[0]["summary"] == "S"
         assert meta[0]["size"] == 2
-        # Should not be code cluster
-        assert called["is_code_cluster"] is False
+        assert set(called["docs"][0]) == {"doc_id", "version", "summary"}
 
-    def test_generate_cluster_metadata_code_cluster(self, monkeypatch):
+    def test_generate_cluster_metadata_ignores_code_fields(self, monkeypatch):
         G = nx.Graph()
         G.add_node(
             "c1",
@@ -206,30 +295,62 @@ class TestClusters:
             severities,
             topics,
             cluster_type,
-            is_code_cluster=False,
-            code_languages=None,
-            code_services=None,
         ):
             called["docs"] = docs
             called["severities"] = severities
             called["topics"] = topics
             called["cluster_type"] = cluster_type
-            called["is_code_cluster"] = is_code_cluster
-            called["code_languages"] = code_languages
-            called["code_services"] = code_services
-            return ("CodeLabel", "CodeDesc", "CodeSummary")
+            return ("Label", "Description", "Summary")
 
         monkeypatch.setattr(bcg, "llm_label_cluster", fake_llm_label_cluster)
 
         meta = bcg.generate_cluster_metadata(G, clusters, "topic")
-        assert meta[0]["label"] == "CodeLabel"
-        assert meta[0]["description"] == "CodeDesc"
-        assert meta[0]["summary"] == "CodeSummary"
+        assert meta[0]["label"] == "Label"
+        assert meta[0]["description"] == "Description"
+        assert meta[0]["summary"] == "Summary"
         assert meta[0]["size"] == 2
-        # Should be detected as code cluster
-        assert called["is_code_cluster"] is True
-        assert set(called["code_languages"]) == {"java"}
-        assert set(called["code_services"]) == {"auth", "payment"}
+        assert all(set(doc) == {"doc_id", "version", "summary"} for doc in called["docs"])
+
+    def test_generate_cluster_metadata_does_not_llm_label_singletons(self, monkeypatch):
+        G = nx.Graph()
+        G.add_node("a_v1", doc_id="a", version=1, summary="isolated")
+
+        def fail_if_called(*args, **kwargs):
+            raise AssertionError("singleton clusters must not be sent to the LLM")
+
+        monkeypatch.setattr(bcg, "llm_label_cluster", fail_if_called)
+
+        meta = bcg.generate_cluster_metadata(G, [{"a_v1"}], "risk")
+
+        assert meta[0] == {
+            "label": "Isolated risk finding",
+            "description": (
+                "This node has no sufficiently related risk neighbours and should "
+                "be reviewed individually."
+            ),
+            "summary": (
+                "Review the severity and conflict score for a_v1, along with its "
+                "connected edges."
+            ),
+            "size": 1,
+        }
+
+    def test_generate_cluster_metadata_labels_singleton_topics_without_llm(self, monkeypatch):
+        G = nx.Graph()
+        G.add_node("t_v1", doc_id="t", version=1, summary="isolated topic")
+
+        monkeypatch.setattr(
+            bcg,
+            "llm_label_cluster",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("singleton clusters must not be sent to the LLM")
+            ),
+        )
+
+        meta = bcg.generate_cluster_metadata(G, [{"t_v1"}], "topic")
+
+        assert meta[0]["label"] == "Isolated topic finding"
+        assert meta[0]["size"] == 1
 
 
 class TestParallelGraphBuild:
@@ -663,6 +784,10 @@ class TestErrorHandling:
                 Path(target).touch()
 
         monkeypatch.setattr(bcg, "SQLiteGraphWriter", MockSQLiteWriter)
+        unload_calls = []
+        monkeypatch.setattr(
+            bcg, "unload_validator_model", lambda: unload_calls.append(True) or True
+        )
 
         bcg.main()
 
@@ -673,11 +798,12 @@ class TestErrorHandling:
         assert "Risk Clusters: 1" in captured.out
         assert "Topic Clusters: 1" in captured.out
         assert output_sqlite.exists()
+        assert unload_calls == [True]
 
 
-class TestDocTypeFilter:
-    def test_filter_doc_type_passes_correct_where(self, monkeypatch):
-        """Test that --filter-doc-type sets the correct ChromaDB filter."""
+class TestCollectionScope:
+    def test_cli_does_not_apply_code_specific_collection_filter(self, monkeypatch):
+        """The graph builder does not add code-specific filters to collection queries."""
         called = {}
 
         # Patch load_versioned_docs to capture 'where' argument
@@ -730,7 +856,7 @@ class TestDocTypeFilter:
                 0: {"label": "L", "description": "D", "summary": "S", "size": 1}
             },
         )
-        # Patch parse_args to simulate CLI
+        # Patch parse_args without the removed filter-doc-type option.
         monkeypatch.setattr(
             bcg,
             "parse_args",
@@ -746,7 +872,6 @@ class TestDocTypeFilter:
                     "progress_interval": 10,
                     "include_documents": True,
                     "purge_logs": False,
-                    "filter_doc_type": "java",
                     "dashboard_mode": False,
                     "enable_llm_batching": False,
                     "enable_embedding_cache": False,
@@ -802,8 +927,7 @@ class TestDocTypeFilter:
 
         # Run main
         bcg.main()
-        # Should filter for code+java
-        assert called["where"] == {"source_category": "code", "doc_type": "java"}
+        assert called["where"] is None
 
 
 class TestOptimisations:

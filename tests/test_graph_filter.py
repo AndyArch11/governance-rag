@@ -27,10 +27,12 @@ def sample_graph_data():
             },
             "docs/API.md_v1": {
                 "conflict_score": 0.2,
+                "source_category": "documentation",
                 "metadata": {"source": "docs"},
             },
             "config/app.properties_v3": {
                 "conflict_score": 0.6,
+                "source_category": "documentation",
                 "metadata": {"source": "config"},
             },
             "repo2/service/Auth.java_v1": {
@@ -69,37 +71,31 @@ class TestExtractMetadata:
         gf = GraphFilter(sample_graph_data)
         meta = gf.extract_metadata("Handler.java_v1")
 
-        assert meta["doc_type"] == "code"
-        assert meta["language"] == "java"
+        assert meta["doc_type"] == "java"
         assert meta["file_path"] == "Handler"
         assert meta["version"] == 1
-        assert meta["source_category"] == "code"
+        assert meta["source_category"] is None
 
     def test_extract_groovy_file(self, sample_graph_data):
         gf = GraphFilter(sample_graph_data)
         meta = gf.extract_metadata("service/Controller.groovy_v1")
 
-        assert meta["language"] == "groovy"
-        assert meta["doc_type"] == "code"
+        assert meta["doc_type"] == "groovy"
         assert meta["file_path"] == "service/Controller"
-        assert meta["repository"] == "service"
         assert meta["version"] == 1
 
     def test_extract_python_file(self, sample_graph_data):
         gf = GraphFilter(sample_graph_data)
         meta = gf.extract_metadata("utils/helper.py_v2")
 
-        assert meta["language"] == "python"
-        assert meta["doc_type"] == "code"
+        assert meta["doc_type"] == "py"
         assert meta["version"] == 2
-        assert meta["repository"] == "utils"
 
     def test_extract_markdown_file(self, sample_graph_data):
         gf = GraphFilter(sample_graph_data)
         meta = gf.extract_metadata("docs/API.md_v1")
 
         assert meta["doc_type"] == "markdown"
-        assert meta["language"] is None
         assert meta["source_category"] == "documentation"
         assert meta["file_path"] == "docs/API"
 
@@ -108,7 +104,6 @@ class TestExtractMetadata:
         meta = gf.extract_metadata("config/app.properties_v3")
 
         assert meta["doc_type"] == "properties"
-        assert meta["language"] is None
         assert meta["version"] == 3
 
     def test_extract_no_version_suffix(self, sample_graph_data):
@@ -116,21 +111,19 @@ class TestExtractMetadata:
         meta = gf.extract_metadata("file.java")
 
         assert meta["version"] is None
-        assert meta["language"] == "java"
+        assert meta["doc_type"] == "java"
 
     def test_extract_unknown_extension(self, sample_graph_data):
         gf = GraphFilter(sample_graph_data)
         meta = gf.extract_metadata("file.xyz_v1")
 
         assert meta["doc_type"] == "xyz"
-        assert meta["language"] is None
 
     def test_extract_no_extension(self, sample_graph_data):
         gf = GraphFilter(sample_graph_data)
         meta = gf.extract_metadata("Makefile_v1")
 
         assert meta["doc_type"] == "unknown"
-        assert meta["language"] is None
 
     def test_extract_metadata_caching(self, sample_graph_data):
         """Metadata extraction results are cached."""
@@ -146,7 +139,6 @@ class TestExtractMetadata:
         gf = GraphFilter(sample_graph_data)
         meta = gf.extract_metadata("repo2/service/Auth.java_v1")
 
-        assert meta["repository"] == "repo2"
         assert meta["file_path"] == "repo2/service/Auth"
 
 
@@ -157,38 +149,18 @@ class TestGetAvailableFilters:
         gf = GraphFilter(sample_graph_data)
         doc_types = gf.get_available_doc_types()
 
-        assert "code" in doc_types
+        assert "java" in doc_types
+        assert "groovy" in doc_types
+        assert "py" in doc_types
         assert "markdown" in doc_types
         assert "properties" in doc_types
         assert doc_types == sorted(doc_types)  # Should be sorted
-
-    def test_get_available_languages(self, sample_graph_data):
-        gf = GraphFilter(sample_graph_data)
-        languages = gf.get_available_languages()
-
-        assert "java" in languages
-        assert "groovy" in languages
-        assert "python" in languages
-        assert languages == sorted(languages)
-
-    def test_get_available_repositories(self, sample_graph_data):
-        gf = GraphFilter(sample_graph_data)
-        repos = gf.get_available_repositories()
-
-        assert "service" in repos
-        assert "utils" in repos
-        assert "repo2" in repos
-        assert "docs" in repos
-        assert "config" in repos
-        assert repos == sorted(repos)
 
     def test_get_available_filters_empty_graph(self):
         """Handle empty graph gracefully."""
         gf = GraphFilter({"nodes": {}, "edges": [], "clusters": {}})
 
         assert gf.get_available_doc_types() == []
-        assert gf.get_available_languages() == []
-        assert gf.get_available_repositories() == []
 
     def test_get_available_filters_caching(self, sample_graph_data):
         """Filter options are cached."""
@@ -235,43 +207,22 @@ class TestFilterNodes:
         gf = GraphFilter(sample_graph_data)
         node_ids = list(sample_graph_data["nodes"].keys())
 
-        filtered = gf.filter_nodes(node_ids, filters={"doc_types": ["code"]})
+        filtered = gf.filter_nodes(node_ids, filters={"doc_types": ["java"]})
 
         assert "Handler.java_v1" in filtered
-        assert "service/Controller.groovy_v1" in filtered
+        assert "repo2/service/Auth.java_v1" in filtered
         assert "docs/API.md_v1" not in filtered
-        assert len(filtered) == 4  # Four code files (Handler, Controller, helper, Auth)
-
-    def test_filter_nodes_by_language(self, sample_graph_data):
-        gf = GraphFilter(sample_graph_data)
-        node_ids = list(sample_graph_data["nodes"].keys())
-
-        filtered = gf.filter_nodes(node_ids, filters={"languages": ["java"]})
-
-        assert "Handler.java_v1" in filtered
-        assert "repo2/service/Auth.java_v1" in filtered
-        assert "utils/helper.py_v2" not in filtered
         assert len(filtered) == 2
-
-    def test_filter_nodes_by_repository(self, sample_graph_data):
-        gf = GraphFilter(sample_graph_data)
-        node_ids = list(sample_graph_data["nodes"].keys())
-
-        filtered = gf.filter_nodes(node_ids, filters={"repositories": ["repo2"]})
-
-        assert "repo2/service/Auth.java_v1" in filtered
-        assert len(filtered) == 1
 
     def test_filter_nodes_by_source_category(self, sample_graph_data):
         gf = GraphFilter(sample_graph_data)
         node_ids = list(sample_graph_data["nodes"].keys())
 
-        filtered = gf.filter_nodes(node_ids, filters={"source_categories": ["code"]})
+        filtered = gf.filter_nodes(node_ids, filters={"source_categories": ["documentation"]})
 
-        # Should include all code files
-        assert "Handler.java_v1" in filtered
-        assert "docs/API.md_v1" not in filtered  # documentation category
-        assert len(filtered) == 4
+        assert "docs/API.md_v1" in filtered
+        assert "config/app.properties_v3" in filtered
+        assert len(filtered) == 2
 
     def test_filter_nodes_combined_filters(self, sample_graph_data):
         gf = GraphFilter(sample_graph_data)
@@ -281,11 +232,11 @@ class TestFilterNodes:
             node_ids,
             filters={
                 "min_conflict": 0.6,
-                "languages": ["java"],
+                "doc_types": ["java"],
             },
         )
 
-        # Handler.java_v1 (0.8, java) and repo2/service/Auth.java_v1 (0.7, java) pass
+        # Both Java document nodes pass the conflict threshold.
         assert "Handler.java_v1" in filtered
         assert "repo2/service/Auth.java_v1" in filtered
         assert len(filtered) == 2
@@ -364,12 +315,9 @@ class TestGetFilterSummary:
         summary = gf.get_filter_summary(node_ids)
 
         assert summary["total_nodes"] == 6
-        assert summary["doc_types"]["code"] == 4
+        assert summary["doc_types"]["java"] == 2
         assert summary["doc_types"]["markdown"] == 1
         assert summary["doc_types"]["properties"] == 1
-        assert summary["languages"]["java"] == 2
-        assert summary["languages"]["python"] == 1
-        assert summary["source_categories"]["code"] == 4
         assert summary["source_categories"]["documentation"] == 2  # markdown and properties files
 
     def test_get_filter_summary_empty_set(self, sample_graph_data):
@@ -379,7 +327,6 @@ class TestGetFilterSummary:
 
         assert summary["total_nodes"] == 0
         assert summary["doc_types"] == {}
-        assert summary["languages"] == {}
 
     def test_get_filter_summary_partial_nodes(self, sample_graph_data):
         gf = GraphFilter(sample_graph_data)
@@ -388,9 +335,8 @@ class TestGetFilterSummary:
         summary = gf.get_filter_summary(node_ids)
 
         assert summary["total_nodes"] == 2
-        assert summary["languages"]["java"] == 1
-        assert summary["languages"]["python"] == 1
-        assert "groovy" not in summary["languages"]
+        assert summary["doc_types"]["java"] == 1
+        assert summary["doc_types"]["py"] == 1
 
 
 class TestBuildSqlWhereClause:
@@ -420,45 +366,22 @@ class TestBuildSqlWhereClause:
         assert "doc_type IN (?,?)" in where_clause
         assert params == ["code", "markdown"]
 
-    def test_build_where_clause_languages(self, sample_graph_data):
-        gf = GraphFilter(sample_graph_data)
-
-        where_clause, params = gf.build_sql_where_clause(languages=["java", "python"])
-
-        assert "language IN (?,?)" in where_clause
-        assert params == ["java", "python"]
-
-    def test_build_where_clause_repositories(self, sample_graph_data):
-        gf = GraphFilter(sample_graph_data)
-
-        where_clause, params = gf.build_sql_where_clause(repositories=["repo1"])
-
-        assert "repository IN (?)" in where_clause
-        assert params == ["repo1"]
-
     def test_build_where_clause_combined(self, sample_graph_data):
         gf = GraphFilter(sample_graph_data)
 
         where_clause, params = gf.build_sql_where_clause(
             min_conflict_score=0.5,
-            doc_types=["code"],
-            languages=["java"],
-            repositories=["repo1", "repo2"],
+            doc_types=["java"],
         )
 
         # All clauses should be present and joined with AND
         assert "conflict_score >= ?" in where_clause
         assert "doc_type IN (?)" in where_clause
-        assert "language IN (?)" in where_clause
-        assert "repository IN (?,?)" in where_clause
-        assert where_clause.count(" AND ") == 3
+        assert where_clause.count(" AND ") == 1
 
         # Parameters should be in order
         assert params[0] == 0.5
-        assert params[1] == "code"
-        assert params[2] == "java"
-        assert "repo1" in params
-        assert "repo2" in params
+        assert params[1] == "java"
 
     def test_build_where_clause_parametrised_safe(self, sample_graph_data):
         """Verify no SQL injection via proper parameterisation."""

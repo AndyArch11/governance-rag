@@ -61,6 +61,22 @@ class TestDomainTerm:
 class TestDomainVocabulary:
     """Test DomainVocabulary dataclass."""
 
+    def test_vocabulary_from_dict_accepts_list_shaped_terms(self):
+        vocabulary = DomainVocabulary.from_dict(
+            {
+                "domain": "legal",
+                "name": "Legal",
+                "description": "Legal terms",
+                "terms": [
+                    {"term": "data sovereignty", "category": "governance", "weight": 2.0},
+                    {"term": "community consent", "category": "ethics", "weight": 1.5},
+                ],
+            }
+        )
+
+        assert set(vocabulary.terms) == {"data sovereignty", "community consent"}
+        assert vocabulary.get_term("data sovereignty").weight == 2.0
+
     def test_vocabulary_creation(self):
         """Test creating a vocabulary."""
         terms = {
@@ -287,6 +303,54 @@ class TestDomainTermIntegration:
 
         # Should be same instance
         assert manager1 is manager2
+
+    def test_get_domain_term_manager_initializes_once_across_threads(self, monkeypatch):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Event, Lock
+
+        import scripts.rag.domain_terms as domain_terms
+
+        first_initializing = Event()
+        release_first = Event()
+        duplicate_initialization = Event()
+        count_lock = Lock()
+        created_managers = []
+
+        def fake_manager(config_path=None):
+            with count_lock:
+                created_managers.append(object())
+                manager = created_managers[-1]
+                is_first = len(created_managers) == 1
+            if is_first:
+                first_initializing.set()
+                release_first.wait(timeout=2)
+            else:
+                duplicate_initialization.set()
+            return manager
+
+        monkeypatch.setattr(domain_terms, "_domain_manager", None)
+        monkeypatch.setattr(domain_terms, "DomainTermManager", fake_manager)
+
+        def second_caller():
+            second_call_started.set()
+            return domain_terms.get_domain_term_manager()
+
+        second_call_started = Event()
+        try:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                first_call = executor.submit(domain_terms.get_domain_term_manager)
+                assert first_initializing.wait(timeout=1)
+                second_call = executor.submit(second_caller)
+                assert second_call_started.wait(timeout=1)
+                assert not duplicate_initialization.wait(timeout=0.5)
+                release_first.set()
+                first_manager = first_call.result(timeout=1)
+                second_manager = second_call.result(timeout=1)
+        finally:
+            release_first.set()
+
+        assert first_manager is second_manager
+        assert len(created_managers) == 1
 
     def test_domain_vocabulary_completeness(self):
         """Test that built-in vocabularies have minimum coverage."""

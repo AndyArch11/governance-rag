@@ -8,15 +8,91 @@ through database storage to visualisation and export.
 import sqlite3
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import networkx as nx
 import pytest
 
 from scripts.ingest.academic.citation_graph_schema import ensure_schema
 from scripts.ingest.academic.graph import CitationGraph, CitationNode
 from scripts.ingest.academic.providers.base import Reference, ReferenceStatus
 from scripts.ingest.academic.providers.chain import ProviderChain, ResolutionResult
+from scripts.ui.academic import citation_graph_viz
 from scripts.ui.academic.citation_graph_viz import CitationGraphViz
+
+
+def test_citation_graph_visualiser_defaults_to_academic_rag_data_path(
+    monkeypatch, tmp_path
+) -> None:
+    """Dashboard citation graph reads the same configured path used by academic ingestion."""
+    configured_path = tmp_path / "academic-rag-data"
+    monkeypatch.setattr(
+        citation_graph_viz,
+        "get_academic_config",
+        lambda: SimpleNamespace(rag_data_path=configured_path),
+    )
+
+    visualiser = CitationGraphViz()
+
+    assert visualiser.db_path == configured_path / "academic_citation_graph.db"
+
+
+class TestCitationGraphVisualRendering:
+    """Test visual attributes and render paths using a stable in-memory graph."""
+
+    def test_visual_attributes_tooltips_and_supported_layouts(self, tmp_path):
+        """Nodes preserve citation semantics across every supported graph layout."""
+        visualiser = CitationGraphViz(tmp_path / "unused.db")
+        visualiser._graph = nx.DiGraph()
+        visualiser._graph.add_node(
+            "thesis",
+            title="Thesis Evidence",
+            node_type="document",
+            authors="Researcher, Ada",
+            year=2024,
+            source="document",
+            quality_score=1.0,
+            link_status="available",
+        )
+        visualiser._graph.add_node(
+            "reference",
+            title="Supporting Study",
+            node_type="reference",
+            authors=["Author One", "Author Two"],
+            year=2022,
+            doi="10.1000/example",
+            source="crossref",
+            confidence=0.91,
+            quality_score=0.8,
+            link_status="stale_timeout",
+            reference_type="academic",
+            oa_available=True,
+            venue_rank="Q1",
+            citation_count=9,
+        )
+        visualiser._graph.add_edge("thesis", "reference", depth=1)
+        visualiser._primary_docs.add("thesis")
+
+        primary = visualiser.compute_node_attributes("thesis")
+        reference = visualiser.compute_node_attributes("reference")
+        missing = visualiser.compute_node_attributes("missing")
+
+        assert primary.shape == "diamond"
+        assert reference.shape == "circle"
+        assert reference.opacity == 0.7
+        assert reference.label == "Author One (2022)"
+        assert missing.label == "Unknown"
+        tooltip = visualiser._build_tooltip("reference", visualiser._graph.nodes["reference"])
+        assert "Supporting Study" in tooltip
+        assert "CrossRef" in tooltip
+        assert "Confidence: 0.91" in tooltip
+
+        for layout in ("hierarchical", "circular", "force"):
+            assert visualiser.create_plotly_figure(layout=layout, width=640, height=480) is not None
+
+        assert visualiser.create_dash_layout() is not None
+        visualiser.close()
 
 
 class TestCitationNodeConfidence:

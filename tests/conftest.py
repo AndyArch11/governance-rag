@@ -35,8 +35,9 @@ if "langchain_ollama" not in sys.modules:
     dummy_module = types.ModuleType("langchain_ollama")
 
     class _DummyLLM:  # noqa: D401
-        def __init__(self, model=None):
+        def __init__(self, model=None, num_ctx=None, **kwargs):
             self.model = model
+            self.num_ctx = num_ctx
 
         def invoke(self, prompt):
             return ""

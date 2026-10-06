@@ -304,7 +304,7 @@ def compute_advanced_analytics(G: nx.Graph) -> Dict[str, Any]:
     Returns:
         Dict with comprehensive analytics results
     """
-    analytics = {
+    analytics: Dict[str, Any] = {
         "influence_scores": {
             "pagerank": compute_pagerank_influence(G),
             "betweenness_centrality": compute_betweenness_centrality(G),

@@ -19,7 +19,7 @@ This roadmap merges the previous strategic roadmap with all actionable in-repo T
 ### 1) Ingestion robustness and correctness
 - **Move late imports to module scope** for maintainability and static analysis hygiene.
   - Effort: `M` | Impact: `High`
-  - Refs: `scripts/ingest/ingest_git.py` (lines 684, 1212, 1672, 1721, 1728, 1738, 1750, 1782, 1855, 2191), `scripts/ingest/ingest.py` (2099), `scripts/ingest/ingest_academic.py` (725)
+  - Refs: `scripts/ingest/ingest.py` (2099), `scripts/ingest/ingest_academic.py` (725)
 
 ### 2) Embedding and chunking quality controls
 - **Tune chunk sizing/truncation** and reduce debug-log noise in vector ingestion.
@@ -28,9 +28,6 @@ This roadmap merges the previous strategic roadmap with all actionable in-repo T
 - **Validate semantic drift schema compliance** and clarify doc embedding metadata handling.
   - Effort: `M` | Impact: `Medium`
   - Refs: `scripts/ingest/vectors.py` (1804, 2220)
-- **Improve table-aware chunking strategy** (current approach acknowledged as weak).
-  - Effort: `L` | Impact: `High`
-  - Refs: `scripts/ingest/chunk.py` (283, 386)
 
 ### 3) Observability and monitoring baseline
 - **Add OpenTelemetry/OTLP tracing/log enrichment** in ingestion and graph builder.

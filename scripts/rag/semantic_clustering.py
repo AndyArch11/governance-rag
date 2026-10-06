@@ -22,6 +22,7 @@ import json
 import logging
 import sqlite3
 import threading
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -31,11 +32,8 @@ import numpy as np
 from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import pdist, squareform
 
-try:
-    from scripts.ingest.vectors import EMBEDDING_MODEL_NAME
-except ImportError:
-    EMBEDDING_MODEL_NAME = "mxbai-embed-large"
-
+from scripts.utils.embedding_model_config import EMBEDDING_MODEL_NAME
+from scripts.utils.llm_instrumentation import record_embedding_usage
 from scripts.utils.logger import create_module_logger
 
 get_logger, audit = create_module_logger("rag")
@@ -190,7 +188,28 @@ class SemanticClusterer:
             from langchain_ollama import OllamaEmbeddings
 
             embedder = OllamaEmbeddings(model=self.embedding_model)
-            embedding = embedder.embed_query(text)
+            started_at = time.perf_counter()
+            try:
+                embedding = embedder.embed_query(text)
+            except Exception as exc:
+                record_embedding_usage(
+                    "semantic_clustering.embed_term",
+                    "semantic_clustering",
+                    self.embedding_model,
+                    [text],
+                    success=False,
+                    latency_ms=(time.perf_counter() - started_at) * 1000,
+                    failure_reason=type(exc).__name__,
+                )
+                raise
+            record_embedding_usage(
+                "semantic_clustering.embed_term",
+                "semantic_clustering",
+                self.embedding_model,
+                [text],
+                success=True,
+                latency_ms=(time.perf_counter() - started_at) * 1000,
+            )
 
             # Store in cache
             with self.lock:
@@ -272,7 +291,7 @@ class SemanticClusterer:
             clusters_dict[label].append(valid_terms[i])
 
         # Create Cluster objects
-        clusters = []
+        clusters: List[Cluster] = []
         for cluster_id, cluster_terms in sorted(clusters_dict.items()):
             # Calculate centroid
             cluster_indices = [valid_terms.index(t) for t in cluster_terms]
@@ -336,20 +355,23 @@ class SemanticClusterer:
         Returns:
             List of (term, similarity) tuples, sorted by similarity descending
         """
-        query_emb = self._get_embedding(term)
-        if query_emb is None:
+        query_embedding = self._get_embedding(term)
+        if query_embedding is None:
             return []
 
-        query_emb = np.array(query_emb)
-        similarities = []
+        query_vector = np.asarray(query_embedding, dtype=np.float32)
+        similarities: List[Tuple[str, float]] = []
 
         for candidate in candidate_terms:
-            cand_emb = self._get_embedding(candidate)
-            if cand_emb is None:
+            candidate_embedding = self._get_embedding(candidate)
+            if candidate_embedding is None:
                 continue
 
-            cand_emb = np.array(cand_emb)
-            sim = 1.0 - np.linalg.norm(query_emb - cand_emb) / np.linalg.norm(query_emb + cand_emb)
+            candidate_vector = np.asarray(candidate_embedding, dtype=np.float32)
+            denominator = np.linalg.norm(query_vector + candidate_vector)
+            if denominator == 0:
+                continue
+            sim = 1.0 - np.linalg.norm(query_vector - candidate_vector) / denominator
             similarities.append((candidate, float(sim)))
 
         return sorted(similarities, key=lambda x: x[1], reverse=True)[:top_k]

@@ -40,7 +40,7 @@ class CitationGraphWriter:
         """
         self.sqlite_path = str(sqlite_path)
         self._lock = threading.Lock()
-        self._conn = None
+        self._conn: Optional[sqlite3.Connection] = None
         self._replace = replace
         self._node_count = 0
         self._edge_count = 0
@@ -54,13 +54,22 @@ class CitationGraphWriter:
     def _init_db(self) -> None:
         """Create database connection and schema."""
         self._conn = sqlite3.connect(self.sqlite_path, check_same_thread=False)
-        ensure_schema(self._conn, drop_existing=self._replace)
+        conn = self._require_connection()
+        ensure_schema(conn, drop_existing=self._replace)
 
         # Set pragmas for performance
-        self._conn.execute("PRAGMA journal_mode=WAL;")
-        self._conn.execute("PRAGMA synchronous=NORMAL;")
-        self._conn.execute("PRAGMA cache_size=-64000;")
-        self._conn.commit()
+        # Atomic swaps move only the main database file, so WAL sidecars would
+        # otherwise leave committed data behind at the temporary path.
+        conn.execute("PRAGMA journal_mode=DELETE;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA cache_size=-64000;")
+        conn.commit()
+
+    def _require_connection(self) -> sqlite3.Connection:
+        """Return the open writer connection or raise a lifecycle error."""
+        if self._conn is None:
+            raise RuntimeError("Citation graph writer is closed")
+        return self._conn
 
     def insert_node(
         self,
@@ -96,11 +105,12 @@ class CitationGraphWriter:
             venue_rank: Venue quality rank (Q1-Q4, A*-C)
             source: Metadata source (crossref, openalex, etc.)
         """
+        conn = self._require_connection()
         with self._lock:
             # Serialise authors list to JSON
             authors_json = json.dumps(authors) if authors else None
 
-            self._conn.execute(
+            conn.execute(
                 """
                 INSERT OR REPLACE INTO nodes 
                 (node_id, node_type, title, authors, doi, year, year_verified, 
@@ -132,11 +142,12 @@ class CitationGraphWriter:
         Args:
             nodes: List of node dictionaries with keys matching insert_node parameters
         """
+        conn = self._require_connection()
         with self._lock:
             for node in nodes:
                 authors_json = json.dumps(node.get("authors", [])) if node.get("authors") else None
 
-                self._conn.execute(
+                conn.execute(
                     """
                     INSERT OR REPLACE INTO nodes 
                     (node_id, node_type, title, authors, doi, year, year_verified, 
@@ -162,7 +173,7 @@ class CitationGraphWriter:
                 )
                 self._node_count += 1
 
-            self._conn.commit()
+            conn.commit()
 
     def insert_edge(self, source: str, target: str, relation: str = "cites") -> None:
         """
@@ -173,8 +184,9 @@ class CitationGraphWriter:
             target: Target node ID (cited reference)
             relation: Relationship type (default: "cites")
         """
+        conn = self._require_connection()
         with self._lock:
-            self._conn.execute(
+            conn.execute(
                 "INSERT OR IGNORE INTO edges (source, target, relation) VALUES (?, ?, ?)",
                 (source, target, relation),
             )
@@ -187,28 +199,30 @@ class CitationGraphWriter:
         Args:
             edges: List of edge dictionaries with 'source', 'target', 'relation' keys
         """
+        conn = self._require_connection()
         with self._lock:
             for edge in edges:
-                self._conn.execute(
+                conn.execute(
                     "INSERT OR IGNORE INTO edges (source, target, relation) VALUES (?, ?, ?)",
                     (edge["source"], edge["target"], edge.get("relation", "cites")),
                 )
                 self._edge_count += 1
 
-            self._conn.commit()
+            conn.commit()
 
     def set_metadata(self, key: str, value: str) -> None:
         """Store metadata key-value pair."""
-        set_metadata_value(self._conn, key, value)
+        set_metadata_value(self._require_connection(), key, value)
 
     def finalise(self) -> None:
         """Commit final transaction and store statistics."""
+        conn = self._require_connection()
         with self._lock:
-            self._conn.commit()
+            conn.commit()
 
             # Store statistics
-            set_metadata_value(self._conn, "node_count", str(self._node_count))
-            set_metadata_value(self._conn, "edge_count", str(self._edge_count))
+            set_metadata_value(conn, "node_count", str(self._node_count))
+            set_metadata_value(conn, "edge_count", str(self._edge_count))
 
     def atomic_swap(self, target_path: Union[str, Path]) -> None:
         """
@@ -220,9 +234,7 @@ class CitationGraphWriter:
         target_path = str(target_path)
 
         # Close connection
-        if self._conn:
-            self._conn.close()
-            self._conn = None
+        self.close()
 
         # Atomic rename
         target = Path(target_path)
@@ -245,7 +257,7 @@ class CitationGraphWriter:
         Args:
             output_path: Path to write JSON file
         """
-        cursor = self._conn.cursor()
+        cursor = self._require_connection().cursor()
 
         # Load all nodes - select only the columns we need
         cursor.execute("""

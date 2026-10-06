@@ -49,15 +49,15 @@ class SQLiteGraphStore:
             sqlite_path: Path to SQLite database file
         """
         self.sqlite_path = sqlite_path
-        self._metadata = {}
-        self._clusters = {"risk": [], "topic": []}
-        self._all_node_ids = []
-        self._collection = None
-        self._doc_cache = {}
+        self._metadata: Dict[str, Any] = {}
+        self._clusters: Dict[str, List[Any]] = {"risk": [], "topic": []}
+        self._all_node_ids: List[str] = []
+        self._collection: Any = None
+        self._doc_cache: Dict[str, Any] = {}
         self._lock = threading.Lock()
 
         # Track file inode to detect atomic swaps (file replacement)
-        self._last_inode = None
+        self._last_inode: int | None = None
 
         # Connection will be created on-demand per thread
         self._thread_local = threading.local()
@@ -195,7 +195,10 @@ class SQLiteGraphStore:
 
         rows = cur.execute(
             """
-            SELECT * FROM nodes
+                 SELECT node_id, doc_id, version, doc_type, timestamp, summary,
+                     source_category, health, conflict_score,
+                   topic_clusters, risk_clusters
+            FROM nodes
             ORDER BY node_id
             LIMIT ? OFFSET ?
             """,
@@ -210,12 +213,6 @@ class SQLiteGraphStore:
             # Deserialise JSON fields
             for field in [
                 "health",
-                "dependencies",
-                "internal_calls",
-                "endpoints",
-                "db",
-                "queue",
-                "exports",
                 "topic_clusters",
                 "risk_clusters",
             ]:
@@ -304,7 +301,15 @@ class SQLiteGraphStore:
         conn = self._get_conn()
         cur = conn.cursor()
 
-        row = cur.execute("SELECT * FROM nodes WHERE node_id = ?", (node_id,)).fetchone()
+        row = cur.execute(
+            """
+                 SELECT node_id, doc_id, version, doc_type, timestamp, summary,
+                     source_category, health, conflict_score,
+                   topic_clusters, risk_clusters
+            FROM nodes WHERE node_id = ?
+            """,
+            (node_id,),
+        ).fetchone()
 
         if not row:
             return None
@@ -314,12 +319,6 @@ class SQLiteGraphStore:
         # Deserialise JSON fields
         for field in [
             "health",
-            "dependencies",
-            "internal_calls",
-            "endpoints",
-            "db",
-            "queue",
-            "exports",
             "topic_clusters",
             "risk_clusters",
         ]:
@@ -354,7 +353,13 @@ class SQLiteGraphStore:
 
         # Add nodes
         rows = cur.execute(
-            f"SELECT * FROM nodes WHERE node_id IN ({placeholders})", tuple(node_ids)
+            f"""
+                 SELECT node_id, doc_id, version, doc_type, timestamp, summary,
+                     source_category, health, conflict_score,
+                   topic_clusters, risk_clusters
+            FROM nodes WHERE node_id IN ({placeholders})
+            """,
+            tuple(node_ids),
         ).fetchall()
 
         for row in rows:
@@ -364,12 +369,6 @@ class SQLiteGraphStore:
             # Deserialise JSON fields
             for field in [
                 "health",
-                "dependencies",
-                "internal_calls",
-                "endpoints",
-                "db",
-                "queue",
-                "exports",
                 "topic_clusters",
                 "risk_clusters",
             ]:

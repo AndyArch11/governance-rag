@@ -26,15 +26,25 @@ class TestHybridSearchWeights:
 
     def test_weights_normalisation(self):
         """Test that weights are normalised to sum to 1.0."""
-        weights = HybridSearchWeights(vector_weight=2.0, keyword_weight=1.0, normalise_weights=True)
+        weights = HybridSearchWeights(
+            vector_weight=2.0,
+            keyword_weight=1.0,
+            graph_weight=0.0,
+            normalise_weights=True,
+        )
         assert abs(weights.vector_weight - 2 / 3) < 0.001
         assert abs(weights.keyword_weight - 1 / 3) < 0.001
-        assert abs(weights.vector_weight + weights.keyword_weight - 1.0) < 0.001
+        assert (
+            abs(weights.vector_weight + weights.keyword_weight + weights.graph_weight - 1.0) < 0.001
+        )
 
     def test_weights_no_normalisation(self):
         """Test that weights can be stored without normalisation."""
         weights = HybridSearchWeights(
-            vector_weight=0.7, keyword_weight=0.5, normalise_weights=False
+            vector_weight=0.7,
+            keyword_weight=0.5,
+            graph_weight=0.0,
+            normalise_weights=False,
         )
         assert weights.vector_weight == 0.7
         assert weights.keyword_weight == 0.5
@@ -52,7 +62,10 @@ class TestHybridSearchWeights:
     def test_weights_serialisation(self):
         """Test weights can be serialised and deserialised."""
         original = HybridSearchWeights(
-            vector_weight=0.6, keyword_weight=0.4, combination_strategy="rank_fusion"
+            vector_weight=0.6,
+            keyword_weight=0.4,
+            graph_weight=0.2,
+            combination_strategy="rank_fusion",
         )
 
         data = original.to_dict()
@@ -60,6 +73,7 @@ class TestHybridSearchWeights:
 
         assert abs(restored.vector_weight - original.vector_weight) < 0.001
         assert abs(restored.keyword_weight - original.keyword_weight) < 0.001
+        assert abs(restored.graph_weight - original.graph_weight) < 0.001
         assert restored.combination_strategy == original.combination_strategy
 
 
@@ -161,6 +175,54 @@ class TestWeightedCombination:
         assert vector_in_result >= 2
         assert keyword_in_result >= 1
 
+    def test_graph_proximity_contributes_to_weighted_rank(self):
+        """Graph proximity can move an otherwise unranked candidate into the result."""
+        manager = HybridSearchWeightManager(config_path=Path("/tmp/test_weights_graph.json"))
+        manager.weights.combination_strategy = "sum"
+        manager.weights.vector_weight = 0.2
+        manager.weights.keyword_weight = 0.2
+        manager.weights.graph_weight = 0.6
+
+        chunks, metadata, _ = manager.combine_results(
+            ["vector candidate"],
+            [{"id": "vector"}],
+            [1.0],
+            ["keyword candidate"],
+            [{"id": "keyword"}],
+            [1.0],
+            k=2,
+            graph_chunks=["graph candidate"],
+            graph_metadata=[{"id": "graph"}],
+            graph_scores=[1.0],
+        )
+
+        assert chunks[0] == "graph candidate"
+        assert metadata[0]["retrieval_method"] == "thesis_graph"
+
+    def test_top_k_reserves_slots_for_graph_candidates(self):
+        manager = HybridSearchWeightManager(config_path=Path("/tmp/test_weights_graph_topk.json"))
+        manager.weights.combination_strategy = "top_k"
+        manager.weights.vector_weight = 0.2
+        manager.weights.keyword_weight = 0.2
+        manager.weights.graph_weight = 0.6
+
+        chunks, metadata, _ = manager.combine_results(
+            ["vector candidate"],
+            [{"id": "vector"}],
+            [1.0],
+            ["keyword candidate"],
+            [{"id": "keyword"}],
+            [1.0],
+            k=2,
+            graph_chunks=["graph candidate"],
+            graph_metadata=[{"id": "graph"}],
+            graph_scores=[1.0],
+        )
+
+        assert "graph candidate" in chunks
+        graph_index = chunks.index("graph candidate")
+        assert metadata[graph_index]["retrieval_method"] == "thesis_graph"
+
 
 class TestQueryExpansion:
     """Test query expansion with spelling variants and synonyms."""
@@ -252,6 +314,48 @@ class TestQueryExpansion:
         assert "multi" in expander.get_abbreviation_expansion("mfa")
         assert "factor" in expander.get_abbreviation_expansion("mfa")
         assert expander.get_abbreviation_expansion("unknown") is None
+
+    def test_domain_expansion_allows_missing_vocabulary(self):
+        """Configured domains without a loaded vocabulary retain base expansion."""
+        expander = QueryExpander(domain="education")
+        expander.domain_manager = type(
+            "DomainManager",
+            (),
+            {"get_vocabulary": staticmethod(lambda domain: None)},
+        )()
+
+        expanded = expander.expand_query("learning", include_variants=False, include_synonyms=False)
+
+        assert expanded == ["learning"]
+
+    def test_domain_weights_use_canonical_domain_type(self):
+        """Friendly domain names are resolved before requesting domain term weights."""
+        calls = []
+        expander = QueryExpander(domain="cloud infrastructure")
+        expander.domain_manager = type(
+            "DomainManager",
+            (),
+            {
+                "get_vocabulary": staticmethod(lambda domain: None),
+                "get_term_boost": staticmethod(
+                    lambda term, domain: calls.append((term, domain.value if domain else None))
+                    or 1.0
+                ),
+            },
+        )()
+
+        expander.expand_query_with_weights("cloud")
+
+        assert calls
+        assert all(domain == "cloud_infrastructure" for _, domain in calls)
+
+    def test_domain_manager_returns_empty_expansion_for_unloaded_domain(self, tmp_path):
+        """A missing domain vocabulary produces no expansion rather than a null access."""
+        from scripts.rag.domain_terms import DomainTermManager, DomainType
+
+        manager = DomainTermManager(config_path=tmp_path / "terms")
+
+        assert manager.expand_with_domain_terms("research", DomainType.RETAIL) == ([], [])
 
 
 class TestQueryExpansionCache:

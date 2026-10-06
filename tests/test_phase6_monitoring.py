@@ -9,15 +9,21 @@ Tests:
 """
 
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta
+from unittest.mock import Mock
 
 import pytest
 
+from scripts.utils import llm_instrumentation
 from scripts.utils.llm_instrumentation import (
     TokenBudget,
     instrument_claude_call,
     instrument_ollama_call,
     instrument_retrieval,
+    invoke_with_usage,
+    record_embedding_usage,
+    record_llm_usage,
 )
 from scripts.utils.metrics_export import (
     MetricsCollector,
@@ -194,8 +200,8 @@ class TestMetricsCollection:
         collector.record_llm_call("model", 100, 50, 500.0)
         assert len(collector.llm_calls) == 1
 
-        # Wait for window to expire
-        time.sleep(1.1)
+        # Make the recorded call unambiguously older than the expiry window.
+        collector.llm_calls[0]["timestamp"] -= timedelta(seconds=2)
 
         # Trigger trim
         collector.get_stats()
@@ -271,6 +277,116 @@ class TestMonitoringInfrastructure:
 class TestLLMInstrumentation:
     """Test LLM call instrumentation patterns."""
 
+    @staticmethod
+    def _configure_llm_telemetry(monkeypatch):
+        """Provide deterministic tracer and metric dependencies."""
+        span = Mock()
+
+        @contextmanager
+        def start_span(_name):
+            yield span
+
+        tracer = Mock()
+        tracer.start_as_current_span.side_effect = start_span
+        token_counter = Mock()
+        performance_metrics = Mock()
+        monkeypatch.setattr(llm_instrumentation, "get_tracer", lambda _name: tracer)
+        monkeypatch.setattr(llm_instrumentation, "get_token_counter", lambda: token_counter)
+        monkeypatch.setattr(llm_instrumentation, "get_perf_metrics", lambda: performance_metrics)
+        return span, token_counter, performance_metrics
+
+    def test_record_llm_usage_estimates_without_logging_text(self, monkeypatch):
+        events = []
+        monkeypatch.setattr(
+            llm_instrumentation,
+            "audit",
+            lambda event, data: events.append((event, data)),
+        )
+        prompt = "private prompt text"
+        response = "private generated text"
+
+        success = record_llm_usage(
+            "test.call",
+            "test_component",
+            "test_model",
+            prompt,
+            response=response,
+            success=True,
+            attempt=2,
+        )
+        failure = record_llm_usage(
+            "test.call",
+            "test_component",
+            "test_model",
+            prompt,
+            success=False,
+            attempt=3,
+            failure_reason="TimeoutError",
+        )
+
+        assert events == [("llm_usage", success), ("llm_usage", failure)]
+        assert success["input_tokens"] == len(prompt) // 4
+        assert success["output_tokens"] == len(response) // 4
+        assert failure["input_tokens"] == len(prompt) // 4
+        assert failure["output_tokens"] == 0
+        assert failure["failure_reason"] == "TimeoutError"
+        assert "prompt" not in success and "response" not in success
+
+    def test_invoke_with_usage_records_failed_attempt(self, monkeypatch):
+        events = []
+        monkeypatch.setattr(
+            llm_instrumentation,
+            "audit",
+            lambda event, data: events.append((event, data)),
+        )
+
+        class FailingClient:
+            model = "local-model"
+
+            def invoke(self, _prompt):
+                raise TimeoutError("connection timed out")
+
+        with pytest.raises(TimeoutError):
+            invoke_with_usage(
+                FailingClient(),
+                "A request prompt",
+                operation="test.retry",
+                component="unit_test",
+                attempt=2,
+            )
+
+        assert len(events) == 1
+        assert events[0][0] == "llm_usage"
+        assert events[0][1]["model"] == "local-model"
+        assert events[0][1]["attempt"] == 2
+        assert events[0][1]["success"] is False
+        assert events[0][1]["failure_reason"] == "TimeoutError"
+
+    def test_record_embedding_usage_counts_input_only(self, monkeypatch):
+        events = []
+        monkeypatch.setattr(
+            llm_instrumentation,
+            "audit",
+            lambda event, data: events.append((event, data)),
+        )
+
+        usage = record_embedding_usage(
+            "retrieve.query_embedding",
+            "rag_retrieval",
+            "embedding-model",
+            ["query text", "context"],
+            success=False,
+            attempt=2,
+            failure_reason="TimeoutError",
+        )
+
+        assert events == [("llm_usage", usage)]
+        assert usage["model"] == "embedding:embedding-model"
+        assert usage["input_tokens"] == (len("query text") + len("context")) // 4
+        assert usage["output_tokens"] == 0
+        assert usage["success"] is False
+        assert usage["attempt"] == 2
+
     def test_token_budget(self):
         """Test token budget tracking."""
         budget = TokenBudget(total_tokens=1000)
@@ -297,23 +413,33 @@ class TestLLMInstrumentation:
 
         assert budget.should_warn()
 
-    def test_instrument_ollama_call_context(self):
-        """Test Ollama call instrumentation context manager."""
-        init_monitoring()
-        collector = get_metrics_collector()
+    def test_instrument_ollama_call_records_usage(self, monkeypatch):
+        """Successful Ollama calls record token usage, latency, and span fields."""
+        span, token_counter, performance_metrics = self._configure_llm_telemetry(monkeypatch)
 
-        # Note: This uses context manager without actual Ollama call
-        try:
-            with instrument_ollama_call(
-                model="llama2",
-                input_tokens=100,
-                output_tokens=50,
-                collector=collector,
-            ):
-                pass
-        except Exception as e:
-            # May fail if opentelemetry not available, that's ok
-            pass
+        with instrument_ollama_call("llama2", {"query": "test"}) as metrics:
+            metrics["input_tokens"] = 100
+            metrics["output_tokens"] = 50
+
+        token_counter.record_tokens.assert_called_once_with("llama2", 100, 50, success=True)
+        performance_metrics.record_generation.assert_called_once()
+        span.set_attribute.assert_any_call("context.query", "test")
+        span.set_attribute.assert_any_call("tokens.input", 100)
+        span.set_attribute.assert_any_call("tokens.output", 50)
+
+    def test_instrument_claude_call_records_failure(self, monkeypatch):
+        """Failed Claude calls retain token metrics and re-raise the original error."""
+        span, token_counter, _ = self._configure_llm_telemetry(monkeypatch)
+
+        with pytest.raises(RuntimeError, match="provider unavailable"):
+            with instrument_claude_call("claude-test") as metrics:
+                metrics["input_tokens"] = 12
+                metrics["output_tokens"] = 4
+                raise RuntimeError("provider unavailable")
+
+        token_counter.record_tokens.assert_called_once_with("claude-test", 12, 4, success=False)
+        span.set_attribute.assert_any_call("error", True)
+        span.set_attribute.assert_any_call("error.type", "RuntimeError")
 
     def test_instrument_retrieval_decorator(self):
         """Test retrieval instrumentation decorator."""

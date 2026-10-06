@@ -133,6 +133,8 @@ class TestCreateParentChildChunks:
             assert "id" in parent
             assert "text" in parent
             assert "child_ids" in parent
+            assert parent["source_start"] >= 0
+            assert parent["source_end"] == parent["source_start"] + len(parent["text"])
             assert parent["id"].startswith("parent_")
             assert isinstance(parent["child_ids"], list)
             assert len(parent["child_ids"]) > 0
@@ -141,8 +143,54 @@ class TestCreateParentChildChunks:
             assert "id" in child
             assert "text" in child
             assert "parent_id" in child
+            assert child["source_start"] >= 0
+            assert child["source_end"] == child["source_start"] + len(child["text"])
             assert child["id"].startswith("child_")
             assert child["parent_id"].startswith("parent_")
+
+    def test_parent_child_chunks_preserve_source_spans(self):
+        """Each parent and child retains the exact source text span it represents."""
+        from scripts.ingest.chunk import create_parent_child_chunks
+
+        text = (
+            "## Chapter 1\n\n"
+            + ("First chapter text. " * 80)
+            + "\n\n## Chapter 2\n\n"
+            + ("Second chapter text. " * 80)
+        )
+        child_chunks, parent_chunks = create_parent_child_chunks(
+            text, parent_size=600, child_size=200
+        )
+
+        for chunk in [*parent_chunks, *child_chunks]:
+            assert text[chunk["source_start"] : chunk["source_end"]] == chunk["text"]
+
+        assert [chunk["source_start"] for chunk in child_chunks] == sorted(
+            chunk["source_start"] for chunk in child_chunks
+        )
+
+    def test_parent_child_chunks_respect_chapter_boundaries(self):
+        """Structural spans prevent parent and child chunks from crossing chapters."""
+        from scripts.ingest.chunk import create_parent_child_chunks
+
+        chapter_one = "## Chapter 1\n\n" + ("First chapter text. " * 80)
+        chapter_two = "## Chapter 2\n\n" + ("Second chapter text. " * 80)
+        text = f"{chapter_one}\n\n{chapter_two}"
+        chapter_two_start = text.index("## Chapter 2")
+        structure = [
+            {"chapter": "Chapter 1", "start_pos": 0, "end_pos": chapter_two_start},
+            {"chapter": "Chapter 2", "start_pos": chapter_two_start, "end_pos": len(text)},
+        ]
+
+        child_chunks, parent_chunks = create_parent_child_chunks(
+            text,
+            parent_size=600,
+            child_size=200,
+            document_structure=structure,
+        )
+
+        for chunk in [*parent_chunks, *child_chunks]:
+            assert not (chunk["source_start"] < chapter_two_start < chunk["source_end"])
 
     def test_parent_child_chunk_hierarchy(self):
         """Test that child chunks correctly reference their parents."""

@@ -118,13 +118,11 @@ class EnhancedChunkMetadata(BaseModel):
         prev_chunk_id: ID of previous chunk in document sequence
         next_chunk_id: ID of next chunk in document sequence
         technical_entities: Extracted technical terms, components, APIs
-        code_language: Programming language if chunk contains code
         contains_table: Whether chunk contains table data
-        contains_code: Whether chunk contains code blocks
         contains_diagram: Whether chunk references diagrams/images
         is_api_reference: Whether chunk is API documentation
         is_configuration: Whether chunk describes configuration
-        content_type: General classification (text, code, mixed, structured)
+        content_type: General classification (text, structured)
     """
 
     model_config = ConfigDict(extra="allow", str_strip_whitespace=True)
@@ -151,19 +149,14 @@ class EnhancedChunkMetadata(BaseModel):
     technical_entities: List[str] = Field(
         default_factory=list, description="Technical terms, components, APIs mentioned"
     )
-    code_language: Optional[str] = Field(None, description="Programming language if code present")
-
     # Content type flags
     contains_table: bool = Field(False, description="Contains table data")
-    contains_code: bool = Field(False, description="Contains code blocks")
     contains_diagram: bool = Field(False, description="References diagrams or images")
     is_api_reference: bool = Field(False, description="Is API documentation")
     is_configuration: bool = Field(False, description="Describes configuration")
 
     # General classification
-    content_type: str = Field(
-        "text", description="Content classification: text, code, mixed, structured"
-    )
+    content_type: str = Field("text", description="Content classification: text or structured")
 
 
 class ParentChunkSchema(BaseModel):

@@ -1,7 +1,6 @@
 """Unit tests for scripts.ingest.ingest_utils.
 
-Covers the centralised ingestion helpers that were previously duplicated
-across ingest.py, ingest_git.py, and ingest_academic.py.
+Covers the centralised ingestion helpers shared by generic and academic ingestion.
 """
 
 from __future__ import annotations
@@ -23,7 +22,6 @@ from scripts.ingest.ingest_utils import (
     compute_file_hash,
     parse_seed_auth,
 )
-
 
 # ============================================================================
 # check_ollama_availability
@@ -246,11 +244,13 @@ class TestParseSeedAuth:
 
     def test_parses_basic_auth(self) -> None:
         """Basic auth fields are parsed correctly."""
-        cfg = parse_seed_auth({
-            "type": "basic",
-            "username_env": "INGEST_USER",
-            "password_env": "INGEST_PASS",
-        })
+        cfg = parse_seed_auth(
+            {
+                "type": "basic",
+                "username_env": "INGEST_USER",
+                "password_env": "INGEST_PASS",
+            }
+        )
         assert cfg is not None
         assert cfg.auth_type == "basic"
         assert cfg.username_env == "INGEST_USER"
@@ -258,11 +258,13 @@ class TestParseSeedAuth:
 
     def test_parses_cookie_auth(self) -> None:
         """Cookie auth fields are parsed correctly."""
-        cfg = parse_seed_auth({
-            "type": "cookie",
-            "cookie_name": "sess",
-            "cookie_env": "SESSION_COOKIE",
-        })
+        cfg = parse_seed_auth(
+            {
+                "type": "cookie",
+                "cookie_name": "sess",
+                "cookie_env": "SESSION_COOKIE",
+            }
+        )
         assert cfg is not None
         assert cfg.auth_type == "cookie"
         assert cfg.cookie_name == "sess"
@@ -320,6 +322,7 @@ class TestBuildAuthHeaders:
         """Raises ValueError when referenced env var is not set."""
         cfg = AuthConfig(auth_type="bearer", token_env="NONEXISTENT_VAR_XYZ")
         import os
+
         os.environ.pop("NONEXISTENT_VAR_XYZ", None)
         with pytest.raises(ValueError, match="Bearer auth configured"):
             build_auth_headers(cfg)
@@ -327,6 +330,7 @@ class TestBuildAuthHeaders:
     def test_basic_auth_from_env(self) -> None:
         """Basic auth credentials are resolved from environment variables."""
         import base64 as b64
+
         cfg = AuthConfig(auth_type="basic", username_env="TEST_USER", password_env="TEST_PASS")
         with patch.dict("os.environ", {"TEST_USER": "alice", "TEST_PASS": "s3cr3t"}):
             headers = build_auth_headers(cfg)
@@ -336,6 +340,7 @@ class TestBuildAuthHeaders:
     def test_basic_inline_credentials(self) -> None:
         """Inline basic auth credentials are used directly."""
         import base64 as b64
+
         cfg = AuthConfig(auth_type="basic", username="bob", password="pass123")
         headers = build_auth_headers(cfg)
         expected = b64.b64encode(b"bob:pass123").decode("ascii")

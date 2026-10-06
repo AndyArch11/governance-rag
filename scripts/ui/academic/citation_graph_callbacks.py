@@ -8,6 +8,7 @@ These should be imported and registered in the main dashboard.py file.
 from dash import Input, Output, State, callback, no_update
 from dash.exceptions import PreventUpdate
 
+from scripts.thesis_graph.unified_graph import load_academic_graph
 from scripts.ui.academic.citation_graph_viz import get_citation_viz
 from scripts.utils.logger import create_module_logger
 
@@ -66,6 +67,8 @@ def update_filters_from_persona(persona):
         Input("citation-venue-type-dropdown", "value"),
         Input("citation-venue-rank-dropdown", "value"),
         Input("citation-source-dropdown", "value"),
+        Input("academic-graph-mode", "value"),
+        Input("academic-graph-thesis", "value"),
     ],
     prevent_initial_call=False,
 )
@@ -78,6 +81,8 @@ def update_citation_graph(
     venue_types,
     venue_ranks,
     sources,
+    graph_mode="references",
+    thesis_id=None,
 ):
     """
     Update citation graph based on filters.
@@ -100,15 +105,39 @@ def update_citation_graph(
     try:
         viz = get_citation_viz()
 
-        # Load graph with all filters
-        graph = viz.load_graph(
-            persona=persona or "supervisor",
-            link_statuses=link_statuses if link_statuses else None,
-            reference_types=reference_types if reference_types else None,
-            venue_types=venue_types if venue_types else None,
-            venue_ranks=venue_ranks if venue_ranks else None,
-            sources=sources if sources else None,
-        )
+        if thesis_id:
+            graph = load_academic_graph(
+                viz.db_path.parent / "thesis_graphs" / "registry.sqlite",
+                viz.db_path,
+                thesis_id,
+                mode=graph_mode or "references",
+                link_statuses=link_statuses or None,
+                reference_types=reference_types or None,
+                venue_types=venue_types or None,
+                venue_ranks=venue_ranks or None,
+                sources=sources or None,
+            )
+            viz._graph = graph
+            viz._primary_docs = {
+                node_id
+                for node_id, attributes in graph.nodes(data=True)
+                if attributes.get("node_type") in {"document", "thesis"}
+            }
+        elif graph_mode == "references":
+            graph = viz.load_graph(
+                persona=persona or "supervisor",
+                link_statuses=link_statuses if link_statuses else None,
+                reference_types=reference_types if reference_types else None,
+                venue_types=venue_types if venue_types else None,
+                venue_ranks=venue_ranks if venue_ranks else None,
+                sources=sources if sources else None,
+            )
+        else:
+            import networkx as nx
+
+            graph = nx.DiGraph()
+            viz._graph = graph
+            viz._primary_docs = set()
 
         # Create visualisation
         fig = viz.create_plotly_figure(
@@ -120,6 +149,7 @@ def update_citation_graph(
         logger.info(
             f"Citation graph updated: persona={persona}, layout={layout}, "
             f"nodes={graph.number_of_nodes()}, "
+            f"mode={graph_mode}, thesis_id={thesis_id}, "
             f"filters=(link={link_statuses}, ref={reference_types}, "
             f"venue={venue_types}, rank={venue_ranks}, source={sources})"
         )

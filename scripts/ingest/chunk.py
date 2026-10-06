@@ -18,7 +18,7 @@ Enhanced Metadata:
 """
 
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, cast
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
@@ -38,8 +38,12 @@ except ImportError:
 
 
 def create_parent_child_chunks(
-    text: str, doc_type: Optional[str] = None, parent_size: int = 1200, child_size: int = 400
-) -> Tuple[List[Dict[str, str]], List[Dict[str, Any]]]:
+    text: str,
+    doc_type: Optional[str] = None,
+    parent_size: int = 1200,
+    child_size: int = 400,
+    document_structure: Optional[List[Dict[str, Any]]] = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Create parent-child chunk pairs for improved retrieval.
 
     Strategy:
@@ -53,11 +57,15 @@ def create_parent_child_chunks(
         doc_type: Document type for adaptive sizing
         parent_size: Target size for parent chunks (default 1200)
         child_size: Target size for child chunks (default 400)
+        document_structure: Optional ordered structural spans from the source
+            document. When supplied, parent chunks do not cross chapter boundaries.
 
     Returns:
         Tuple of (child_chunks, parent_chunks) where:
-            - child_chunks: List of dicts with {id, text, parent_id}
-            - parent_chunks: List of dicts with {id, text, child_ids}
+                        - child_chunks: List of dicts with {id, text, parent_id,
+                            source_start, source_end}
+                        - parent_chunks: List of dicts with {id, text, child_ids,
+                            source_start, source_end}
 
     Example:
         >>> children, parents = create_parent_child_chunks(doc_text)
@@ -80,36 +88,111 @@ def create_parent_child_chunks(
         chunk_size=parent_size,
         chunk_overlap=int(parent_size * 0.15),  # 15% overlap
         separators=["\n## ", "\n### ", "\n#### ", "\n\n", "\n", " ", ""],
+        add_start_index=True,
     )
-    parent_texts = parent_splitter.split_text(text)
+    source_regions = _chapter_source_regions(text, document_structure)
+    parent_documents = []
+    for region_start, region_end in source_regions:
+        region_text = text[region_start:region_end]
+        for parent_document in parent_splitter.create_documents([region_text]):
+            parent_document.metadata["start_index"] = region_start + int(
+                parent_document.metadata["start_index"]
+            )
+            parent_documents.append(parent_document)
 
     # Create child chunks from each parent
     child_splitter = RecursiveCharacterTextSplitter(
         chunk_size=child_size,
         chunk_overlap=int(child_size * 0.20),  # 20% overlap for children
         separators=["\n### ", "\n#### ", "\n\n", "\n", " ", ""],
+        add_start_index=True,
     )
 
     child_chunks = []
     parent_chunks = []
 
-    for parent_idx, parent_text in enumerate(parent_texts):
+    for parent_idx, parent_document in enumerate(parent_documents):
         parent_id = f"parent_{parent_idx}"
+        parent_text = parent_document.page_content
+        parent_start = int(parent_document.metadata["start_index"])
+        parent_end = parent_start + len(parent_text)
 
         # Split parent into children
-        child_texts = child_splitter.split_text(parent_text)
+        child_documents = child_splitter.create_documents([parent_text])
         child_ids = []
 
-        for child_idx, child_text in enumerate(child_texts):
+        for child_idx, child_document in enumerate(child_documents):
             child_id = f"child_{parent_idx}_{child_idx}"
             child_ids.append(child_id)
+            child_text = child_document.page_content
+            child_start = parent_start + int(child_document.metadata["start_index"])
 
-            child_chunks.append({"id": child_id, "text": child_text, "parent_id": parent_id})
+            child_chunks.append(
+                {
+                    "id": child_id,
+                    "text": child_text,
+                    "parent_id": parent_id,
+                    "source_start": child_start,
+                    "source_end": child_start + len(child_text),
+                }
+            )
 
         # Store parent with reference to its children
-        parent_chunks.append({"id": parent_id, "text": parent_text, "child_ids": child_ids})
+        parent_chunks.append(
+            {
+                "id": parent_id,
+                "text": parent_text,
+                "child_ids": child_ids,
+                "source_start": parent_start,
+                "source_end": parent_end,
+            }
+        )
+
+    # Parent chunks overlap for context, so children must be globally reordered
+    # by source span before their sequence numbers are assigned during storage.
+    child_chunks.sort(key=lambda chunk: cast(int, chunk["source_start"]))
 
     return child_chunks, parent_chunks
+
+
+def _chapter_source_regions(
+    text: str,
+    document_structure: Optional[List[Dict[str, Any]]],
+) -> List[Tuple[int, int]]:
+    """Return non-overlapping source regions that do not cross chapter boundaries.
+
+    Args:
+        text: Full document text.
+        document_structure: List of chapter entries with "chapter" and "start_pos".
+
+    Returns:
+        List of tuples representing non-overlapping source regions.
+    """
+    if not document_structure:
+        return [(0, len(text))]
+
+    chapter_starts: List[int] = []
+    previous_chapter: Optional[str] = None
+    for entry in sorted(document_structure, key=lambda item: int(item.get("start_pos", 0))):
+        chapter = str(entry.get("chapter") or "").strip()
+        start_pos = entry.get("start_pos")
+        if not chapter or not isinstance(start_pos, int) or start_pos < 0 or start_pos >= len(text):
+            continue
+        if chapter != previous_chapter:
+            chapter_starts.append(start_pos)
+            previous_chapter = chapter
+
+    if not chapter_starts:
+        return [(0, len(text))]
+
+    if chapter_starts[0] > 0:
+        chapter_starts.insert(0, 0)
+
+    return [
+        (start_pos, chapter_starts[index + 1] if index + 1 < len(chapter_starts) else len(text))
+        for index, start_pos in enumerate(chapter_starts)
+        if start_pos < (chapter_starts[index + 1] if index + 1 < len(chapter_starts) else len(text))
+    ]
 
 
 def determine_chunk_params(doc_type: Optional[str], text: str) -> Tuple[int, int]:
@@ -508,7 +591,9 @@ def _chunk_single_table_block(
         is_likely_layout_table = False
 
     if is_likely_layout_table:
-        layout_text = _format_layout_table_as_text(open_marker, prefix_context, metadata_lines, table_rows)
+        layout_text = _format_layout_table_as_text(
+            open_marker, prefix_context, metadata_lines, table_rows
+        )
         return _chunk_text_standard(layout_text, doc_type, adaptive)
 
     if not data_lines:
@@ -709,42 +794,6 @@ def extract_technical_entities(text: str) -> List[str]:
     return sorted(entities)[:20]  # Limit to top 20 entities
 
 
-def detect_code_language(text: str) -> Optional[str]:
-    """Detect programming language in text.
-
-    Looks for:
-    - Code fence markers (```python, ```javascript, etc.)
-    - Common keywords and patterns
-
-    Args:
-        text: Text possibly containing code
-
-    Returns:
-        Language name or None if no code detected
-    """
-    # Check for code fence markers
-    fence_match = re.search(r"```(\w+)", text)
-    if fence_match:
-        return fence_match.group(1)
-
-    # Check for inline code markers with language hints
-    if "`" in text:
-        # Python indicators
-        if any(kw in text for kw in ["def ", "import ", "class ", "self.", "print("]):
-            return "python"
-        # JavaScript indicators
-        if any(kw in text for kw in ["const ", "let ", "var ", "function(", "=>", "console.log"]):
-            return "javascript"
-        # SQL indicators
-        if any(kw in text.upper() for kw in ["SELECT ", "FROM ", "WHERE ", "INSERT INTO"]):
-            return "sql"
-        # YAML indicators
-        if re.search(r"^\w+:\s*$", text, re.MULTILINE):
-            return "yaml"
-
-    return None
-
-
 def extract_heading_path(text: str, full_text: str) -> Optional[str]:
     """Extract hierarchical heading path for chunk.
 
@@ -811,8 +860,7 @@ def create_enhanced_metadata(
     Returns:
         EnhancedChunkMetadata instance with extracted information
     """
-    # Detect content types
-    contains_code = bool(re.search(r"```|`\w+\(", chunk_text))
+    # Detect structured content
     contains_table = "[TABLE" in chunk_text or "| --- |" in chunk_text
     contains_diagram = any(
         marker in chunk_text.lower() for marker in ["[diagram", "[image", "![", "figure ", "chart "]
@@ -820,9 +868,6 @@ def create_enhanced_metadata(
 
     # Extract technical entities
     entities = extract_technical_entities(chunk_text)
-
-    # Detect code language
-    code_lang = detect_code_language(chunk_text) if contains_code else None
 
     # Determine content classification
     is_api_ref = any(
@@ -833,13 +878,9 @@ def create_enhanced_metadata(
         for term in ["configuration", "config", "setting", "parameter", "option"]
     )
 
-    # Determine content type
-    if contains_code and len(re.findall(r"```", chunk_text)) >= 2:
-        content_type = "code"
-    elif contains_table or contains_diagram:
+    # Classify tables and diagrams separately from ordinary text.
+    if contains_table or contains_diagram:
         content_type = "structured"
-    elif contains_code:
-        content_type = "mixed"
     else:
         content_type = "text"
 
@@ -879,6 +920,7 @@ def create_enhanced_metadata(
     next_chunk_id = f"{doc_id}_chunk_{chunk_index + 1}" if chunk_index < total_chunks - 1 else None
 
     return EnhancedChunkMetadata(
+        sequence_number=chunk_index,
         chapter=chapter,
         section_title=section_title,
         heading_path=heading_path,
@@ -887,9 +929,7 @@ def create_enhanced_metadata(
         prev_chunk_id=prev_chunk_id,
         next_chunk_id=next_chunk_id,
         technical_entities=entities,
-        code_language=code_lang,
         contains_table=contains_table,
-        contains_code=contains_code,
         contains_diagram=contains_diagram,
         is_api_reference=is_api_ref,
         is_configuration=is_config,

@@ -12,7 +12,7 @@ TODO: Consider using a different PDF extraction tool:
 - grobid: Excellent for scientific papers, extracts structured metadata and sections
 - nougat: A newer library focused on clean text extraction from PDFs, with built-in boilerplate removal
 - docling PDFParser: Designed for LLM ingestion, with features for cleaning and structuring PDF content
-    - requires docling-heirarchical-pdf for extracting hierarchical structure including chapters and sections
+    - alternative extenstion: docling-hierarchical-pdf (https://github.com/krrome/docling-hierarchical-pdf) for extracting hierarchical structure including chapters and sections
 - MarkItDown: A tool for converting PDFs to Markdown with structure and boilerplate removal, good for LLM ingestion
 - unstructured: A powerful library for extracting structured data from PDFs, including tables and metadata, with good handling of complex layouts
 - pdfplumber: More robust layout analysis, better for complex PDFs
@@ -40,6 +40,7 @@ TODO: Add functionality to detect and handle document quality issues (e.g., low-
 TODO: Add functionality to scan for viruses and malware in PDFs before ingestion, especially if ingesting from untrusted sources, to ensure the security of the system and prevent potential harm from malicious documents
 """
 
+import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -101,6 +102,18 @@ def _is_likely_header_footer(line: str) -> bool:
         return True
 
     return False
+
+
+def _looks_like_numbered_heading(title: str) -> bool:
+    """Return whether text after a chapter number resembles a heading, not prose."""
+    if not title:
+        return True
+
+    words = title.split()
+    if len(title) > 120 or len(words) > 14 or title.endswith((".", "!", "?", ";")):
+        return False
+
+    return title[0].isalpha() and title[0].isupper()
 
 
 def _clean_pdf_text(text: str) -> str:
@@ -172,7 +185,7 @@ def extract_pdf_metadata(path: str) -> Dict[str, Any]:
     import re
     from pathlib import Path
 
-    metadata = {
+    metadata: Dict[str, Any] = {
         "title": None,
         "author": None,
         "year": None,
@@ -242,18 +255,228 @@ def extract_pdf_metadata(path: str) -> Dict[str, Any]:
     return metadata
 
 
+def _convert_pdf_with_docling(path: str) -> Any | None:
+    """Convert a PDF to a Docling document when the optional dependency is installed.
+
+    Docling preserves heading hierarchy, reading order, and table structure,
+    allowing downstream academic assessment to map chunks to source sections.
+    Native PDF text is preferred by default; OCR can be enabled for scans.
+    """
+    try:
+        from docling.datamodel.base_models import InputFormat
+        from docling.datamodel.pipeline_options import (
+            EasyOcrOptions,
+            OcrMode,
+            PdfPipelineOptions,
+            RapidOcrOptions,
+        )
+        from docling.document_converter import DocumentConverter, PdfFormatOption
+    except ImportError:
+        return None
+
+    pipeline_options = PdfPipelineOptions()
+    pipeline_options.generate_picture_images = _get_docling_bool_setting(
+        "DOCLING_GENERATE_PICTURE_IMAGES", True
+    )
+    enable_ocr = _get_docling_bool_setting("DOCLING_ENABLE_OCR", False)
+    pipeline_options.do_ocr = enable_ocr
+    pipeline_options.force_backend_text = _get_docling_bool_setting(
+        "DOCLING_FORCE_BACKEND_TEXT", True
+    )
+    pipeline_options.do_table_structure = _get_docling_bool_setting("DOCLING_TABLE_STRUCTURE", True)
+    pipeline_options.heading_hierarchy_options.enabled = _get_docling_bool_setting(
+        "DOCLING_HEADING_HIERARCHY", True
+    )
+    if enable_ocr:
+        ocr_language = os.getenv("DOCLING_OCR_LANGUAGE", "en").strip() or "en"
+        ocr_engine = os.getenv("DOCLING_OCR_ENGINE", "rapidocr").strip().lower()
+        if ocr_engine == "easyocr":
+            pipeline_options.ocr_options = EasyOcrOptions(
+                lang=[ocr_language],
+                mode=OcrMode.FULL_PAGE,
+                use_gpu=None,
+            )
+        elif ocr_engine == "rapidocr":
+            pipeline_options.ocr_options = RapidOcrOptions(
+                lang=[ocr_language],
+                mode=OcrMode.FULL_PAGE,
+            )
+        else:
+            raise ValueError(
+                "DOCLING_OCR_ENGINE must be 'rapidocr' or 'easyocr', " f"got {ocr_engine!r}"
+            )
+    converter = DocumentConverter(
+        format_options={
+            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
+        }
+    )
+    result = converter.convert(path)
+    return result.document
+
+
+def _extract_text_with_docling(path: str) -> Optional[str]:
+    """Convert a PDF to structured Markdown using Docling when installed."""
+    document = _convert_pdf_with_docling(path)
+    if document is None:
+        return None
+    markdown = document.export_to_markdown()
+    return markdown.strip() or None
+
+
+def extract_figures_from_docling_document(document: Any) -> List[Dict[str, Any]]:
+    """Extract locally available figure images and source metadata from Docling output.
+
+    Figure images remain in memory as PIL objects; this helper does not write them
+    to disk or invoke a vision model.
+
+    Args:
+        document: A Docling document object from which to extract figures.
+
+    Returns:
+        A list of dictionaries, each containing the figure image (as a PIL object),
+        bounding box information, caption, and alternative text.
+    """
+    figures: List[Dict[str, Any]] = []
+    for item, _ in document.iterate_items(traverse_pictures=True):
+        label = getattr(item, "label", None)
+        label = getattr(label, "value", label)
+        if label not in {"picture", "chart"}:
+            continue
+
+        provenance = getattr(item, "prov", []) or []
+        primary_provenance = provenance[0] if provenance else None
+        bbox = getattr(primary_provenance, "bbox", None)
+        bbox_data = None
+        if bbox is not None:
+            bbox_data = {
+                "left": getattr(bbox, "l", None),
+                "top": getattr(bbox, "t", None),
+                "right": getattr(bbox, "r", None),
+                "bottom": getattr(bbox, "b", None),
+                "coordinate_origin": str(getattr(bbox, "coord_origin", "")),
+            }
+
+        caption = ""
+        caption_reader = getattr(item, "caption_text", None)
+        if callable(caption_reader):
+            try:
+                caption = str(caption_reader(document) or "").strip()
+            except (AttributeError, TypeError, ValueError):
+                caption = ""
+
+        metadata = getattr(item, "meta", None)
+        alt_text = str(getattr(metadata, "description", "") or "").strip()
+        if not alt_text:
+            for annotation in getattr(item, "annotations", []) or []:
+                if getattr(annotation, "kind", None) == "description":
+                    alt_text = str(getattr(annotation, "text", "") or "").strip()
+                    if alt_text:
+                        break
+
+        caption_number_match = re.match(
+            r"^\s*(?:fig(?:ure)?s?)\.?\s+((?:[A-Z]\.)?\d+(?:\.\d+)*)\b",
+            caption,
+            re.IGNORECASE,
+        )
+
+        image = None
+        image_reader = getattr(item, "get_image", None)
+        if callable(image_reader):
+            try:
+                image = image_reader(document)
+            except (AttributeError, TypeError, ValueError):
+                image = None
+
+        figures.append(
+            {
+                "figure_number": len(figures) + 1,
+                "kind": str(label),
+                "page_number": getattr(primary_provenance, "page_no", None),
+                "bbox": bbox_data,
+                "caption": caption,
+                "caption_number": caption_number_match.group(1) if caption_number_match else None,
+                "alt_text": alt_text,
+                "image": image,
+            }
+        )
+    return figures
+
+
+def extract_pdf_text_and_figures(path: str) -> Tuple[str, List[Dict[str, Any]]]:
+    """Extract structured text and figure assets from one local Docling conversion.
+
+    Args:
+        path: Path to the PDF file to be processed.
+
+    Returns:
+        A tuple containing:
+        - The extracted and cleaned text as a string.
+        - A list of dictionaries representing the figures found in the document.
+    """
+    import logging
+
+    try:
+        document = _convert_pdf_with_docling(path)
+    except Exception as exc:
+        logging.warning("Docling figure conversion failed for %s: %s", path, exc)
+        document = None
+
+    if document is None:
+        return extract_text_from_pdf(path, _skip_docling=True), []
+
+    markdown = str(document.export_to_markdown() or "").strip()
+    figures = extract_figures_from_docling_document(document)
+    structure = extract_structure_from_text(markdown)
+    next_caption_search_start = 0
+    for figure in figures:
+        caption = str(figure.get("caption") or "").strip()
+        if not caption:
+            continue
+        caption_start = markdown.casefold().find(caption.casefold(), next_caption_search_start)
+        if caption_start < 0:
+            continue
+        caption_end = caption_start + len(caption)
+        location = map_text_to_structure(markdown, structure, caption_start, caption_end)
+        figure["chapter"] = location.get("chapter")
+        figure["section_title"] = location.get("section_title")
+        figure["heading_path"] = location.get("heading_path")
+        figure["source_start"] = caption_start
+        figure["source_end"] = caption_end
+        next_caption_search_start = caption_end
+    if not markdown:
+        markdown = extract_text_from_pdf(path, _skip_docling=True)
+    return markdown, figures
+
+
+def _get_docling_bool_setting(name: str, default: bool) -> bool:
+    """Read an optional Docling boolean setting from the environment.
+
+    Args:
+        name: Name of the environment variable to read
+        default: Default boolean value if the environment variable is not set
+
+    Returns:
+        bool: The boolean value of the environment variable or the default
+    """
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @retry_with_backoff(
     max_retries=3,
     initial_delay=1.0,
     transient_types=(IOError, MemoryError, TimeoutError),
     operation_name="parse_pdf",
 )
-def extract_text_from_pdf(path: str) -> str:
+def extract_text_from_pdf(path: str, *, _skip_docling: bool = False) -> str:
     """Extract and clean text from PDF documents.
 
     Attempts multiple extraction strategies:
-    1. Standard extract_text() method
-    2. Fallback to extract_text_with_layout() for problematic PDFs
+    1. Docling structured Markdown with configurable OCR and layout analysis, when installed
+    2. Standard pypdf extract_text() method
+    3. pypdf layout-mode fallback for problematic PDFs
 
     Removes:
     - Page numbers and page markers
@@ -263,6 +486,7 @@ def extract_text_from_pdf(path: str) -> str:
 
     Args:
         path: Path to PDF file
+        _skip_docling: Whether to skip using the Docling extraction method (default: False)
 
     Returns:
         Cleaned text content
@@ -272,6 +496,17 @@ def extract_text_from_pdf(path: str) -> str:
         >>> # Text is cleaned, with headers/footers and page numbers removed
     """
     import logging
+
+    if not _skip_docling:
+        try:
+            docling_text = _extract_text_with_docling(path)
+            if docling_text:
+                logging.info("Extracted PDF with Docling layout and OCR pipeline: %s", path)
+                return docling_text
+        except Exception as exc:
+            logging.warning(
+                "Docling conversion failed for %s; falling back to pypdf: %s", path, exc
+            )
 
     reader = PdfReader(path)
     pages_text = []
@@ -361,6 +596,392 @@ def _is_table_of_contents_entry(line: str) -> bool:
     return False
 
 
+def _is_wrapped_table_of_contents_entry(line: str, following_line: str) -> bool:
+    """Detect a ToC title whose leader dots and page number are on the next line.
+
+    Args:
+        line: The line containing the potential chapter title.
+        following_line: The line containing the leader dots and page number.
+
+    Returns:
+        True if the line and following_line together form a wrapped TOC entry.
+    """
+    title_pattern = (
+        r"^\s*(?:(?:chapter|ch\.?)\s+)?"
+        r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|[IVX]{1,5})"
+        r"(?:[.)]|[\s:.-]+)\s*\S.+$"
+    )
+    page_pattern = r"^\s*\.{2,}\s*(?:page\s*)?\d+\s*(?:T)?$"
+    return bool(
+        re.match(title_pattern, line, re.IGNORECASE)
+        and re.match(page_pattern, following_line, re.IGNORECASE)
+    )
+
+
+def _extract_toc_chapter_entries(text: str) -> Dict[str, str]:
+    """Return canonical chapter titles keyed by normalised chapter labels.
+
+    Args:
+        text: Full text of the document to extract ToC entries from.
+
+    Returns:
+        Dictionary mapping normalised chapter labels to their canonical titles.
+    """
+    chapter_entry_pattern = re.compile(
+        r"^\s*(?:chapter|ch\.?)\s+"
+        r"(?P<number>\d+|one|two|three|four|five|six|seven|eight|nine|ten|[IVX]{1,5})"
+        r"[\s:.-]*(?P<title>.*?)\s*\.{3,}\s*(?:page\s*)?\d+\s*(?:T)?$",
+        re.IGNORECASE,
+    )
+    numbered_entry_pattern = re.compile(
+        r"^\s*(?P<number>\d{1,2})[.)]\s*(?P<title>.+?)\s*" r"\.{2,}\s*(?:page\s*)?\d+\s*(?:T)?$",
+        re.IGNORECASE,
+    )
+    wrapped_heading_pattern = re.compile(
+        r"^\s*(?:(?:chapter|ch\.?)\s+)?"
+        r"(?P<number>\d+|one|two|three|four|five|six|seven|eight|nine|ten|[IVX]{1,5})"
+        r"(?:[.)]|[\s:.-]+)\s*(?P<title>\S.*?)\s*$",
+        re.IGNORECASE,
+    )
+    wrapped_page_pattern = re.compile(r"^\s*\.{2,}\s*(?:page\s*)?\d+\s*(?:T)?$", re.IGNORECASE)
+    chapters: Dict[str, str] = {}
+    lines = text.splitlines()
+    line_index = 0
+    while line_index < len(lines):
+        line = lines[line_index].strip()
+        if line.startswith("|") and line.endswith("|"):
+            line = line[1:-1].strip()
+        match = chapter_entry_pattern.match(line) or numbered_entry_pattern.match(line)
+        if (
+            match is None
+            and line_index + 1 < len(lines)
+            and wrapped_page_pattern.match(lines[line_index + 1])
+        ):
+            match = wrapped_heading_pattern.match(line)
+            if match:
+                line_index += 1
+        if not match:
+            line_index += 1
+            continue
+        title = re.sub(r"\s+", " ", match.group("title")).strip(" .:-—")
+        chapter_label = _normalise_chapter_number(match.group("number"), title)
+        chapters[chapter_label] = title
+        line_index += 1
+    return chapters
+
+
+def _extract_outline_toc_chapters(text: str) -> Tuple[Dict[str, str], set[int]]:
+    """Extract numbered chapter titles from an explicit page-less ToC block.
+
+    Args:
+        text: The text content of the ToC block.
+
+    Returns:
+        A tuple containing:
+        - A dictionary of chapter labels and titles.
+        - A set of line numbers corresponding to the ToC entries.
+    """
+    chapter_pattern = re.compile(
+        r"^\s*(?:chapter|ch\.?)\s+"
+        r"(?P<number>\d+|one|two|three|four|five|six|seven|eight|nine|ten|[IVX]{1,5})"
+        r"[\s:.-]+(?P<title>\S.*?)\s*$",
+        re.IGNORECASE,
+    )
+    numbered_pattern = re.compile(
+        r"^\s*(?P<number>\d{1,2})[.)]\s*(?P<title>\S.*?)\s*$",
+        re.IGNORECASE,
+    )
+    lines = text.splitlines()
+    chapters: Dict[str, str] = {}
+    toc_line_numbers: set[int] = set()
+    header_pattern = re.compile(
+        r"^\s*#*\s*(?:table\s+of\s+contents|contents)\s*#*\s*$", re.IGNORECASE
+    )
+
+    for header_index, line in enumerate(lines):
+        if not header_pattern.match(line):
+            continue
+        toc_line_numbers.add(header_index)
+        found_entry = False
+        seen_content = False
+        for line_index in range(header_index + 1, len(lines)):
+            candidate_line = lines[line_index].strip()
+            if not candidate_line:
+                if seen_content:
+                    break
+                continue
+            seen_content = True
+            if _is_table_of_contents_entry(candidate_line):
+                continue
+            match = chapter_pattern.match(candidate_line) or numbered_pattern.match(candidate_line)
+            if not match:
+                continue
+            title = re.sub(r"\s+", " ", match.group("title")).strip(" .:-—")
+            chapter_label = _normalise_chapter_number(match.group("number"), title)
+            chapters[chapter_label] = title
+            toc_line_numbers.add(line_index)
+            found_entry = True
+
+    return chapters, toc_line_numbers
+
+
+def _extend_outline_toc_chapters(
+    text: str, chapters: Dict[str, str], toc_line_numbers: set[int]
+) -> Tuple[Dict[str, str], set[int]]:
+    """Include unnumbered outline rows and wrapped chapter-title continuations.
+
+    Args:
+        text: The full document text.
+        chapters: Chapter labels mapped to their ToC titles.
+        toc_line_numbers: Source line numbers already identified as ToC entries.
+
+    Returns:
+        The updated chapter map and ToC line numbers.
+    """
+    lines = text.splitlines()
+    header_pattern = re.compile(
+        r"^\s*#*\s*(?:table\s+of\s+contents|contents)\s*#*\s*$", re.IGNORECASE
+    )
+    chapter_pattern = re.compile(
+        r"^\s*(?:chapter|ch\.?)\s+"
+        r"(?P<number>\d+|one|two|three|four|five|six|seven|eight|nine|ten|[IVX]{1,5})"
+        r"[\s:.-]*(?P<title>.*?)\s*$",
+        re.IGNORECASE,
+    )
+    numbered_pattern = re.compile(r"^\s*(?P<number>\d{1,2})[.)]\s*(?P<title>.+?)\s*$")
+    page_suffix_pattern = re.compile(r"\s+\.{2,}\s*(?:page\s*)?\d+\s*(?:T)?$", re.IGNORECASE)
+    page_row_pattern = re.compile(r"^\s*\.{2,}\s*(?:page\s*)?\d+\s*(?:T)?$", re.IGNORECASE)
+    excluded_titles = {
+        "abstract",
+        "acknowledgement",
+        "acknowledgements",
+        "contents",
+        "table of contents",
+        "list of figures",
+        "list of tables",
+        "list of abbreviations",
+        "references",
+        "bibliography",
+        "appendix",
+        "appendices",
+        "index",
+        "glossary",
+        "dedication",
+        "foreword",
+        "preface",
+    }
+
+    for header_index, header_line in enumerate(lines):
+        if not header_pattern.match(header_line):
+            continue
+        seen_content = False
+        line_index = header_index + 1
+        while line_index < len(lines):
+            raw_line = lines[line_index]
+            candidate_line = raw_line.strip()
+            if not candidate_line:
+                if seen_content:
+                    break
+                line_index += 1
+                continue
+            seen_content = True
+            toc_line_numbers.add(line_index)
+            is_markdown_table_row = candidate_line.startswith("|") and candidate_line.endswith("|")
+            if is_markdown_table_row:
+                candidate_line = candidate_line[1:-1].strip()
+
+            if page_row_pattern.match(candidate_line):
+                line_index += 1
+                continue
+
+            has_page_suffix = bool(page_suffix_pattern.search(candidate_line))
+            title_line = page_suffix_pattern.sub("", candidate_line).strip(" .:-—")
+            match = chapter_pattern.match(title_line) or numbered_pattern.match(title_line)
+            if match:
+                title = re.sub(r"\s+", " ", match.group("title")).strip(" .:-—")
+                continuation_parts = []
+                consumed_indices = []
+                page_row_found = has_page_suffix
+                scan_index = line_index + 1
+                while not page_row_found and scan_index < min(len(lines), line_index + 5):
+                    continuation = lines[scan_index].strip()
+                    if not continuation:
+                        break
+                    if page_row_pattern.match(continuation):
+                        consumed_indices.append(scan_index)
+                        page_row_found = True
+                        break
+                    continuation_has_page = bool(page_suffix_pattern.search(continuation))
+                    continuation_title = page_suffix_pattern.sub("", continuation).strip(" .:-—")
+                    if chapter_pattern.match(continuation_title) or numbered_pattern.match(
+                        continuation_title
+                    ):
+                        break
+                    if continuation_title:
+                        continuation_parts.append(continuation_title)
+                        consumed_indices.append(scan_index)
+                    if continuation_has_page:
+                        page_row_found = True
+                        break
+                    scan_index += 1
+                if page_row_found and continuation_parts:
+                    title = " ".join(part for part in (title, *continuation_parts) if part)
+                    toc_line_numbers.update(consumed_indices)
+                    line_index = scan_index + 1
+                else:
+                    line_index += 1
+                chapter_label = _normalise_chapter_number(match.group("number"), title)
+                if title:
+                    chapters[chapter_label] = title
+                continue
+
+            if (
+                is_markdown_table_row
+                or raw_line[:1].isspace()
+                or not title_line
+                or (_is_table_of_contents_entry(candidate_line) and not has_page_suffix)
+                or title_line.casefold() in excluded_titles
+                or title_line.casefold().startswith(("appendix ", "appendices ", "list of "))
+            ):
+                line_index += 1
+                continue
+
+            synthetic_number = 1
+            while f"Chapter {synthetic_number}" in chapters:
+                synthetic_number += 1
+            chapters[f"Chapter {synthetic_number}"] = re.sub(r"\s+", " ", title_line)
+            line_index += 1
+
+    return chapters, toc_line_numbers
+
+
+def _match_toc_chapter_title(heading: str, toc_chapters: Dict[str, str]) -> Optional[str]:
+    """Return the ToC chapter label for an exact body-heading title match.
+
+    Args:
+        heading: The body-heading title to match.
+        toc_chapters: Dictionary of ToC chapter labels and titles.
+
+    Returns:
+        The matching ToC chapter label if found, otherwise None.
+    """
+
+    def _normalise(value: str) -> str:
+        value = re.sub(r"^#+\s*", "", value.strip())
+        value = re.sub(r"\s+", " ", value)
+        return value.strip(" .:-—").casefold()
+
+    normalised_heading = _normalise(heading)
+    for chapter_label, title in toc_chapters.items():
+        if normalised_heading in {
+            _normalise(title),
+            _normalise(chapter_label),
+            _normalise(f"{chapter_label}: {title}"),
+        }:
+            return chapter_label
+    return None
+
+
+def _find_unlisted_chapter_candidates(text: str, toc_chapters: Dict[str, str]) -> List[str]:
+    """Find explicit chapter headings that the ToC-authoritative parser rejects.
+
+    Args:
+        text: Full text of the document containing the ToC.
+        toc_chapters: Dictionary of ToC chapter labels and titles.
+
+    Returns:
+        A list of candidate chapter headings not listed in the ToC.
+    """
+    chapter_pattern = re.compile(
+        r"^\s*#*\s*(?:chapter|ch\.?)\s+"
+        r"(?P<number>\d+|one|two|three|four|five|six|seven|eight|nine|ten|[IVX]{1,5})"
+        r"[\s:.-]*(?P<title>.*?)\s*$",
+        re.IGNORECASE,
+    )
+    candidates = []
+    lines = text.splitlines()
+    for line_index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or _is_table_of_contents_entry(stripped):
+            continue
+        if line_index + 1 < len(lines) and _is_wrapped_table_of_contents_entry(
+            stripped, lines[line_index + 1].strip()
+        ):
+            continue
+        match = chapter_pattern.match(stripped)
+        if not match:
+            continue
+        title = match.group("title").strip()
+        if title and not _looks_like_numbered_heading(title):
+            continue
+        chapter_label = _normalise_chapter_number(match.group("number"), title)
+        if chapter_label in toc_chapters:
+            continue
+        candidate = f"{chapter_label}: {title}" if title else chapter_label
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
+def validate_structure_against_toc(
+    text: str,
+    structure: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Report chapter coverage and order against explicit ToC chapter entries.
+
+    Args:
+        text: Full text of the document containing the ToC.
+        structure: List of chapter entries with "chapter" and "level".
+
+    Returns:
+        Dictionary containing coverage metrics, missing chapters, unexpected chapters,
+        and order validation against the ToC.
+    """
+    toc_chapters = _extract_toc_chapter_entries(text)
+    outline_chapters, _ = _extract_outline_toc_chapters(text)
+    outline_chapters, _ = _extend_outline_toc_chapters(text, outline_chapters, set())
+    toc_chapters.update(outline_chapters)
+    expected_chapters = list(toc_chapters)
+    if not expected_chapters:
+        return {
+            "toc_present": False,
+            "expected_chapters": 0,
+            "matched_chapters": 0,
+            "coverage": None,
+            "missing_chapters": [],
+            "unexpected_chapters": [],
+            "order_matches": None,
+        }
+
+    detected_chapters = []
+    unexpected_chapters = _find_unlisted_chapter_candidates(text, toc_chapters)
+    for entry in structure:
+        if entry.get("level") != 0:
+            continue
+        chapter = str(entry.get("chapter") or "")
+        if chapter in toc_chapters:
+            if chapter not in detected_chapters:
+                detected_chapters.append(chapter)
+        elif chapter.lower().startswith("chapter ") and chapter not in unexpected_chapters:
+            unexpected_chapters.append(chapter)
+
+    matched_chapters = len(set(detected_chapters) & set(expected_chapters))
+    missing_chapters = [
+        chapter for chapter in expected_chapters if chapter not in detected_chapters
+    ]
+    return {
+        "toc_present": True,
+        "expected_chapters": len(expected_chapters),
+        "matched_chapters": matched_chapters,
+        "coverage": matched_chapters / len(expected_chapters),
+        "missing_chapters": missing_chapters,
+        "unexpected_chapters": unexpected_chapters,
+        "detected_order": detected_chapters,
+        "expected_order": expected_chapters,
+        "order_matches": detected_chapters == expected_chapters,
+    }
+
+
 def _classify_document_section(section_title: str) -> str:
     """Classify whether a section is pre-matter, main matter, or post-matter.
 
@@ -444,7 +1065,13 @@ def extract_structure_from_text(text: str) -> List[Dict[str, Any]]:
         Chapter 1: Chapter 1 > Introduction
         Chapter 2: Chapter 2 > Literature Review > Theoretical Framework
     """
-    structure = []
+    structure: List[Dict[str, Any]] = []
+    toc_chapters = _extract_toc_chapter_entries(text)
+    outline_chapters, toc_outline_line_numbers = _extract_outline_toc_chapters(text)
+    outline_chapters, toc_outline_line_numbers = _extend_outline_toc_chapters(
+        text, outline_chapters, toc_outline_line_numbers
+    )
+    toc_chapters.update(outline_chapters)
 
     # Patterns for detecting chapter headings (case-insensitive)
     chapter_patterns = [
@@ -496,7 +1123,14 @@ def extract_structure_from_text(text: str) -> List[Dict[str, Any]]:
 
     for line_no, line in enumerate(lines):
         stripped = line.strip()
+        if line_no in toc_outline_line_numbers:
+            continue
         if not stripped or len(stripped) < 3:
+            continue
+
+        if line_no + 1 < len(lines) and _is_wrapped_table_of_contents_entry(
+            stripped, lines[line_no + 1].strip()
+        ):
             continue
 
         # FILTER: Skip Table of Contents entries (have dots and page numbers)
@@ -508,11 +1142,145 @@ def extract_structure_from_text(text: str) -> List[Dict[str, Any]]:
         # Calculate character position
         char_pos = sum(len(lines[i]) + 1 for i in range(line_no))  # +1 for newline
 
+        # Docling Markdown headings retain the document hierarchy and take
+        # precedence over text-only chapter inference.
+        markdown_heading = re.match(r"^(#{1,6})\s+(.+?)\s*#*\s*$", stripped)
+        if markdown_heading:
+            level = len(markdown_heading.group(1)) - 1
+            section_title = markdown_heading.group(2).strip()
+            markdown_chapter_label = None
+            standalone_section_names = {
+                "abstract",
+                "acknowledgement",
+                "acknowledgements",
+                "declaration",
+                "signed declaration",
+                "copyright",
+                "copyright notice",
+                "copyright statement",
+                "ethics statement",
+                "statement of ethics",
+                "statement of ethics approval",
+                "ethics declaration",
+                "ethics approval",
+                "conflict of interest statement",
+                "funding statement",
+                "dedication",
+                "foreword",
+                "preface",
+                "prelude",
+                "prologue",
+                "table of contents",
+                "list of figures",
+                "list of tables",
+                "list of abbreviations",
+                "references",
+                "bibliography",
+                "appendix",
+                "appendices",
+                "index",
+            }
+            toc_chapter_label = _match_toc_chapter_title(section_title, toc_chapters)
+            chapter_heading = re.match(chapter_patterns[0], section_title, re.IGNORECASE)
+            if toc_chapter_label:
+                markdown_chapter_label = toc_chapter_label
+                section_title = f"{toc_chapter_label}: {toc_chapters[toc_chapter_label]}"
+                level = 0
+            elif chapter_heading:
+                chapter_num = chapter_heading.group(1)
+                chapter_title = chapter_heading.group(2).strip()
+                if _looks_like_numbered_heading(chapter_title):
+                    chapter_label = _normalise_chapter_number(chapter_num, chapter_title)
+                    toc_title = toc_chapters.get(chapter_label)
+                    if toc_chapters and toc_title is None:
+                        continue
+                    if toc_title:
+                        chapter_title = toc_title
+                    markdown_chapter_label = chapter_label
+                    section_title = (
+                        f"{chapter_label}: {chapter_title}" if chapter_title else chapter_label
+                    )
+                    level = 0
+            else:
+                normalised_section_name = section_title.lower().rstrip(":.")
+                is_appendix_heading = normalised_section_name.startswith(
+                    ("appendix ", "appendices ")
+                )
+                if normalised_section_name in standalone_section_names or is_appendix_heading:
+                    markdown_chapter_label = section_title
+                    level = 0
+            if structure:
+                structure[-1]["end_pos"] = char_pos
+
+            hierarchy = [
+                (existing_level, title)
+                for existing_level, title in hierarchy
+                if existing_level < level
+            ]
+            hierarchy.append((level, section_title))
+            if level == 0:
+                current_chapter = markdown_chapter_label or section_title
+            heading_path = " > ".join(title for _, title in hierarchy)
+            structure_entry = {
+                "start_pos": char_pos,
+                "end_pos": None,
+                "chapter": current_chapter or section_title,
+                "section_title": section_title,
+                "heading_path": heading_path,
+                "level": level,
+            }
+            if level == 0:
+                toc_title = toc_chapters.get(str(current_chapter or section_title))
+                structure_entry["toc_verified"] = toc_title is not None
+                if toc_title is not None:
+                    structure_entry["toc_title"] = toc_title
+            structure.append(structure_entry)
+            current_section = section_title
+            continue
+
+        toc_chapter_label = _match_toc_chapter_title(stripped, toc_chapters)
+        if toc_chapter_label:
+            if structure:
+                structure[-1]["end_pos"] = char_pos
+            current_chapter = toc_chapter_label
+            section_title = f"{toc_chapter_label}: {toc_chapters[toc_chapter_label]}"
+            structure.append(
+                {
+                    "start_pos": char_pos,
+                    "end_pos": None,
+                    "chapter": toc_chapter_label,
+                    "section_title": section_title,
+                    "heading_path": toc_chapter_label,
+                    "level": 0,
+                    "toc_verified": True,
+                    "toc_title": toc_chapters[toc_chapter_label],
+                }
+            )
+            hierarchy = [(0, toc_chapter_label)]
+            current_section = section_title
+            continue
+
         # Check for chapter headings
         chapter_match = None
-        for pattern in chapter_patterns:
+        for pattern_index, pattern in enumerate(chapter_patterns):
             match = re.match(pattern, stripped, re.IGNORECASE | re.MULTILINE)
             if match:
+                # A bare "1. Title" form is also used for numbered prose and
+                # cultural lists. Only treat it as a chapter when the title
+                # clearly names an academic section; explicit "Chapter N"
+                # headings remain unrestricted.
+                if pattern_index == 2:
+                    if re.match(r"^\d+\.\d+", stripped):
+                        continue
+                    numbered_title = match.group(2).strip()
+                    if not re.search(
+                        r"\b(?:introduction|background|literature|method(?:ology|s)?|result(?:s)?|"
+                        r"finding(?:s)?|discussion|analysis|design|conclusion|recommendation|"
+                        r"implication|theoretical|conceptual|data|endpoint|authentication)\b",
+                        numbered_title,
+                        re.IGNORECASE,
+                    ):
+                        continue
                 chapter_match = match
                 break
 
@@ -522,9 +1290,16 @@ def extract_structure_from_text(text: str) -> List[Dict[str, Any]]:
             chapter_title = (
                 chapter_match.group(2).strip() if len(chapter_match.groups()) > 1 else ""
             )
+            if not _looks_like_numbered_heading(chapter_title):
+                continue
 
             # Normalise chapter number (convert words to digits, roman to arabic)
             chapter_label = _normalise_chapter_number(chapter_num, chapter_title)
+            toc_title = toc_chapters.get(chapter_label)
+            if toc_chapters and toc_title is None:
+                continue
+            if toc_title:
+                chapter_title = toc_title
 
             # Close previous section if exists
             if structure:
@@ -541,6 +1316,8 @@ def extract_structure_from_text(text: str) -> List[Dict[str, Any]]:
                     "section_title": full_title,
                     "heading_path": chapter_label,
                     "level": 0,  # Chapter level
+                    "toc_verified": toc_title is not None,
+                    **({"toc_title": toc_title} if toc_title is not None else {}),
                 }
             )
 
@@ -584,7 +1361,7 @@ def extract_structure_from_text(text: str) -> List[Dict[str, Any]]:
             matched_section = None
 
             for std_section in standard_sections:
-                if std_section in section_lower:
+                if re.fullmatch(rf"{re.escape(std_section)}[\s:.\-—]*", section_lower):
                     matched_section = stripped
                     break
 

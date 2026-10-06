@@ -6,7 +6,8 @@ for RAG generation.
 
 import pytest
 
-from scripts.rag.assemble import SYSTEM_PROMPT, build_prompt
+from scripts.rag import assemble
+from scripts.rag.assemble import SYSTEM_PROMPT, build_academic_aware_prompt, build_prompt
 
 
 class TestSystemPrompt:
@@ -27,6 +28,18 @@ class TestSystemPrompt:
     def test_system_prompt_mentions_governance(self):
         """Test that system prompt mentions governance domain."""
         assert "governance" in SYSTEM_PROMPT.lower()
+
+
+def test_academic_prompt_appends_cultural_guidance_without_replacing_system_role():
+    prompt = build_academic_aware_prompt(
+        "How does healing work?",
+        ["The thesis describes connection to Country and kin."],
+        custom_role="Custom academic role.",
+        additional_system_guidance="Use the thesis cultural lens.",
+    )
+
+    assert prompt.startswith("Custom academic role.")
+    assert "Use the thesis cultural lens." in prompt
 
     def test_system_prompt_instructs_against_invention(self):
         """Test that system prompt warns against inventing information."""
@@ -76,8 +89,43 @@ class TestBuildPrompt:
 
         prompt = build_prompt(query, chunks)
 
-        # Check that chunks are separated by double newlines
-        assert "Chunk 1\n\nChunk 2\n\nChunk 3" in prompt
+        # Check that labelled chunks are separated by double newlines.
+        assert "[Chunk 1] Chunk 1\n\n[Chunk 2] Chunk 2\n\n[Chunk 3] Chunk 3" in prompt
+
+    def test_build_prompt_includes_source_path_and_section(self):
+        prompt = build_prompt(
+            "What does the thesis say?",
+            ["The study describes its method."],
+            metadata=[
+                {
+                    "source_path": "/theses/example.pdf",
+                    "heading_path": "Chapter 2 > Methodology",
+                    "graph_provenance": (
+                        'Chapter 2 > Methodology > claim "Finding" '
+                        "-> cites Smith (2020, Q1, available)"
+                    ),
+                }
+            ],
+        )
+
+        assert "source: /theses/example.pdf" in prompt
+        assert "section: Chapter 2 > Methodology" in prompt
+        assert 'graph path: Chapter 2 > Methodology > claim "Finding"' in prompt
+
+    def test_academic_prompt_includes_source_path_and_section(self):
+        prompt = build_academic_aware_prompt(
+            "What does the thesis say?",
+            ["The study describes its method."],
+            metadata=[
+                {
+                    "source": "/theses/example.pdf",
+                    "heading_path": "Chapter 2 > Methodology",
+                }
+            ],
+        )
+
+        assert "source: /theses/example.pdf" in prompt
+        assert "section: Chapter 2 > Methodology" in prompt
 
     def test_build_prompt_includes_system_prompt(self):
         """Test that built prompt includes system instructions."""
@@ -104,6 +152,7 @@ class TestBuildPrompt:
         answer_idx = prompt.find("ANSWER:")
 
         assert system_idx < context_idx < question_idx < answer_idx
+        assert "RAW_CONTEXT:" not in prompt
 
     def test_build_prompt_empty_query_raises_error(self):
         """Test that empty query raises ValueError."""
@@ -253,8 +302,8 @@ class TestBuildPrompt:
 
         context_section = prompt[context_start:question_start]
 
-        # Should contain all chunks with proper separation
-        assert "A\n\nB\n\nC" in context_section
+        # Should contain all labelled chunks with proper separation.
+        assert "[Chunk 1] A\n\n[Chunk 2] B\n\n[Chunk 3] C" in context_section
 
 
 class TestBuildPromptEdgeCases:
@@ -281,14 +330,36 @@ class TestBuildPromptEdgeCases:
         assert query in prompt
 
     def test_build_prompt_with_very_long_chunk(self):
-        """Test with a very long context chunk."""
+        """A very long context chunk is bounded without being discarded."""
         query = "Test"
         long_chunk = "word " * 10000  # Very long chunk
         chunks = [long_chunk]
 
         prompt = build_prompt(query, chunks)
 
-        assert long_chunk.strip() in prompt
+        assert "[Chunk 1] word word" in prompt
+        assert long_chunk.strip() not in prompt
+
+    @pytest.mark.parametrize(
+        ("builder", "warning_prefix"),
+        [
+            (assemble.build_prompt, "Context truncated"),
+            (assemble.build_academic_aware_prompt, "Academic context truncated"),
+        ],
+    )
+    def test_unbroken_oversized_chunk_keeps_prefix_and_reports_partial_content(
+        self, monkeypatch, builder, warning_prefix
+    ):
+        monkeypatch.setattr(assemble.config, "max_context_chars", 80)
+        warning_messages = []
+        monkeypatch.setattr(assemble.logger, "warning", warning_messages.append)
+
+        prompt = builder("What is shown?", ["x" * 1000])
+
+        assert "[Chunk 1] " + "x" * 20 in prompt
+        assert warning_messages[0].startswith(warning_prefix)
+        assert "0 complete chunks and a partial prefix of chunk 1" in warning_messages[0]
+        assert "chunk 1" in warning_messages[0]
 
     def test_build_prompt_idempotency(self):
         """Test that calling build_prompt multiple times with same inputs gives same result."""

@@ -17,7 +17,7 @@ Integration:
 
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import networkx as nx
 
@@ -39,7 +39,7 @@ class GraphEnhancedRetriever:
         self.graph: Optional[nx.Graph] = None
         self.entity_to_chunks: Dict[str, Set[str]] = {}  # entity -> chunk IDs
         self.chunk_to_entities: Dict[str, Set[str]] = {}  # chunk_id -> entities
-        self._sqlite_store = None
+        self._sqlite_store: Any = None
 
         if graph_source:
             self.load_graph(graph_source)

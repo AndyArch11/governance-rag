@@ -103,6 +103,10 @@ embedding_cache/
 rag_data/*
 !rag_data/domain_terms/
 !rag_data/domain_terms/**
+!rag_data/cultural_lenses/
+!rag_data/cultural_lenses/**
+# Profiles containing restricted cultural content must not be committed
+rag_data/cultural_lenses/private/
 output/
 results/
 temp/

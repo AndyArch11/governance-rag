@@ -328,6 +328,7 @@ class ExportManager:
                 conv_id = conv.get("id", "unknown")
                 turns = conv.get("turns", [])
                 metadata = conv.get("metadata", {})
+                content: str | bytes
 
                 if format == "markdown":
                     content = ExportManager.export_conversation_markdown(conv_id, turns, metadata)
@@ -372,13 +373,13 @@ class ExportManager:
             return ""
 
         # Get all unique keys from sources
-        fieldnames = set()
+        fieldnames: set[str] = set()
         for source in sources:
             fieldnames.update(source.keys())
 
-        fieldnames = sorted(fieldnames)
+        sorted_fieldnames = sorted(fieldnames)
 
-        writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+        writer = csv.DictWriter(buffer, fieldnames=sorted_fieldnames)
         writer.writeheader()
 
         for source in sources:

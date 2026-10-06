@@ -152,6 +152,21 @@ class TestArxivProvider:
         # 0.75 base + 0.1 DOI + 0.05 abstract + 0.05 authors + 0.05 OA = 1.0
         assert score == 1.0
 
+    def test_parse_arxiv_entry_handles_empty_optional_text(self):
+        """Incomplete arXiv XML does not dereference missing element text."""
+        provider = ArxivProvider()
+        entry = ET.fromstring(
+            '<entry xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">'
+            '<id/><title/><summary/><arxiv:primary_category term="cs.AI"/>'
+            "</entry>"
+        )
+
+        reference = provider._parse_arxiv_entry(entry)
+
+        assert reference.ref_id == ""
+        assert reference.title == ""
+        assert reference.abstract == ""
+
 
 class TestPubMedProvider:
     """Tests for PubMed provider."""

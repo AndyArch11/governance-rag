@@ -1,7 +1,6 @@
 """Shared ingestion utility functions used across all ingest entrypoints.
 
-Centralises common helpers so that `ingest.py`, `ingest_git.py`, and
-`ingest_academic.py` do not duplicate logic.
+Centralises common helpers so that ingestion pipelines do not duplicate logic.
 
 Provided utilities:
 - :func:`check_ollama_availability` — verify Ollama is reachable before LLM calls
@@ -108,8 +107,7 @@ def parse_seed_auth(auth_block: Optional[Dict[str, Any]]) -> Optional[AuthConfig
     auth_type = auth_block.get("type", "").strip().lower()
     if auth_type not in ("bearer", "basic", "cookie"):
         raise ValueError(
-            f"Unsupported auth type '{auth_type}'. "
-            "Must be one of: bearer, basic, cookie"
+            f"Unsupported auth type '{auth_type}'. " "Must be one of: bearer, basic, cookie"
         )
 
     return AuthConfig(
@@ -170,9 +168,7 @@ def build_auth_headers(auth_config: Optional[AuthConfig]) -> Dict[str, str]:
                 "Basic auth configured but username or password is missing. "
                 "Set 'username_env' / 'password_env' in the seed auth block."
             )
-        credentials = base64.b64encode(
-            f"{username}:{password}".encode("utf-8")
-        ).decode("ascii")
+        credentials = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
         return {"Authorization": f"Basic {credentials}"}
 
     if auth_config.auth_type == "cookie":

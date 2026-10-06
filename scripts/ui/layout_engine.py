@@ -1,10 +1,11 @@
 """
 Graph layout engine for Plotly Dash WebGL rendering.
 
-Provides multiple layout algorithms for positioning nodes in 2D space:
+Provides layout algorithms for positioning graph nodes:
 - Force-directed (spring-force model with Coulomb repulsion)
 - Hierarchical (layered layout for DAGs)
 - Circular (nodes arranged in concentric circles by cluster)
+- Three-dimensional force-directed layout for interactive semantic graph views
 
 Usage:
     from scripts.ui.layout_engine import ForceDirectedLayout
@@ -19,7 +20,7 @@ import math
 import random
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 
 class LayoutEngine(ABC):
@@ -44,12 +45,16 @@ class LayoutEngine(ABC):
 
     def _get_node_neighbors(self, node_id: str, edges: List[Dict]) -> List[str]:
         """Get all neighbors of a node."""
-        neighbors = []
+        neighbors: List[str] = []
         for edge in edges:
             if edge.get("source") == node_id:
-                neighbors.append(edge.get("target"))
+                neighbor = edge.get("target")
             elif edge.get("target") == node_id:
-                neighbors.append(edge.get("source"))
+                neighbor = edge.get("source")
+            else:
+                continue
+            if isinstance(neighbor, str):
+                neighbors.append(neighbor)
         return neighbors
 
 
@@ -235,6 +240,121 @@ class ForceDirectedLayout(LayoutEngine):
         return positions
 
 
+class ForceDirected3DLayout:
+    """Deterministic force-directed layout in three dimensions.
+
+    The layout is intended for interactive Plotly 3D views of a bounded graph
+    page. It deliberately shares the 2D force model's conservative defaults.
+    """
+
+    def __init__(
+        self,
+        k: float = 1.0,
+        c_rep: float = 1.0,
+        c_spring: float = 0.1,
+        damping: float = 0.5,
+        iterations: int = 50,
+        seed: int = 42,
+    ) -> None:
+        """Initialise deterministic three-dimensional force-layout parameters.
+
+        Args:
+            k: Optimal spring length (distance between nodes)
+            c_rep: Coulomb repulsion coefficient (higher = more repulsion)
+            c_spring: Spring force coefficient (higher = stronger attraction)
+            damping: Velocity damping factor (0-1, higher = slower)
+            iterations: Number of simulation iterations
+            seed: Random seed for reproducibility
+        """
+        self.k = k
+        self.c_rep = c_rep
+        self.c_spring = c_spring
+        self.damping = damping
+        self.iterations = iterations
+        self.seed = seed
+
+    def compute_layout(
+        self,
+        nodes: Dict[str, Dict[str, Any]],
+        edges: List[Dict[str, Any]],
+    ) -> Dict[str, Tuple[float, float, float]]:
+        """Compute bounded deterministic three-dimensional node positions.
+
+        Args:
+            nodes: Dictionary of node_id -> node_data
+            edges: List of edges
+
+        Returns:
+            Dictionary of node_id -> (x, y, z) position
+        """
+        if not nodes:
+            return {}
+
+        random_generator = random.Random(self.seed)
+        node_ids = list(nodes)
+        positions = {
+            node_id: (
+                random_generator.uniform(-1, 1),
+                random_generator.uniform(-1, 1),
+                random_generator.uniform(-1, 1),
+            )
+            for node_id in node_ids
+        }
+        velocities = {node_id: (0.0, 0.0, 0.0) for node_id in node_ids}
+
+        for _ in range(self.iterations):
+            forces = {node_id: [0.0, 0.0, 0.0] for node_id in node_ids}
+            for index, node_a in enumerate(node_ids):
+                for node_b in node_ids[index + 1 :]:
+                    dx = positions[node_b][0] - positions[node_a][0]
+                    dy = positions[node_b][1] - positions[node_a][1]
+                    dz = positions[node_b][2] - positions[node_a][2]
+                    distance_squared = dx * dx + dy * dy + dz * dz + 0.01
+                    distance = math.sqrt(distance_squared)
+                    force = self.c_rep * (self.k**2) / distance
+                    for axis, delta in enumerate((dx, dy, dz)):
+                        adjustment = (delta / distance) * force
+                        forces[node_a][axis] -= adjustment
+                        forces[node_b][axis] += adjustment
+
+            for edge in edges:
+                source = edge.get("source")
+                target = edge.get("target")
+                if source not in positions or target not in positions:
+                    continue
+                deltas = tuple(
+                    positions[target][axis] - positions[source][axis] for axis in range(3)
+                )
+                distance = math.sqrt(sum(delta * delta for delta in deltas)) + 0.01
+                force = self.c_spring * (distance - self.k)
+                for axis, delta in enumerate(deltas):
+                    adjustment = (delta / distance) * force
+                    forces[source][axis] += adjustment
+                    forces[target][axis] -= adjustment
+
+            for node_id in node_ids:
+                updated_velocity = cast(
+                    Tuple[float, float, float],
+                    tuple(
+                        (velocities[node_id][axis] + forces[node_id][axis]) * self.damping
+                        for axis in range(3)
+                    ),
+                )
+                speed = math.sqrt(sum(component * component for component in updated_velocity))
+                if speed > 1.0:
+                    updated_velocity = cast(
+                        Tuple[float, float, float],
+                        tuple(component / speed for component in updated_velocity),
+                    )
+                velocities[node_id] = updated_velocity
+                positions[node_id] = cast(
+                    Tuple[float, float, float],
+                    tuple(positions[node_id][axis] + updated_velocity[axis] for axis in range(3)),
+                )
+
+        return positions
+
+
 class HierarchicalLayout(LayoutEngine):
     """
     Layered/hierarchical layout for DAGs and tree structures.
@@ -309,7 +429,7 @@ class HierarchicalLayout(LayoutEngine):
             List of layers, each containing node IDs
         """
         # Calculate in-degree
-        in_degree = defaultdict(int)
+        in_degree: Dict[str, int] = defaultdict(int)
         for source in adj:
             for target in adj[source]:
                 in_degree[target] += 1
@@ -492,7 +612,7 @@ def compute_layout(
             num_nodes = len(nodes)
             num_edges = len(edges)
             kwargs = get_adaptive_layout_params(num_nodes, num_edges)
-        engine = ForceDirectedLayout(**kwargs)
+        engine: LayoutEngine = ForceDirectedLayout(**kwargs)
     elif layout_type == "hierarchical":
         engine = HierarchicalLayout(**kwargs)
     elif layout_type == "circular":

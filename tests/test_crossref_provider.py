@@ -3,6 +3,7 @@ Unit tests for Crossref provider and cache.
 """
 
 import json
+import sqlite3
 from datetime import datetime
 from unittest.mock import MagicMock, Mock, patch
 
@@ -197,6 +198,19 @@ class TestReferenceCache:
         """Test cache miss returns None."""
         result = cache.get("nonexistent_key")
         assert result is None
+
+    def test_clear_removes_cached_references_and_citations(self, cache):
+        """Cache reset removes both reference entries and citation links."""
+        ref = Reference(ref_id="ref_1", title="Test Paper", resolved=True)
+        cache_key = cache.compute_cache_key(title="Test Paper")
+        cache.put(cache_key, ref)
+        cache.add_citation("doc_1", "ref_1", "Test citation")
+
+        cache.clear()
+
+        assert cache.get(cache_key) is None
+        with sqlite3.connect(str(cache.db_path)) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM document_citations").fetchone()[0] == 0
 
     def test_add_citation_tracking(self, cache):
         """Test tracking document citations."""

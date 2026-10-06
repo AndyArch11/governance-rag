@@ -44,7 +44,7 @@ import traceback
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 # Ensure project root is importable when running as a script path, e.g.:
 # python scripts/consistency_graph/build_consistency_graph.py --help
@@ -58,17 +58,16 @@ from networkx.algorithms.community import greedy_modularity_communities
 from tqdm import tqdm
 
 from scripts.consistency_graph.advanced_analytics import compute_advanced_analytics
-from scripts.ingest.vectors import EMBEDDING_MODEL_NAME
 from scripts.utils.db_factory import get_default_vector_path, get_vector_client
+from scripts.utils.embedding_model_config import EMBEDDING_MODEL_NAME
+from scripts.utils.llm_instrumentation import invoke_with_usage
 from scripts.utils.metrics_export import get_metrics_collector
 from scripts.utils.monitoring import get_perf_metrics, get_token_counter, init_monitoring
 from scripts.utils.resource_monitor import ResourceMonitor
 
 # Collection typing (best-effort)
 try:
-    from chromadb.api.models.Collection import (  # type: ignore  # noqa: WPS433,E402
-        Collection as ChromaDBCollection,
-    )
+    from chromadb.api.models.Collection import Collection as ChromaDBCollection  # noqa: WPS433,E402
 except Exception:
     ChromaDBCollection = Any  # type: ignore
 
@@ -344,8 +343,8 @@ class LLMBatcher:
             logger: Optional logger for debug messages
         """
         self.batch_size = batch_size
-        self.pending_pairs = []
-        self.results_cache = {}
+        self.pending_pairs: List[Dict[str, Any]] = []
+        self.results_cache: Dict[int, Dict[str, Any]] = {}
         self.logger = logger or get_logger()
         self.batch_count = 0
 
@@ -437,6 +436,18 @@ class LLMBatcher:
             self._process_batch()
 
 
+def _collection_get(collection: Collection, **kwargs: Any) -> Dict[str, Any]:
+    """Read records through the common ChromaDB and SQLite collection contract."""
+    collection_backend: Any = collection
+    return collection_backend.get(**kwargs)
+
+
+def _collection_query(collection: Collection, **kwargs: Any) -> Dict[str, Any]:
+    """Query records through the common ChromaDB and SQLite collection contract."""
+    collection_backend: Any = collection
+    return collection_backend.query(**kwargs)
+
+
 def sample_and_interpolate_graph(
     versioned_docs: List[Dict[str, Any]],
     doc_collection: Collection,
@@ -446,7 +457,7 @@ def sample_and_interpolate_graph(
     workers: int = WORKERS,
     enable_llm_batching: bool = False,
     enable_embedding_cache: bool = False,
-    progress_callback: Optional[callable] = None,
+    progress_callback: Optional[Callable[[int, int, str], None]] = None,
     progress_log_interval: int = 10,
     logger=None,
 ) -> Dict[str, Any]:
@@ -537,7 +548,8 @@ def sample_and_interpolate_graph(
 
         # Query for nearest sample nodes
         try:
-            results = doc_collection.query(
+            results = _collection_query(
+                doc_collection,
                 query_embeddings=[rem_embedding],
                 n_results=5,
                 include=["metadatas", "distances"],
@@ -588,8 +600,40 @@ def get_validator_llm() -> OllamaLLM:
         OllamaLLM: Thread-local instance of Ollama LLM (configured model).
     """
     if not hasattr(_thread_local, "llm"):
-        _thread_local.llm = OllamaLLM(model=VALIDATOR_LLM_MODEL)
+        _thread_local.llm = OllamaLLM(
+            model=VALIDATOR_LLM_MODEL,
+            num_ctx=CONFIG.llm_context_window_tokens,
+        )
     return _thread_local.llm
+
+
+def unload_validator_model() -> bool:
+    """Request that Ollama unload the consistency validator after graph completion.
+
+    The validator remains resident while concurrent graph processing runs. A
+    single zero keep-alive request is sent only after the graph output has been
+    written successfully, avoiding repeated model reloads during validation.
+    """
+    return _request_validator_model_unload()
+
+
+def _request_validator_model_unload(client_factory: Optional[Callable[[], Any]] = None) -> bool:
+    """Send the zero keep-alive request used to unload the validator model."""
+    try:
+        if client_factory is None:
+            from ollama import Client
+
+            client_factory = Client
+        client_factory().generate(model=VALIDATOR_LLM_MODEL, keep_alive=0)
+        logger.info(
+            "Requested Ollama unload for consistency validator model: %s", VALIDATOR_LLM_MODEL
+        )
+        return True
+    except (ConnectionError, ImportError, OSError, RuntimeError, ValueError) as exc:
+        logger.warning(
+            "Could not unload consistency validator model '%s': %s", VALIDATOR_LLM_MODEL, exc
+        )
+        return False
 
 
 logger = get_logger()
@@ -601,16 +645,7 @@ logger = get_logger()
 
 
 def build_prompt(doc_a, doc_b, meta_a, meta_b):
-    """Build comparison prompt with code-aware enhancements.
-
-    Detects if both documents are code files (source_category='code')
-    and includes code-specific comparison guidance.
-    """
-    # Check if both documents are code files
-    is_code_a = meta_a.get("source_category") == "code"
-    is_code_b = meta_b.get("source_category") == "code"
-    both_code = is_code_a and is_code_b
-
+    """Build comparison prompt with code-aware enhancements."""
     # Base definitions (same for all document types)
     definitions = """
     Definitions (follow these EXACTLY):
@@ -629,35 +664,6 @@ def build_prompt(doc_a, doc_b, meta_a, meta_b):
                    even if wording differs.
     """
 
-    # Code-specific guidance (only if both are code files)
-    code_guidance = ""
-    if both_code:
-        code_guidance = """
-    
-    CODE-SPECIFIC COMPARISON GUIDANCE:
-    When comparing code files, consider:
-    
-    - Service Dependencies: Do they depend on the same services or APIs? Are there 
-      conflicting versions or incompatible interfaces?
-    
-    - Language/Framework Consistency: Are both using the same programming language, 
-      framework versions, and architectural patterns?
-    
-    - Function/Class Relationships: Do they export/import the same functions or classes? 
-      Are there naming conflicts or incompatible method signatures?
-    
-    - Configuration & Metadata: Do they specify conflicting configuration values, 
-      environment variables, or deployment requirements?
-    
-    - Database & External Services: Do they reference conflicting database schemas, 
-      API endpoints, or external service integrations?
-    
-    - Code Reuse: Are there duplicate implementations of the same functionality that 
-      should be consolidated?
-    
-    Focus on architectural and operational conflicts, not minor code style differences.
-    """
-
     prompt = f"""
     You are a strict classification engine. 
     You MUST output ONLY one of the following four relationship labels:
@@ -670,17 +676,11 @@ def build_prompt(doc_a, doc_b, meta_a, meta_b):
     These labels are EXACT and case-sensitive. 
     You are NOT allowed to invent new labels, paraphrase them, or modify them in any way.
     
-    {definitions}{code_guidance}
+    {definitions}
 
     Your task:
     Compare the following two governance documents and classify their relationship 
     using ONLY the four allowed labels.
-
-    DOC A ({meta_a["doc_type"]}, v{meta_a["version"]}):
-    {doc_a}
-
-    DOC B ({meta_b["doc_type"]}, v{meta_b["version"]}):
-    {doc_b}
 
     Return ONLY valid JSON in the following EXACT structure:
     
@@ -695,6 +695,13 @@ def build_prompt(doc_a, doc_b, meta_a, meta_b):
     
     If your output contains any label other than the four allowed ones, 
     your answer is INVALID.
+
+    INPUT DOCUMENTS:
+    DOC A ({meta_a["doc_type"]}, v{meta_a["version"]}):
+    {doc_a}
+
+    DOC B ({meta_b["doc_type"]}, v{meta_b["version"]}):
+    {doc_b}
     """
 
     return prompt
@@ -747,7 +754,12 @@ def call_llm(prompt: str) -> str:
     with get_gpu_lock():
         llm = get_validator_llm()
         try:
-            return llm.invoke(prompt)
+            return invoke_with_usage(
+                llm,
+                prompt,
+                operation="consistency.call_llm",
+                component="consistency_graph",
+            )
         except Exception:
             logger.exception("LLM invocation failed")
             raise
@@ -777,8 +789,16 @@ def enforce_valid_output(
     """
     llm = get_validator_llm()
 
+    call_attempt = 0
     for _ in range(max_retries):
-        raw = llm.invoke(build_prompt(doc_a, doc_b, meta_a, meta_b))
+        call_attempt += 1
+        raw = invoke_with_usage(
+            llm,
+            build_prompt(doc_a, doc_b, meta_a, meta_b),
+            operation="consistency.enforce_valid_output",
+            component="consistency_graph",
+            attempt=call_attempt,
+        )
         try:
             parsed = extract_first_json_block(raw)
         except Exception:
@@ -802,7 +822,14 @@ You MUST choose ONLY one of:
 
 Correct your answer. Output ONLY valid JSON in the required format.
 """
-        raw = llm.invoke(critique_prompt)
+        call_attempt += 1
+        raw = invoke_with_usage(
+            llm,
+            critique_prompt,
+            operation="consistency.enforce_valid_output",
+            component="consistency_graph",
+            attempt=call_attempt,
+        )
         try:
             parsed = extract_first_json_block(raw)
         except Exception:
@@ -1022,55 +1049,15 @@ def should_validate_with_llm(
         logger.debug(f"Skipping LLM (low similarity {similarity:.3f})")
         return False
 
-    # Code-specific heuristics
-    source_cat_a = meta_a.get("source_category", "")
-    source_cat_b = meta_b.get("source_category", "")
-    both_code = "code" in source_cat_a and "code" in source_cat_b
-
-    if both_code:
-        # 3. Code: Skip if different languages (unlikely conflicts)
-        lang_a = meta_a.get("language", "").lower()
-        lang_b = meta_b.get("language", "").lower()
-        if lang_a and lang_b and lang_a != lang_b:
-            logger.debug(f"Skipping LLM (different languages: {lang_a} vs {lang_b})")
-            return False
-
-        # 4. Code: Skip if no overlapping dependencies
-        deps_a_raw = meta_a.get("dependencies", [])
-        deps_b_raw = meta_b.get("dependencies", [])
-
-        # Handle JSON strings
-        if isinstance(deps_a_raw, str):
-            try:
-                deps_a = set(json.loads(deps_a_raw) if deps_a_raw else [])
-            except (json.JSONDecodeError, TypeError):
-                deps_a = set()
-        else:
-            deps_a = set(deps_a_raw) if deps_a_raw else set()
-
-        if isinstance(deps_b_raw, str):
-            try:
-                deps_b = set(json.loads(deps_b_raw) if deps_b_raw else [])
-            except (json.JSONDecodeError, TypeError):
-                deps_b = set()
-        else:
-            deps_b = set(deps_b_raw) if deps_b_raw else set()
-
-        if deps_a and deps_b and not (deps_a & deps_b):
-            logger.debug(f"Skipping LLM (no shared dependencies)")
-            return False
-
-    # 5. Different doc types rarely conflict (except config-related)
+    # Different document types rarely conflict, except when configuration is involved.
     doc_type_a = str(meta_a.get("doc_type", "")).lower()
     doc_type_b = str(meta_b.get("doc_type", "")).lower()
     if doc_type_a and doc_type_b and doc_type_a != doc_type_b:
-        # Exception: config vs code might conflict
         if not ("config" in doc_type_a or "config" in doc_type_b):
             logger.debug(f"Skipping LLM (different doc types: {doc_type_a} vs {doc_type_b})")
             return False
 
     return True  # Pass through to LLM
-    return max(0.0, min(1.0, 1.0 - distance))
 
 
 def dedupe_edges(edges: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1142,10 +1129,11 @@ def load_versioned_docs(
             get_params["where"] = where
 
         try:
-            batch = collection.get(**get_params)
+            batch = _collection_get(collection, **get_params)
         except Exception:
             # Fallback for backends that don't accept where=None
-            batch = collection.get(
+            batch = _collection_get(
+                collection,
                 include=include,
                 limit=batch_size,
                 offset=offset,
@@ -1171,10 +1159,7 @@ def load_versioned_docs(
                 health = {}
 
             # Build base record
-            meta_language = meta.get("language") or meta.get("lang")
             meta_doc_type = meta.get("doc_type") or meta.get("file_type")
-            if not meta_doc_type and meta_language:
-                meta_doc_type = "code"
 
             record = {
                 "doc_id": doc_id,
@@ -1186,33 +1171,7 @@ def load_versioned_docs(
                 "source_category": meta.get("source_category", ""),
                 "health": health,
                 "text": text or "",
-                "file_path": meta.get("file_path"),
-                "repository": meta.get("repository"),
             }
-
-            # Add code-specific metadata if present (for code documents)
-            code_fields = [
-                "language",
-                "service_name",
-                "service",
-                "service_type",
-                "dependencies",
-                "internal_calls",
-                "endpoints",
-                "db",
-                "queue",
-                "exports",
-                "git_provider",
-                "git_host",
-                "project",
-                "project_key",
-                "branch",
-                "git_url",
-                "bitbucket_url",
-            ]
-            for field in code_fields:
-                if field in meta:
-                    record[field] = meta[field]
 
             versioned.append(record)
 
@@ -1323,7 +1282,8 @@ def expand_neighbour_results(
         Tuple of (ids, docs, metas, distances) from expanded query
     """
     try:
-        results = doc_collection.query(
+        results = _collection_query(
+            doc_collection,
             query_embeddings=[query_embedding],
             n_results=expanded_max_neighbours,
             where={"embedding_model": query_model},
@@ -1331,7 +1291,8 @@ def expand_neighbour_results(
         )
     except TypeError:
         # Fallback if 'where' parameter not supported
-        results = doc_collection.query(
+        results = _collection_query(
+            doc_collection,
             query_embeddings=[query_embedding],
             n_results=expanded_max_neighbours,
             include=["documents", "metadatas", "distances"],
@@ -1357,7 +1318,7 @@ def process_document_for_graph(
     enable_dynamic_expansion: bool = True,
     expansion_quality_threshold: float = 0.7,
     max_expansion_multiplier: float = 1.5,
-) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
     Build consistency edges for a single versioned document record.
 
@@ -1424,21 +1385,16 @@ def process_document_for_graph(
         "source_category": record.get("source_category", ""),
     }
 
-    # Add code-specific metadata for heuristic filtering
-    code_fields = ["language", "dependencies", "service", "service_name"]
-    for field in code_fields:
-        if field in record:
-            meta_a[field] = record[field]
-
     # Use the embedding already stored in Chroma
     query_embedding = record["embedding"]
-    query_model = record.get("embedding_model", "mxbai-embed-large")
+    query_model = record.get("embedding_model", EMBEDDING_MODEL_NAME)
 
     # PROFILING: ChromaDB query time
     prof_chroma_start = time.time()
     # Query Chroma for nearest neighbours (filter by embedding model to avoid cross-model mixing)
     try:
-        results = doc_collection.query(
+        results = _collection_query(
+            doc_collection,
             query_embeddings=[query_embedding],
             n_results=max_neighbours,
             where={"embedding_model": query_model},
@@ -1446,7 +1402,8 @@ def process_document_for_graph(
         )
     except TypeError:
         # Fallback if 'where' parameter not supported
-        results = doc_collection.query(
+        results = _collection_query(
+            doc_collection,
             query_embeddings=[query_embedding],
             n_results=max_neighbours,
             include=["documents", "metadatas", "distances"],
@@ -1555,6 +1512,8 @@ def process_document_for_graph(
             for i in range(len(exp_ids)):
                 meta_b = exp_metas[i]
                 related_id = meta_b.get("doc_id")
+                if not isinstance(related_id, str):
+                    continue
                 version_target = meta_b.get("version", 1)
 
                 # Skip self
@@ -1627,8 +1586,7 @@ def build_consistency_graph_parallel(
     max_neighbours: int,
     sim_threshold: float,
     workers: int = WORKERS,
-    progress_callback: Optional[callable] = None,
-    include_dependency_edges: bool = False,
+    progress_callback: Optional[Callable[[int, int, str], None]] = None,
     enable_llm_batching: bool = False,
     enable_embedding_cache: bool = False,
     enable_graph_sampling: bool = False,
@@ -1656,7 +1614,7 @@ def build_consistency_graph_parallel(
             - nodes: Dict mapping node_id to node attributes
             - edges: List of edge dicts
     """
-    graph = {"nodes": {}, "edges": []}
+    graph: Dict[str, Any] = {"nodes": {}, "edges": []}
 
     # Performance monitoring counters
     llm_call_count = 0
@@ -1702,52 +1660,7 @@ def build_consistency_graph_parallel(
             "summary": rec.get("summary"),
             "source_category": rec.get("source_category", ""),
             "health": rec.get("health", {}),
-            "repository": rec.get("repository"),
-            "file_path": rec.get("file_path"),
         }
-
-        # Add code-specific metadata fields if present (from code parser)
-        code_fields = [
-            "language",
-            "service_name",
-            "service",
-            "service_type",
-            "dependencies",
-            "internal_calls",
-            "endpoints",
-            "db",
-            "queue",
-            "exports",
-        ]
-        for field in code_fields:
-            if field in rec:
-                # Deserialise JSON strings back to lists for code fields
-                value = rec[field]
-                if isinstance(value, str) and field in [
-                    "dependencies",
-                    "internal_calls",
-                    "endpoints",
-                    "db",
-                    "queue",
-                    "exports",
-                ]:
-                    try:
-                        node_data[field] = json.loads(value)
-                    except (json.JSONDecodeError, TypeError):
-                        node_data[field] = value
-                else:
-                    node_data[field] = value
-
-        # Map database_refs from ChromaDB to db field for consistency
-        if "database_refs" in rec and "db" not in node_data:
-            value = rec["database_refs"]
-            if isinstance(value, str):
-                try:
-                    node_data["db"] = json.loads(value)
-                except (json.JSONDecodeError, TypeError):
-                    node_data["db"] = value
-            else:
-                node_data["db"] = value
 
         graph["nodes"][node_id] = node_data
 
@@ -1869,126 +1782,6 @@ def build_consistency_graph_parallel(
         logger.info("Flushing remaining LLM batches...")
         llm_batcher.flush()
 
-    # ========================================================================
-    # 3. Add cross-repository service clustering edges
-    # ========================================================================
-    # Detect services appearing in multiple repositories and create clustering edges
-    code_nodes = {nid: n for nid, n in graph["nodes"].items() if n.get("source_category") == "code"}
-    if code_nodes:
-        service_repos = defaultdict(set)
-        service_nodes = defaultdict(list)
-
-        # Map services to their repositories and nodes
-        for node_id, meta in code_nodes.items():
-            service = meta.get("service_name") or meta.get("service")
-            repo = meta.get("repository")
-            if service and repo:
-                service_repos[service].add(repo)
-                service_nodes[service].append((node_id, repo))
-
-        # Create edges for services appearing in multiple repos (potential duplication/sharing)
-        for service, repos in service_repos.items():
-            if len(repos) > 1:
-                # This service appears in multiple repositories
-                nodes_list = service_nodes[service]
-                for i, (node_i, repo_i) in enumerate(nodes_list):
-                    for node_j, repo_j in nodes_list[i + 1 :]:
-                        if repo_i != repo_j:  # Only cross-repo edges
-                            # Avoid duplicates
-                            n1, n2 = sorted([node_i, node_j])
-                            if not any(
-                                (e["source"] == n1 and e["target"] == n2)
-                                or (e["source"] == n2 and e["target"] == n1)
-                                for e in graph["edges"]
-                                if e.get("relationship") == "cross_repo_service"
-                            ):
-                                graph["edges"].append(
-                                    {
-                                        "source": n1,
-                                        "target": n2,
-                                        "relationship": "cross_repo_service",
-                                        "service": service,
-                                        "repos": list(repos),
-                                        "confidence": 1.0,
-                                        "severity": 0.5,  # Medium severity for potential duplication
-                                        "explanation": f"Service '{service}' appears in multiple repos: {', '.join(sorted(repos))}. Potential code duplication or shared library.",
-                                    }
-                                )
-
-    # ========================================================================
-    # 4. Add dependency-based edges (optional)
-    # ========================================================================
-    if include_dependency_edges:
-        # Index code nodes by service, dependencies, queue, db
-        service_map = {}
-        queue_map = {}
-        db_map = {}
-        dep_map = {}
-        code_nodes = {
-            nid: n for nid, n in graph["nodes"].items() if n.get("source_category") == "code"
-        }
-        for node_id, meta in code_nodes.items():
-            # Service
-            service = meta.get("service")
-            if service:
-                service_map.setdefault(service, set()).add(node_id)
-            # message queue (AMQP)
-            queue = meta.get("queue") or meta.get("amqp_queue")
-            if queue:
-                queue_map.setdefault(queue, set()).add(node_id)
-            # DB
-            db = meta.get("db") or meta.get("database")
-            if db:
-                db_map.setdefault(db, set()).add(node_id)
-            # Dependencies (list or comma-separated string)
-            deps = meta.get("dependencies")
-            if isinstance(deps, str):
-                deps = [d.strip() for d in deps.split(",") if d.strip()]
-            if isinstance(deps, list):
-                for dep in deps:
-                    dep_map.setdefault(dep, set()).add(node_id)
-
-        # Helper to add undirected edge if not already present
-        def add_dep_edge(n1, n2, rel, field, value):
-            if n1 == n2:
-                return
-            # Only add if not already present (undirected)
-            for e in graph["edges"]:
-                if (
-                    (
-                        (e["source"] == n1 and e["target"] == n2)
-                        or (e["source"] == n2 and e["target"] == n1)
-                    )
-                    and e.get("relationship") == rel
-                    and e.get("field") == field
-                    and e.get("value") == value
-                ):
-                    return
-            graph["edges"].append(
-                {
-                    "source": n1,
-                    "target": n2,
-                    "relationship": rel,
-                    "field": field,
-                    "value": value,
-                    "confidence": 1.0,
-                    "explanation": f"Shared {field}: {value}",
-                }
-            )
-
-        # Add edges for each shared field
-        for field, cmap in [
-            ("service", service_map),
-            ("queue", queue_map),
-            ("db", db_map),
-            ("dependency", dep_map),
-        ]:
-            for value, nodes in cmap.items():
-                nodes = list(nodes)
-                for i in range(len(nodes)):
-                    for j in range(i + 1, len(nodes)):
-                        add_dep_edge(nodes[i], nodes[j], "dependency", field, value)
-
     # Drop any remaining duplicate undirected edges before returning
     graph["edges"] = dedupe_edges(graph["edges"])
 
@@ -2015,7 +1808,8 @@ def build_consistency_graph_parallel(
     logger.info(f"Total time: {total_time/60:.1f} minutes")
     logger.info(f"Processing rate: {doc_count/total_time:.2f} nodes/sec")
 
-    # PROFILING: Log breakdown of time spent
+    # PROFILING: Per-document timings are accumulated across parallel workers.
+    # They describe aggregate worker time, not a wall-clock time partition.
     if profile_sample_count > 0:
         logger.info("=" * 80)
         logger.info("PROFILING SUMMARY (average per document):")
@@ -2025,7 +1819,9 @@ def build_consistency_graph_parallel(
         logger.info(f"  Edge processing:    {total_edge_time/profile_sample_count:.4f}s")
         logger.info(f"  TOTAL per doc:      {total_processing_time/profile_sample_count:.3f}s")
         logger.info("=" * 80)
-        logger.info("PROFILING SUMMARY (total time breakdown):")
+        logger.info(
+            "PROFILING SUMMARY (aggregate worker time; percentages may exceed 100% with parallel workers):"
+        )
         logger.info(
             f"  ChromaDB query:     {total_chromadb_time/60:.1f}min ({total_chromadb_time/total_time*100:.1f}%)"
         )
@@ -2038,8 +1834,13 @@ def build_consistency_graph_parallel(
         logger.info(
             f"  Edge processing:    {total_edge_time/60:.1f}min ({total_edge_time/total_time*100:.1f}%)"
         )
+        parallelism_factor = _calculate_parallelism_factor(total_processing_time, total_time)
         logger.info(
-            f"  Other overhead:     {(total_time-total_processing_time)/60:.1f}min ({(total_time-total_processing_time)/total_time*100:.1f}%)"
+            f"  Aggregate worker:   {total_processing_time/60:.1f}min ({parallelism_factor:.1f}x wall-clock)"
+        )
+        logger.info(
+            "  Wall-clock overhead: unavailable; overlapping worker timings cannot be subtracted "
+            "from wall-clock elapsed time."
         )
     logger.info("=" * 80)
 
@@ -2066,6 +1867,14 @@ def build_consistency_graph_parallel(
     }
 
     return graph
+
+
+def _calculate_parallelism_factor(total_worker_time: float, wall_clock_time: float) -> float:
+    """Return aggregate worker time relative to elapsed wall-clock time.
+
+    This can exceed 1.0 because multiple document workers run concurrently.
+    """
+    return total_worker_time / wall_clock_time if wall_clock_time > 0 else 0.0
 
 
 # ============================================================================
@@ -2210,9 +2019,6 @@ def llm_label_cluster(
     severities: List[float],
     topics: List[str],
     cluster_type: str,
-    is_code_cluster: bool = False,
-    code_languages: Optional[List[str]] = None,
-    code_services: Optional[List[str]] = None,
 ) -> Tuple[str, str, str]:
     """
     Generate human-readable label, description, and summary for a cluster via LLM.
@@ -2233,44 +2039,18 @@ def llm_label_cluster(
             - summary: Detailed cluster summary
     """
 
-    # Enhanced doc list for code clusters
-    if is_code_cluster:
-        doc_list = "\n".join(
-            f"- {d['doc_id']} (v{d['version']}): {d.get('summary','')}"
-            + (f" [lang: {d.get('language','unknown')}]" if "language" in d else "")
-            + (f" [service: {d.get('service','unknown')}]" if "service" in d else "")
-            for d in docs
-        )
-    else:
-        doc_list = "\n".join(f"- {d['doc_id']} (v{d['version']}): {d['summary']}" for d in docs)
+    doc_list = "\n".join(f"- {d['doc_id']} (v{d['version']}): {d['summary']}" for d in docs)
 
     avg_severity = sum(severities) / len(severities) if severities else 0.0
 
-    code_context = ""
-    if is_code_cluster:
-        code_context = f"""
-    This cluster is primarily composed of CODE documents.
-    Languages present: {', '.join(code_languages) if code_languages else 'unknown'}
-    Services represented: {', '.join(code_services) if code_services else 'unknown'}
-
-    When generating the label and description, focus on the shared codebase purpose, service domain (e.g., Authentication, Payments), and architectural role if possible.
-    Use code metadata to infer the cluster's function (e.g., 'User Management Services', 'Payment Processing Pipelines', 'API Gateway Components').
-    """
-
     prompt = f"""
-    You are analysing a governance cluster of type: {cluster_type.upper()}.
-    {code_context}
-    Documents in this cluster:
-    {doc_list}
-
-    Average severity score: {avg_severity:.3f}
-
+    You are analysing a governance cluster.
     TASK:
     1. Generate a short, human-readable cluster label (5-7 words).
     2. Provide a 1-2 sentence description of the shared theme.
     3. Provide a summary:
-       - For RISK clusters: summarise the governance risks and inconsistencies.
-       - For TOPIC clusters: summarise the shared subject matter and themes.
+             - For a RISK cluster: summarise the governance risks and inconsistencies.
+             - For a TOPIC cluster: summarise the shared subject matter and themes.
 
     Return ONLY JSON:
     {{
@@ -2278,6 +2058,13 @@ def llm_label_cluster(
         "description": "...",
         "summary": "..."
     }}
+
+    CLUSTER INPUTS:
+    Type: {cluster_type.upper()}
+    Average severity score: {avg_severity:.3f}
+
+    Documents in this cluster:
+    {doc_list}
     """
 
     response = call_llm(prompt)
@@ -2316,14 +2103,54 @@ def generate_cluster_metadata(
             - size: Number of nodes in cluster
     """
     metadata = {}
+    stage_start = time.perf_counter()
+    logger.info(
+        "Starting cluster metadata generation: %d %s cluster(s)",
+        len(clusters),
+        cluster_type,
+    )
 
     for cid, cluster_nodes in enumerate(clusters):
+        label_start = time.perf_counter()
+
+        if len(cluster_nodes) == 1:
+            node = next(iter(cluster_nodes))
+            if cluster_type == "risk":
+                label = "Isolated risk finding"
+                description = (
+                    "This node has no sufficiently related risk neighbours and should "
+                    "be reviewed individually."
+                )
+                summary = (
+                    f"Review the severity and conflict score for {node}, along with "
+                    "its connected edges."
+                )
+            else:
+                label = "Isolated topic finding"
+                description = (
+                    "This node did not form a multi-node topic cluster and should be "
+                    "interpreted on its own."
+                )
+                summary = f"Review the topic evidence for {node} individually."
+
+            metadata[cid] = {
+                "label": label,
+                "description": description,
+                "summary": summary,
+                "size": 1,
+            }
+            logger.info(
+                "Recorded isolated %s finding %d/%d for node %s",
+                cluster_type,
+                cid + 1,
+                len(clusters),
+                node,
+            )
+            continue
+
         docs = []
         severities = []
         topics = []
-        code_count = 0
-        code_languages = set()
-        code_services = set()
 
         for node in cluster_nodes:
             meta = G.nodes[node]
@@ -2332,15 +2159,6 @@ def generate_cluster_metadata(
                 "version": meta.get("version", 1),
                 "summary": meta.get("summary", ""),
             }
-            # Add code metadata if present
-            if meta.get("source_category") == "code":
-                code_count += 1
-                if "language" in meta:
-                    doc_entry["language"] = meta["language"]
-                    code_languages.add(meta["language"])
-                if "service" in meta:
-                    doc_entry["service"] = meta["service"]
-                    code_services.add(meta["service"])
             docs.append(doc_entry)
 
             if cluster_type == "risk":
@@ -2349,17 +2167,19 @@ def generate_cluster_metadata(
 
             topics.append(meta.get("summary", ""))
 
-        # Detect if this is a code cluster (majority code nodes)
-        is_code_cluster = code_count >= max(1, len(cluster_nodes) // 2)
-
         label, description, summary = llm_label_cluster(
             docs=docs,
             severities=severities,
             topics=topics,
             cluster_type=cluster_type,
-            is_code_cluster=is_code_cluster,
-            code_languages=list(code_languages),
-            code_services=list(code_services),
+        )
+        logger.info(
+            "LLM labelled %s cluster %d/%d (%d node(s)) in %.1fs",
+            cluster_type,
+            cid + 1,
+            len(clusters),
+            len(cluster_nodes),
+            time.perf_counter() - label_start,
         )
 
         metadata[cid] = {
@@ -2369,6 +2189,12 @@ def generate_cluster_metadata(
             "size": len(cluster_nodes),
         }
 
+    logger.info(
+        "Completed cluster metadata generation: %d %s cluster(s) in %.1fs",
+        len(clusters),
+        cluster_type,
+        time.perf_counter() - stage_start,
+    )
     return metadata
 
 
@@ -2377,7 +2203,7 @@ def build_consistency_graph(
     max_neighbours: int = MAX_NEIGHBOURS,
     sim_threshold: float = SIMILARITY_THRESHOLD,
     workers: int = WORKERS,
-    progress_callback: Optional[callable] = None,
+    progress_callback: Optional[Callable[[int, int, str], None]] = None,
     batch_size: int = 500,
     where: Optional[Dict[str, Any]] = None,
     include_documents: bool = True,
@@ -2537,7 +2363,7 @@ def parse_args() -> argparse.Namespace:
     """
     Parse command-line arguments for graph building.
 
-    TODO: Add options for filtering by document type, enabling optimisations, and resetting state.
+    TODO: Add options for enabling optimisations and resetting state.
     TODO: Review arguments, esp binary flags that are opposite of each other (e.g., --include-documents vs --no-documents) for clarity and ease of use.
 
     Returns:
@@ -2549,12 +2375,6 @@ def parse_args() -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(
         description="Build a version-aware cross-document consistency graph from an existing Chroma collection."
-    )
-    parser.add_argument(
-        "--include-dependency-edges",
-        action="store_true",
-        default=False,
-        help="Add edges between code nodes that share a dependency, service, or API contract (default: False)",
     )
     parser.add_argument(
         "--sqlite-output",
@@ -2603,13 +2423,6 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Purge all consistency graph log files before starting (disabled in Production environment)",
-    )
-    parser.add_argument(
-        "--filter-doc-type",
-        type=str,
-        default="all",
-        choices=["all", "documentation", "code", "java", "groovy", "gradle", "xml", "properties"],
-        help="Filter documents by type: all, documentation, code, java, groovy, gradle, xml, properties (default: all)",
     )
     parser.add_argument(
         "--enable-llm-batching",
@@ -2752,8 +2565,9 @@ def main() -> None:
             print("\n[ERROR] Log purging is disabled in Production environment for safety.")
             print("        Current environment: Prod")
             print("        To purge logs, set ENVIRONMENT=Dev or ENVIRONMENT=Test\n")
-            if "logger" in locals() and logger:
-                flush_all_handlers(logger)
+            current_logger = locals().get("logger")
+            if current_logger:
+                flush_all_handlers(current_logger)
             sys.exit(1)
         else:
             # Purge consistency_graph logs ONLY (not ingest or rag logs)
@@ -2813,23 +2627,14 @@ def main() -> None:
     # PROFILING: Cache manager initialisation time
     prof_cache_start = time.time()
     # Initialise graph cache manager
-    cache_manager = GraphCacheManager(rag_data_path=CONFIG.rag_data_path)
+    cache_manager = GraphCacheManager(rag_data_path=Path(CONFIG.rag_data_path))
     prof_cache_time = time.time() - prof_cache_start
     logger.info(f"PROFILING: GraphCacheManager initialisation took {prof_cache_time:.3f}s")
 
     if getattr(args, "reset", False):
         reset_graph_state(cache_manager, output_sqlite, logger)
 
-    # Build ChromaDB filter for doc type
     where = None
-    if args.filter_doc_type != "all":
-        if args.filter_doc_type == "documentation":
-            where = {"source_category": {"$ne": "code"}}
-        elif args.filter_doc_type == "code":
-            where = {"source_category": "code"}
-        else:
-            # Specific language (java, groovy, etc.)
-            where = {"source_category": "code", "doc_type": args.filter_doc_type}
 
     # Create settings dict for cache lookup
     build_settings = {
@@ -2979,6 +2784,7 @@ def main() -> None:
                     "dashboard_mode": False,
                 },
             )
+            unload_validator_model()
         except Exception as e:
             logger.error(f"Failed to write SQLite graph: {e}", exc_info=True)
             audit(

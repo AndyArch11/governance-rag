@@ -63,8 +63,9 @@ def preprocess_module(monkeypatch):
     dummy_langchain = types.ModuleType("langchain_ollama")
 
     class DummyOllamaLLM:  # noqa: D401
-        def __init__(self, model=None):
+        def __init__(self, model=None, num_ctx=None, **kwargs):
             self.model = model
+            self.num_ctx = num_ctx
 
         def invoke(self, prompt: str):
             return ""

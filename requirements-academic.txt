@@ -1,0 +1,12 @@
+# Academic PDF ingestion dependencies.
+# Includes the standard runtime dependency set.
+-r requirements.txt
+
+# Layout-aware PDF conversion with OCR and table structure extraction.
+docling>=2.0.0
+
+# English word segmentation for repairing cojoined bibliography titles.
+wordninja>=2.0.0
+
+# Optional CUDA-capable OCR engine for scanned English-language PDFs.
+easyocr>=1.7.0

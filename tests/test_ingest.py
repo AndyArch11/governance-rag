@@ -38,6 +38,7 @@ sys.path.insert(0, str(scripts_ingest_path))
 # Import after path is configured
 from scripts.ingest.ingest import (
     IngestConfig,
+    _close_chromadb_client,
     collect_url_files_from_seeds,
     compute_doc_id,
     compute_file_hash,
@@ -73,10 +74,43 @@ class TestIngestConfig:
         assert config.ignore_file_regex == r"render\(\d\)\.html"
         assert config.chunk_collection_name == "governance_docs_chunks"
         assert config.doc_collection_name == "governance_docs_documents"
+        assert config.version_lock is not None
+        assert config.bm25_stage_rag_data_path is None
         assert config.max_workers == 4  # Default from env var MAX_WORKERS
         assert config.versions_to_keep == 3
         assert config.reinitialise_chroma_storage is False
         assert config.environment == "Dev"  # Default environment
+
+    def test_close_chromadb_client_logs_shutdown_errors(self, monkeypatch):
+        """Client shutdown errors are logged without masking the original failure."""
+        warnings = []
+
+        class FailingSystem:
+            def stop(self):
+                raise RuntimeError("shutdown failed")
+
+        class Client:
+            _system = FailingSystem()
+
+        monkeypatch.setattr(
+            "scripts.ingest.ingest.get_logger",
+            lambda: SimpleNamespace(
+                warning=lambda message, error: warnings.append((message, error))
+            ),
+        )
+
+        _close_chromadb_client(Client())
+
+        assert warnings[0][0] == "Could not cleanly close ChromaDB client before swap: %s"
+        assert isinstance(warnings[0][1], RuntimeError)
+
+    def test_process_file_requires_runtime_context(self, tmp_path):
+        """Direct callers cannot process files without initialised CLI context."""
+        html_path = tmp_path / "document.html"
+        html_path.write_text("<html><body>content</body></html>")
+
+        with pytest.raises(ValueError, match="runtime context must be initialised"):
+            process_file(str(html_path), object(), object(), IngestConfig())
 
     def test_config_from_environment_variables(self, monkeypatch):
         """Test that environment variables override defaults."""
@@ -791,6 +825,26 @@ class TestProgressTracker:
         assert tracker.completed == 1
         assert tracker.succeeded == 0
         assert tracker.failed == 1
+
+    def test_progress_tracker_emits_structured_item_counts(self, monkeypatch):
+        """Test that ProgressTracker emits structured item counts."""
+        import importlib
+
+        ingest_module = importlib.import_module("scripts.ingest.ingest")
+        events = []
+        monkeypatch.setattr(
+            ingest_module,
+            "audit",
+            lambda event_type, data: events.append((event_type, data)),
+        )
+        tracker = ingest_module.ProgressTracker(total=2, log_interval=1, logger=_noop_logger())
+
+        tracker.increment(success=True)
+
+        assert events[-1][0] == "progress_checkpoint"
+        assert events[-1][1]["stage"] == "document_ingestion"
+        assert events[-1][1]["items_done"] == 1
+        assert events[-1][1]["items_total"] == 2
 
 
 class TestDryRunStats:

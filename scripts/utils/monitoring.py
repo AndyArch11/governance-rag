@@ -33,16 +33,16 @@ from typing import Any, Dict, Optional
 
 try:
     from opentelemetry import metrics, trace
-    from opentelemetry.exporter.metrics.otlp.proto.grpc.metric_exporter import (  # type: ignore[import-not-found]
+    from opentelemetry.exporter.metrics.otlp.proto.grpc.metric_exporter import (
         OTLPMetricExporter,
     )
-    from opentelemetry.exporter.trace.otlp.proto.grpc.trace_exporter import (  # type: ignore[import-not-found]
+    from opentelemetry.exporter.trace.otlp.proto.grpc.trace_exporter import (
         OTLPSpanExporter,
     )
-    from opentelemetry.instrumentation.requests import (  # type: ignore[import-not-found]
+    from opentelemetry.instrumentation.requests import (
         RequestsInstrumentor,
     )
-    from opentelemetry.instrumentation.urllib3 import (  # type: ignore[import-not-found]
+    from opentelemetry.instrumentation.urllib3 import (
         URLLib3Instrumentor,
     )
     from opentelemetry.sdk.metrics import MeterProvider
@@ -326,7 +326,10 @@ class PerformanceMetrics:
             result_count: Number of results retrieved
             cache_hit: Whether result came from cache
         """
-        attributes = {"cache_hit": str(cache_hit), "result_count": result_count}
+        attributes: Dict[str, str | int | bool | float] = {
+            "cache_hit": str(cache_hit),
+            "result_count": result_count,
+        }
         self.retrieval_latency.record(latency_ms, attributes)
         self.retrieval_count.add(1, attributes)
 

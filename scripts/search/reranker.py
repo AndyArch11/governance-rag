@@ -122,7 +122,7 @@ class CrossEncoderReranker:
             return
 
         try:
-            from sentence_transformers import CrossEncoder  # type: ignore[import-not-found]
+            from sentence_transformers import CrossEncoder
         except ImportError:
             raise ImportError(
                 "sentence-transformers required for reranking. "
@@ -260,6 +260,8 @@ class CrossEncoderReranker:
         # Load model if needed
         if not self._model_loaded:
             self._load_model()
+        if self._model is None:
+            raise RuntimeError("Cross-encoder model is unavailable after initialisation")
 
         # Validate and prepare documents
         pairs = []

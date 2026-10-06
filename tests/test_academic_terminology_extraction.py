@@ -92,6 +92,100 @@ class TestDomainTerminologyExtractor:
         terms = extractor.extract_terms(text)
         assert len(terms) > 0
 
+    def test_canonicalises_indigenous_phrases_and_suppresses_artifacts(self):
+        """Protected Indigenous terms survive n-gram extraction without overlap noise."""
+        extractor = DomainTerminologyExtractor(min_term_freq=1, max_terms=100, ngram_range=(1, 4))
+        text = (
+            "Aboriginal and Torres Strait Islander communities collaborate. "
+            "Aboriginal Torres Strait Islander peoples share knowledge. "
+            "Torres Strait Islander communities value Torres Strait heritage. "
+            "Each islander contributes local knowledge."
+        )
+
+        terms = extractor.extract_terms(text)
+
+        assert "aboriginal and torres strait islander" in terms
+        assert "torres strait islander" in terms
+        assert "torres strait" in terms
+        assert "islander" in terms
+        assert "aboriginal torres" not in terms
+        assert "aboriginal torres strait" not in terms
+        assert "strait islander" not in terms
+
+    def test_canonicalises_first_nations_without_losing_standalone_words(self):
+        """First Nations is protected without suppressing independent uses of its words."""
+        extractor = DomainTerminologyExtractor(min_term_freq=1, max_terms=100, ngram_range=(1, 2))
+        text = (
+            "First Nations communities lead the programme. "
+            "The first priority is respectful engagement. "
+            "Many nations have distinct governance practices."
+        )
+
+        terms = extractor.extract_terms(text)
+
+        assert "first nations" in terms
+        assert "first" in terms
+        assert "nations" in terms
+
+    def test_excludes_bibliography_table_and_filename_artefacts(self):
+        """Non-prose source artefacts do not become academic terminology."""
+        extractor = DomainTerminologyExtractor(min_term_freq=1, max_terms=100, ngram_range=(1, 3))
+        text = """
+        Community-led care improves wellbeing outcomes.
+        [TABLE 1]
+        (queer OR LGBTIQA+ OR trans) | EBSCOhost | ProQuest
+        [/TABLE 1]
+        References
+        NUR6%253E3.0.CO;2-I. FACTSHEET%200HSS%2007.07.25-LR.pdf. FINAL_ACC.pdf.
+        """
+
+        terms = extractor.extract_terms(text)
+
+        assert "community" in terms
+        assert "wellbeing" in terms
+        assert not any(
+            artefact in term
+            for term in terms
+            for artefact in ("ebsco", "proquest", "nurs", "factsheet", "final acc", "lgbtiqa")
+        )
+
+    def test_excludes_html_author_separator_and_docling_references_heading(self):
+        """Docling Markdown bibliography content does not contribute amp or reference terms."""
+        extractor = DomainTerminologyExtractor(min_term_freq=1, max_terms=100, ngram_range=(1, 2))
+        text = """
+        Community-led research strengthens cultural safety.
+        ## References
+        Smith, J., &amp; Jones, A. (2024). Citation title. Journal of Testing.
+        """
+
+        terms = extractor.extract_terms(text)
+
+        assert "community" in terms
+        assert "cultural" in terms
+        assert "amp" not in terms
+        assert "smith" not in terms
+        assert "citation" not in terms
+
+    def test_preserves_appendix_after_markdown_references_section(self):
+        """Appendix terminology remains available after a Docling References heading."""
+        extractor = DomainTerminologyExtractor(min_term_freq=1, max_terms=100, ngram_range=(1, 2))
+        text = """
+        # Introduction
+        Community-led research strengthens cultural safety.
+        ## References
+        Smith, J., &amp; Jones, A. (2024). Citation title. Journal of Testing.
+        # Appendix: Women's Journey
+        Participants described their reproductive autonomy and healing journeys.
+        """
+
+        terms = extractor.extract_terms(text)
+
+        assert "community" in terms
+        assert "participants" in terms
+        assert "reproductive" in terms
+        assert "smith" not in terms
+        assert "citation" not in terms
+
     def test_stop_word_filtering(self):
         """Test that stop words are filtered."""
         extractor = DomainTerminologyExtractor(min_term_freq=1)

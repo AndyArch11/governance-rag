@@ -83,6 +83,6 @@ def test_stop_halts_collection(tmp_path):
     samples_after_stop = len(monitor.stats["python"]["cpu_percent"]["samples"])
     # Allow a tiny settling period; confirm no further samples accumulate
     time.sleep(0.15)
-    assert len(monitor.stats["python"]["cpu_percent"]["samples"]) == samples_after_stop, (
-        "Samples continued to accumulate after stop()"
-    )
+    assert (
+        len(monitor.stats["python"]["cpu_percent"]["samples"]) == samples_after_stop
+    ), "Samples continued to accumulate after stop()"

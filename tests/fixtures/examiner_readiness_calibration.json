@@ -1,0 +1,73 @@
+{
+  "status": "awaiting_human_review_calibration",
+  "purpose": "Synthetic, anonymised readiness scenarios for regression and future human calibration.",
+  "scenarios": [
+    {
+      "name": "conventional_thesis_with_core_evidence",
+      "documents": [
+        "Research Question: How can rural health services address a significant policy gap in mental health access? This study contributes original knowledge by introducing a regional governance framework.",
+        "The conceptual framework integrates the literature review and guides the research objectives.",
+        "The methodology was selected because it was appropriate for the research question. Participants were recruited using a documented procedure, with triangulation supporting validity.",
+        "The findings address the research objectives and are presented in Table 4. Unexpected findings are explained by sampling limitations.",
+        "These findings extend previous research. Future research should investigate transferability to remote communities."
+      ],
+      "metadatas": [
+        {"section_title": "Introduction", "chapter": "Chapter 1"},
+        {"section_title": "Conceptual Framework", "chapter": "Chapter 2"},
+        {"section_title": "Methodology", "chapter": "Chapter 3"},
+        {"section_title": "Results", "chapter": "Chapter 4"},
+        {"section_title": "Discussion", "chapter": "Chapter 5"}
+      ],
+      "expected_statuses": {
+        "research_significance": "evidence_present",
+        "contribution_articulation": "evidence_present",
+        "conceptual_integration": "evidence_present",
+        "methodological_rigour": "evidence_present",
+        "findings_quality": "evidence_present",
+        "contribution_contextualisation": "evidence_present",
+        "thesis_by_publication_applicability": "not_applicable",
+        "practice_based_thesis_applicability": "not_applicable",
+        "generative_ai_disclosure": "not_applicable"
+      }
+    },
+    {
+      "name": "publication_based_thesis_with_minimum_treatment",
+      "documents": [
+        "This thesis by publication includes published work. The introduction contains an independent and original review of the relevant literature.",
+        "The framing chapter frames the publications within the wider discipline.",
+        "Bridging statements link chapters into a cohesive narrative.",
+        "The independent general discussion integrates the findings and future research needs."
+      ],
+      "metadatas": [
+        {"section_title": "Introduction", "chapter": "Chapter 1"},
+        {"section_title": "Framing Chapter", "chapter": "Chapter 2"},
+        {"section_title": "Bridging Statements", "chapter": "Chapter 3"},
+        {"section_title": "General Discussion", "chapter": "Chapter 4"}
+      ],
+      "expected_statuses": {
+        "thesis_by_publication_applicability": "evidence_present",
+        "publication_thesis_minimum_treatment": "evidence_present",
+        "practice_based_thesis_applicability": "not_applicable",
+        "practice_based_thesis_integration": "not_applicable"
+      }
+    },
+    {
+      "name": "practice_based_thesis_with_integration_and_ai_disclosure",
+      "documents": [
+        "This practice-based thesis includes an exegesis and a creative work. The exegesis and creative work are examined as an integrated whole.",
+        "ChatGPT was used to assist with language editing. Its use was limited to Chapter 2, and the prompt log is included in Appendix A."
+      ],
+      "metadatas": [
+        {"section_title": "Exegesis", "chapter": "Chapter 4"},
+        {"section_title": "AI Disclosure", "chapter": "Appendix A"}
+      ],
+      "expected_statuses": {
+        "practice_based_thesis_applicability": "evidence_present",
+        "practice_based_thesis_integration": "evidence_present",
+        "generative_ai_disclosure": "evidence_present",
+        "thesis_by_publication_applicability": "not_applicable",
+        "publication_thesis_minimum_treatment": "not_applicable"
+      }
+    }
+  ]
+}

@@ -44,14 +44,14 @@ def repair_json(text: str, attempt: int = 1, max_attempts: int = 3) -> str:
 
     # Remove leading whitespace/indentation from each line to normalise
     lines = text.split("\n")
-    min_indent = float("inf")
+    min_indent: int | None = None
     for line in lines:
         if line.strip():  # Only check non-empty lines
             indent = len(line) - len(line.lstrip())
-            if indent < min_indent:
+            if min_indent is None or indent < min_indent:
                 min_indent = indent
 
-    if min_indent != float("inf") and min_indent > 0:
+    if min_indent is not None and min_indent > 0:
         # Remove the common indentation
         text = "\n".join(line[min_indent:] if len(line) >= min_indent else line for line in lines)
 

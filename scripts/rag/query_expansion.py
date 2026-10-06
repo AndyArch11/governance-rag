@@ -11,20 +11,27 @@ TODO: Use a JSON/YAML config for term lists, allowing easier updates
 """
 
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 from scripts.utils.logger import create_module_logger
 
 get_logger, audit = create_module_logger("rag")
 
-# Import domain term manager - will be available if domain_terms.py exists
+DOMAIN_TERMS_AVAILABLE = False
+DomainType: Any = None
+get_domain_term_manager: Callable[..., Any] | None = None
+resolve_domain_type: Callable[..., Any] | None = None
 try:
-    from scripts.rag.domain_terms import DomainType, get_domain_term_manager
-
-    DOMAIN_TERMS_AVAILABLE = True
+    from scripts.rag.domain_terms import DomainType as _DomainType
+    from scripts.rag.domain_terms import get_domain_term_manager as _get_domain_term_manager
+    from scripts.rag.domain_terms import resolve_domain_type as _resolve_domain_type
 except ImportError:
-    DOMAIN_TERMS_AVAILABLE = False
-    DomainType = None
+    pass
+else:
+    DomainType = _DomainType
+    get_domain_term_manager = _get_domain_term_manager
+    resolve_domain_type = _resolve_domain_type
+    DOMAIN_TERMS_AVAILABLE = True
 
 
 # Spelling variants: US spelling -> British spelling (and vice versa)
@@ -276,11 +283,24 @@ class QueryExpander:
         self.domain = domain
         self.domain_manager = None
 
-        if DOMAIN_TERMS_AVAILABLE and domain:
+        if DOMAIN_TERMS_AVAILABLE and domain and get_domain_term_manager is not None:
             try:
                 self.domain_manager = get_domain_term_manager()
             except Exception as e:
                 self.logger.warning(f"Could not load domain term manager: {e}")
+
+    def _get_domain_type(self):
+        """Resolve the configured domain to its canonical DomainType value."""
+        if not self.domain or DomainType is None or resolve_domain_type is None:
+            return None
+        domain_value, _ = resolve_domain_type(self.domain)
+        if domain_value is None:
+            return None
+        try:
+            return DomainType(domain_value)
+        except ValueError:
+            self.logger.debug(f"Unsupported domain for query expansion: {self.domain}")
+            return None
 
     def expand_query(
         self,
@@ -326,9 +346,11 @@ class QueryExpander:
             if include_domain_terms and self.domain_manager and self.domain:
                 try:
                     # Get domain vocabulary and look for related terms
-                    domain_type = DomainType[self.domain.upper()] if self.domain else None
+                    domain_type = self._get_domain_type()
                     if domain_type:
                         vocab = self.domain_manager.get_vocabulary(domain_type)
+                        if vocab is None:
+                            continue
                         # Add terms that match category or are closely related
                         for domain_term in vocab.terms.values():
                             if term.lower() in domain_term.term.lower() or (
@@ -357,9 +379,10 @@ class QueryExpander:
         # Add domain term weights if available
         if self.domain_manager and self.domain:
             try:
+                domain_type = self._get_domain_type()
                 for term in expanded:
                     # Get base weight (1.0 for non-domain terms)
-                    weight = self.domain_manager.get_term_boost(term, self.domain)
+                    weight = self.domain_manager.get_term_boost(term, domain_type)
                     term_weights[term] = weight
             except Exception as e:
                 self.logger.debug(f"Error getting domain term weights: {e}")
@@ -426,16 +449,20 @@ class QueryExpander:
             clusterer = get_semantic_clusterer(similarity_threshold=similarity_threshold)
 
             # Get domain vocabulary as candidate terms for synonym matching
-            candidate_terms = set()
+            candidate_terms: Set[str] = set()
 
             # Add domain-specific candidates
             if self.domain_manager and self.domain:
                 try:
-                    domain_type = DomainType[self.domain.upper()]
-                    vocab = self.domain_manager.get_vocabulary(domain_type)
-                    candidate_terms.update(t.term for t in vocab.terms.values())
-                    # Add acronyms too
-                    candidate_terms.update(t.acronym for t in vocab.terms.values() if t.acronym)
+                    domain_type = self._get_domain_type()
+                    if domain_type is not None:
+                        vocab = self.domain_manager.get_vocabulary(domain_type)
+                        if vocab is not None:
+                            candidate_terms.update(t.term for t in vocab.terms.values())
+                            # Add acronyms too
+                            candidate_terms.update(
+                                t.acronym for t in vocab.terms.values() if t.acronym
+                            )
                 except Exception as e:
                     self.logger.debug(f"Could not load domain vocabulary: {e}")
 
@@ -491,8 +518,22 @@ class QueryExpander:
             return None
         if isinstance(entry, str):
             return entry
-        variant = entry.get("variant")
-        domains = entry.get("domains", [])
+        variant_value = entry.get("variant")
+        variant = (
+            variant_value
+            if isinstance(variant_value, str)
+            else (
+                next((value for value in variant_value if isinstance(value, str)), None)
+                if isinstance(variant_value, list)
+                else None
+            )
+        )
+        domains_value = entry.get("domains", [])
+        domains = (
+            [domains_value]
+            if isinstance(domains_value, str)
+            else domains_value if isinstance(domains_value, list) else []
+        )
         if not domains:
             return variant
         if self.domain and self.domain.lower() in {d.lower() for d in domains}:

@@ -33,12 +33,6 @@ ENABLE_RESOURCE_MONITORING=true python3 scripts/ingest/ingest.py --reset
 # Output: logs/resource_stats_document_ingestion_*.json
 ```
 
-### Code Ingestion
-```bash
-ENABLE_RESOURCE_MONITORING=true python3 scripts/ingest/ingest_git.py --provider bitbucket --host https://bitbucket.org --reset
-# Output: logs/resource_stats_git_ingestion_*.json
-```
-
 ### RAG Query
 ```bash
 ENABLE_RESOURCE_MONITORING=true python3 scripts/rag/query.py "What is MFA?"

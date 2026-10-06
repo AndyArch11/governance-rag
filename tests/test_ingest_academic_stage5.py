@@ -4,7 +4,13 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from scripts.ingest.ingest_academic import stage_chunk_and_store
+from scripts.ingest.ingest_academic import (
+    _format_toc_validation_warning,
+    stage_chunk_and_store,
+    stage_store_figure_chunks,
+    validate_thesis_chunk_structure,
+)
+from scripts.ingest.pdfparser import extract_structure_from_text
 
 
 class DummyLogger:
@@ -24,6 +30,76 @@ class DummyLogger:
 
     def debug(self, msg):
         pass
+
+
+def test_validate_thesis_chunk_structure_requires_valid_spans_and_chapter_mapping():
+    """Thesis chunks require exact, single-chapter source spans before storage."""
+    text = "## Chapter 1\n\nFirst text.\n\n## Chapter 2\n\nSecond text."
+    structure = extract_structure_from_text(text)
+    first_start = text.index("First text.")
+    second_start = text.index("Second text.")
+
+    valid, report = validate_thesis_chunk_structure(
+        [
+            {
+                "text": "First text.",
+                "source_start": first_start,
+                "source_end": first_start + len("First text."),
+            },
+            {
+                "text": "Second text.",
+                "source_start": second_start,
+                "source_end": second_start + len("Second text."),
+            },
+        ],
+        text,
+        structure,
+        min_coverage=1.0,
+    )
+
+    assert valid is True
+    assert report["chapter_coverage"] == 1.0
+    assert report["cross_chapter_chunks"] == 0
+
+    invalid, invalid_report = validate_thesis_chunk_structure(
+        [
+            {
+                "text": "First text.\n\n## Chapter 2\n\nSecond text.",
+                "source_start": first_start,
+                "source_end": second_start + len("Second text."),
+            }
+        ],
+        text,
+        structure,
+        min_coverage=1.0,
+    )
+
+    assert invalid is False
+    assert invalid_report["cross_chapter_chunks"] == 1
+
+
+def test_toc_validation_warning_is_non_blocking_and_threshold_configurable():
+    report = {
+        "toc_present": True,
+        "coverage": 2 / 3,
+        "missing_chapters": ["Chapter 2"],
+        "unexpected_chapters": ["Chapter 9: Unlisted"],
+        "order_matches": False,
+    }
+
+    warning = _format_toc_validation_warning(report, minimum_coverage=0.9)
+
+    assert warning is not None
+    assert "coverage=66.7%" in warning
+    assert "Chapter 2" in warning
+    assert "Chapter 9: Unlisted" in warning
+    assert _format_toc_validation_warning({"toc_present": False}, 0.95) is None
+    assert (
+        _format_toc_validation_warning(
+            {"toc_present": True, "coverage": 1.0, "order_matches": True}, 0.95
+        )
+        is None
+    )
 
 
 def test_stage_chunk_and_store_skips_without_text():
@@ -55,12 +131,14 @@ def test_stage_chunk_and_store_calls_store(monkeypatch, tmp_path):
     artifact = tmp_path / "ref.pdf"
     artifact.write_bytes(b"%PDF-1.4")
 
-    ref = {"artifact_path": str(artifact), "reference_type": "academic"}
+    ref = {"artifact_path": str(artifact), "reference_type": "academic", "ref_id": "ref-1"}
 
     called = {"count": 0}
+    stored_metadata = {}
 
     def fake_store(*args, **kwargs):
         called["count"] += 1
+        stored_metadata.update(kwargs["metadata"])
         # Mock doesn't raise exceptions
         return None
 
@@ -70,6 +148,240 @@ def test_stage_chunk_and_store_calls_store(monkeypatch, tmp_path):
     ok = stage_chunk_and_store(ref, "Some reference text", object(), object(), config, logger)
     assert ok is True
     assert called["count"] == 1
+    assert stored_metadata["ref_id"] == "ref-1"
+
+
+def test_stage_store_figure_chunks_preserves_thesis_and_section_metadata(monkeypatch):
+    stored = {}
+
+    def fake_store_child_chunks(**kwargs):
+        stored.update(kwargs)
+
+    monkeypatch.setattr(
+        "scripts.ingest.ingest_academic.store_child_chunks", fake_store_child_chunks
+    )
+    figures = [
+        {
+            "figure_number": 2,
+            "page_number": 12,
+            "chapter": "Chapter 3",
+            "heading_path": "Chapter 3 > Findings",
+            "caption": "Community governance model",
+            "caption_number": "3",
+            "alt_text": "Connections between community groups.",
+            "description": "A diagram connecting community groups to governance roles.",
+            "vision_status": "human_review_required",
+            "vision_assessment": {
+                "caption_description_alignment": "consistent",
+                "alt_text_description_alignment": "inconsistent",
+                "body_text_discussion": "interprets",
+                "body_text_evidence": "This figure explains the governance model.",
+            },
+        }
+    ]
+
+    stage_store_figure_chunks(
+        "collection",
+        thesis_id="thesis-001",
+        source_path="thesis.pdf",
+        file_hash="fixture-hash",
+        figures=figures,
+        logger=DummyLogger(),
+    )
+
+    assert stored["doc_id"] == "thesis-001"
+    assert stored["chunk_type"] == "figure"
+    assert stored["child_chunks"][0]["metadata"]["heading_path"] == "Chapter 3 > Findings"
+    assert stored["child_chunks"][0]["metadata"]["caption_number"] == "3"
+    assert stored["child_chunks"][0]["metadata"]["page_number"] == 12
+    assert "Community governance model" in stored["child_chunks"][0]["text"]
+    assert "A diagram connecting community groups" in stored["child_chunks"][0]["text"]
+    assert "Caption-description alignment: consistent" in stored["child_chunks"][0]["text"]
+    assert "Alt-text-description alignment: inconsistent" in stored["child_chunks"][0]["text"]
+    assert "Body-text discussion: interprets" in stored["child_chunks"][0]["text"]
+    assert "This figure explains the governance model" in stored["child_chunks"][0]["text"]
+
+
+def test_stage_chunk_and_store_preserves_source_thesis_identity(monkeypatch, tmp_path):
+    """Source thesis chunks use the citation graph document ID and retain their source kind."""
+    logger = DummyLogger()
+    config = SimpleNamespace(
+        dry_run=False,
+        enable_parent_child_chunking=False,
+        bm25_indexing_enabled=False,
+    )
+    artifact = tmp_path / "thesis.pdf"
+    artifact.write_bytes(b"%PDF-1.4")
+    stored = {}
+
+    def fake_store(**kwargs):
+        stored.update(kwargs)
+
+    monkeypatch.setattr("scripts.ingest.ingest_academic.store_chunks_in_chroma", fake_store)
+
+    assert stage_chunk_and_store(
+        {
+            "ref_id": "source-thesis-id",
+            "source": "thesis_document",
+            "artifact_path": str(artifact),
+        },
+        "Source thesis content.",
+        object(),
+        object(),
+        config,
+        logger,
+    )
+    assert stored["doc_id"] == "source-thesis-id"
+    assert stored["metadata"]["source_kind"] == "thesis_document"
+
+
+def test_stage_chunk_and_store_persists_chapter_metadata_for_thesis(monkeypatch, tmp_path):
+    """Thesis child chunks retain source spans and mapped chapter metadata at storage."""
+    logger = DummyLogger()
+    config = SimpleNamespace(
+        dry_run=False,
+        enable_parent_child_chunking=True,
+        bm25_indexing_enabled=False,
+        thesis_structure_min_coverage=0.95,
+    )
+    artifact = tmp_path / "thesis.pdf"
+    artifact.write_bytes(b"%PDF-1.4")
+    text = (
+        "## Chapter 1: Introduction\n\n"
+        + ("Opening text. " * 80)
+        + "\n\n## Chapter 2: Methods\n\n"
+        + ("Method text. " * 80)
+    )
+    stored_children = []
+
+    monkeypatch.setattr(
+        "scripts.ingest.ingest_academic.store_chunks_in_chroma", lambda **kwargs: None
+    )
+    monkeypatch.setattr(
+        "scripts.ingest.ingest_academic.store_child_chunks",
+        lambda **kwargs: stored_children.extend(kwargs["child_chunks"]),
+    )
+    monkeypatch.setattr("scripts.ingest.ingest_academic.store_parent_chunks", lambda **kwargs: None)
+
+    assert stage_chunk_and_store(
+        {
+            "ref_id": "source-thesis-id",
+            "source": "thesis_document",
+            "artifact_path": str(artifact),
+        },
+        text,
+        object(),
+        object(),
+        config,
+        logger,
+    )
+    assert stored_children
+    assert all(chunk["source_end"] > chunk["source_start"] >= 0 for chunk in stored_children)
+
+
+def test_stage_chunk_and_store_refresh_replaces_existing_thesis(monkeypatch, tmp_path):
+    """Refresh removes only the selected thesis before storing chapter-aware chunks."""
+    logger = DummyLogger()
+    config = SimpleNamespace(
+        dry_run=False,
+        enable_parent_child_chunking=True,
+        bm25_indexing_enabled=False,
+        thesis_structure_min_coverage=0.95,
+        replace_existing_thesis=True,
+        rag_data_path=str(tmp_path / "rag_data"),
+    )
+    artifact = tmp_path / "thesis.pdf"
+    artifact.write_bytes(b"%PDF-1.4")
+    text = "## Chapter 1\n\n" + ("Thesis text. " * 100)
+    deleted_chunk_ids = []
+
+    class DocCollection:
+        def __init__(self):
+            self.deleted = []
+
+        def delete(self, where):
+            self.deleted.append(where)
+
+    class CacheDb:
+        def __init__(self):
+            self.deleted = []
+
+        def delete_bm25_document(self, doc_id):
+            self.deleted.append(doc_id)
+
+        def close(self):
+            pass
+
+    doc_collection = DocCollection()
+    cache_db = CacheDb()
+    monkeypatch.setattr(
+        "scripts.ingest.ingest_academic.delete_document_chunks",
+        lambda doc_id, collection: deleted_chunk_ids.append(doc_id),
+    )
+    monkeypatch.setattr(
+        "scripts.ingest.ingest_academic.get_cache_client", lambda **kwargs: cache_db
+    )
+    monkeypatch.setattr(
+        "scripts.ingest.ingest_academic.store_chunks_in_chroma", lambda **kwargs: None
+    )
+    monkeypatch.setattr("scripts.ingest.ingest_academic.store_child_chunks", lambda **kwargs: None)
+    monkeypatch.setattr("scripts.ingest.ingest_academic.store_parent_chunks", lambda **kwargs: None)
+
+    assert stage_chunk_and_store(
+        {"ref_id": "source-thesis-id", "source": "thesis_document", "artifact_path": str(artifact)},
+        text,
+        object(),
+        doc_collection,
+        config,
+        logger,
+    )
+    assert deleted_chunk_ids == ["source-thesis-id"]
+    assert doc_collection.deleted == [{"doc_id": "source-thesis-id"}]
+    assert cache_db.deleted == ["source-thesis-id"]
+
+
+def test_stage_chunk_and_store_indexes_bm25_in_configured_rag_data_path(monkeypatch, tmp_path):
+    """Academic BM25 writes use the same configured cache as RAG retrieval."""
+    logger = DummyLogger()
+    configured_rag_data = tmp_path / "configured-rag-data"
+    config = SimpleNamespace(
+        dry_run=False,
+        enable_parent_child_chunking=False,
+        bm25_indexing_enabled=True,
+        bm25_index_original_text=True,
+        rag_data_path=str(configured_rag_data),
+    )
+    artifact = tmp_path / "reference.pdf"
+    artifact.write_bytes(b"%PDF-1.4")
+    cache_db = MagicMock()
+    cache_paths = []
+    indexed = []
+
+    monkeypatch.setattr(
+        "scripts.ingest.ingest_academic.store_chunks_in_chroma", lambda **kwargs: None
+    )
+
+    def fake_get_cache_client(rag_data_path, enable_cache):
+        cache_paths.append((rag_data_path, enable_cache))
+        return cache_db
+
+    def fake_index_chunks(**kwargs):
+        indexed.append(kwargs)
+        return 1
+
+    monkeypatch.setattr("scripts.ingest.ingest_academic.get_cache_client", fake_get_cache_client)
+    monkeypatch.setattr("scripts.ingest.ingest_academic.index_chunks_in_bm25", fake_index_chunks)
+
+    assert stage_chunk_and_store(
+        {"artifact_path": str(artifact), "reference_type": "academic"},
+        "Some reference text with enough content for chunking.",
+        object(),
+        object(),
+        config,
+        logger,
+    )
+    assert cache_paths == [(configured_rag_data, True)]
+    assert indexed[0]["cache_db"] is cache_db
 
 
 def test_stage_chunk_and_store_parent_child_storage(monkeypatch, tmp_path):
@@ -82,7 +394,7 @@ def test_stage_chunk_and_store_parent_child_storage(monkeypatch, tmp_path):
     artifact = tmp_path / "ref.pdf"
     artifact.write_bytes(b"%PDF-1.4")
 
-    ref = {"artifact_path": str(artifact), "reference_type": "academic"}
+    ref = {"artifact_path": str(artifact), "reference_type": "academic", "ref_id": "ref-1"}
 
     calls = {
         "store_chunks": 0,
@@ -143,6 +455,8 @@ def test_stage_chunk_and_store_parent_child_storage(monkeypatch, tmp_path):
     assert calls["parent_metadata"]["doc_id"]
     assert calls["child_metadata"]["hash"]
     assert calls["parent_metadata"]["hash"]
+    assert calls["child_metadata"]["ref_id"] == "ref-1"
+    assert calls["parent_metadata"]["ref_id"] == "ref-1"
     assert calls["child_metadata"]["embedding_model"]
     assert calls["parent_metadata"]["embedding_model"]
 
@@ -202,7 +516,7 @@ class TestMetadataSanitisation:
             "doc_id": "doc_123",
             "section_depth": 2,
             "timestamp": 1707244500,
-            "contains_code": True,
+            "contains_table": True,
             "score": 0.95,
         }
 
@@ -218,8 +532,8 @@ class TestMetadataSanitisation:
         assert sanitised["timestamp"] == 1707244500
         assert isinstance(sanitised["timestamp"], int)
 
-        assert sanitised["contains_code"] is True
-        assert isinstance(sanitised["contains_code"], bool)
+        assert sanitised["contains_table"] is True
+        assert isinstance(sanitised["contains_table"], bool)
 
         assert sanitised["score"] == 0.95
         assert isinstance(sanitised["score"], float)
@@ -248,7 +562,6 @@ class TestMetadataSanitisation:
             "doc_id": "refnew_123_title",
             "summary_scores": {"overall": 0},
             "timestamp": 1707244500,
-            "contains_code": False,
             "technical_entities": ["term1", "term2"],
             "section_depth": 2,
             "heading_path": None,
@@ -288,11 +601,9 @@ class TestMetadataSanitisation:
             "chapter": None,
             "section_depth": 0,
             "content_type": "text",
-            "contains_code": False,
             "contains_table": False,
             "contains_diagram": False,
             "technical_entities": "term1,term2",
-            "code_language": None,
             "is_api_reference": False,
             "is_configuration": False,
         }
@@ -310,12 +621,10 @@ class TestMetadataSanitisation:
         assert "parent_section" not in sanitised
         assert "section_title" not in sanitised
         assert "chapter" not in sanitised
-        assert "code_language" not in sanitised
 
         # Essential fields should be present
         assert sanitised["doc_id"] == "Smith_2020_SomeTitle"
         assert sanitised["doc_type"] == "academic_reference"
-        assert sanitised["contains_code"] is False
         assert sanitised["section_depth"] == 0
 
     def test_sanitise_empty_dict_and_list(self):

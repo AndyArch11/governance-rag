@@ -218,6 +218,43 @@ class TestRetrievalCaching:
         # Embedding should be called both times (no caching)
         assert mock_embedding.called
 
+    def test_cache_key_includes_explicit_filters(
+        self, mock_collection, mock_embedding, temp_cache_dir
+    ):
+        """A cached unfiltered result must not bypass a thesis-only request."""
+        from scripts.rag.retrieve import retrieve_with_filters
+
+        query = "research methodology"
+        retrieve_with_filters(
+            query=query,
+            collection=mock_collection,
+            k=3,
+            enable_caching=True,
+            enable_graph=False,
+            enable_hybrid_search=False,
+            cache_dir=temp_cache_dir,
+        )
+        initial_query_count = len(mock_collection.query_calls)
+        mock_embedding.reset_mock()
+
+        retrieve_with_filters(
+            query=query,
+            collection=mock_collection,
+            k=3,
+            filters={"source_kind": "thesis_document"},
+            enable_caching=True,
+            enable_graph=False,
+            enable_hybrid_search=False,
+            cache_dir=temp_cache_dir,
+        )
+
+        assert mock_embedding.called
+        assert len(mock_collection.query_calls) == initial_query_count + 1
+        where = mock_collection.query_calls[-1]["where"]
+        assert any(
+            condition.get("source_kind") == "thesis_document" for condition in where.get("$and", [])
+        )
+
 
 # ============================================================================
 # Graph Enhancement Tests
@@ -294,7 +331,7 @@ class TestFilterCombination:
         from scripts.rag.retrieve import retrieve_with_filters
 
         chunks, meta = retrieve_with_filters(
-            query="Show me Java authentication services",  # Should auto-detect: language=java, category=code
+            query="Show me Java authentication services",
             collection=mock_collection,
             k=3,
             filters={"is_service": True},  # Explicit filter
@@ -308,18 +345,16 @@ class TestFilterCombination:
         where_clause = mock_collection.query_calls[0]["where"]
         # Check explicit filter is present (handle both direct and $and formats)
         assert get_where_value(where_clause, "is_service") == True or "is_service" in where_clause
-        # Auto-detected filters should be present too
 
-    def test_language_and_category_filters(self, mock_collection, mock_embedding):
-        """Test using both language_filter and source_category_filter."""
+    def test_generic_metadata_filters(self, mock_collection, mock_embedding):
+        """Test using multiple explicit metadata filters."""
         from scripts.rag.retrieve import retrieve_with_filters
 
         chunks, meta = retrieve_with_filters(
             query="test query",
             collection=mock_collection,
             k=3,
-            language_filter="python",
-            source_category_filter="code",
+            filters={"language": "python", "source_category": "code"},
             auto_detect_filters=False,  # Disable to test explicit only
             enable_caching=False,
             enable_graph=False,
@@ -338,7 +373,7 @@ class TestFilterCombination:
             query="Show me Java code",  # Would auto-detect language=java
             collection=mock_collection,
             k=3,
-            language_filter="python",  # Explicit override
+            filters={"language": "python"},  # Explicit override
             auto_detect_filters=True,
             enable_caching=False,
             enable_graph=False,
@@ -543,8 +578,7 @@ class TestFeatureOrchestration:
                 query="Find Java authentication services",
                 collection=mock_collection,
                 k=3,
-                language_filter="java",
-                filters={"is_service": True},
+                filters={"language": "java", "is_service": True},
                 auto_detect_filters=True,
                 enable_hybrid_search=True,
                 enable_reranking=True,
@@ -623,6 +657,44 @@ class TestValidation:
 
 class TestPersonaIntegration:
     """Test persona-aware retrieval."""
+
+    def test_persona_reranking_receives_expanded_candidate_pool(self, mock_collection, monkeypatch):
+        """Persona selection can change membership rather than merely reorder k results."""
+        from scripts.rag import retrieve as retrieve_module
+
+        candidates = [f"candidate-{index}" for index in range(6)]
+        metadata = [{"chunk_id": f"id_{index}", "distance": index / 10} for index in range(6)]
+        requested_limits = []
+        persona_inputs = []
+
+        def fake_vector_search(query, collection, result_limit, filters, embedding_model, logger):
+            requested_limits.append(result_limit)
+            return candidates[:result_limit], metadata[:result_limit]
+
+        def fake_persona_reranking(chunks, metadatas, persona, top_k):
+            persona_inputs.append((chunks, metadatas, persona, top_k))
+            return chunks[-top_k:], metadatas[-top_k:]
+
+        monkeypatch.setattr(retrieve_module, "_run_vector_search", fake_vector_search)
+        monkeypatch.setattr(retrieve_module, "apply_persona_reranking", fake_persona_reranking)
+
+        chunks, result_metadata = retrieve_module.retrieve_with_filters(
+            query="test query",
+            collection=mock_collection,
+            k=2,
+            persona="assessor",
+            enable_caching=False,
+            enable_graph=False,
+            enable_hybrid_search=False,
+            enable_learned_reranking=False,
+        )
+
+        assert requested_limits == [6]
+        assert persona_inputs[0][0] == candidates
+        assert persona_inputs[0][2:] == ("assessor", 2)
+        assert chunks == ["candidate-4", "candidate-5"]
+        assert [item["chunk_id"] for item in result_metadata] == ["id_4", "id_5"]
+        assert all(item["retrieval_method"] == "vector" for item in result_metadata)
 
     def test_persona_applied(self, mock_collection, mock_embedding):
         """Test that persona parameter is used."""

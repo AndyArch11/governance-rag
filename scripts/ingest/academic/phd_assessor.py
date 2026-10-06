@@ -11,17 +11,18 @@ Provides AI-driven assessment of PhD thesis to identify potential issues:
 import json
 import re
 from collections import defaultdict
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import numpy as np
 
 from scripts.ingest.academic.terminology import get_all_stopwords
-from scripts.ingest.vectors import EXPECTED_EMBEDDING_DIM
 from scripts.search.text_preprocessing import PreprocessingStrategy, TextPreprocessor
+from scripts.utils.embedding_model_config import EXPECTED_EMBEDDING_DIM
 from scripts.utils.json_utils import extract_first_json_block
+from scripts.utils.llm_instrumentation import invoke_with_usage
 
 # Cache stopwords at module level for efficiency
 _STOPWORDS = get_all_stopwords()
@@ -32,6 +33,12 @@ _STEMMER = TextPreprocessor(
     remove_stopwords=False,  # We handle stopwords separately
     min_token_length=1,
 )
+
+
+def _contains_whole_phrase(text: str, phrase: str) -> bool:
+    """Return whether text contains a case-insensitive, whole-phrase match."""
+    escaped_words = r"\s+".join(re.escape(word) for word in phrase.split())
+    return bool(escaped_words and re.search(rf"(?<!\w){escaped_words}(?!\w)", text, re.IGNORECASE))
 
 
 # Caveat: these capitalisation overrides follow Australian context and
@@ -81,6 +88,7 @@ class StructureAnalysis:
     missing_sections: List[str]
     avg_coherence: float
     chapter_order: List[str]  # Ordered list of chapter/section labels
+    chapter_order_issues: List[str]  # Source-order metadata requiring human review
     research_questions: List[str]  # Extracted research questions
     rq_alignment_score: float  # 0-1, how well findings address RQs
     unaddressed_rqs: List[str]  # RQs not mentioned in findings/conclusion
@@ -89,12 +97,18 @@ class StructureAnalysis:
     ]  # Concept tracking: {concept, intro_section, developed_sections, concluded_section}
     orphaned_concepts: List[str]  # Concepts introduced but not developed/concluded
     red_flags: List[RedFlag]
+    research_inquiry_types: Dict[str, str] = field(default_factory=dict)
+    research_inquiry_sources: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
+    research_inquiry_aliases: Dict[str, List[str]] = field(default_factory=dict)
+    research_inquiry_ids: Dict[str, str] = field(default_factory=dict)
+    research_inquiry_parent_ids: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
 class CitationPatternAnalysis:
     """Results from citation pattern analysis."""
 
+    citation_evidence_available: bool
     total_citations: int
     unique_citations: int
     citation_recency_score: float  # 0-1, based on presence of recent sources
@@ -185,6 +199,38 @@ class ArgumentFlowGraph:
     edges: List[Dict[str, Any]]
 
 
+ReadinessStatus = Literal[
+    "evidence_present",
+    "evidence_incomplete",
+    "needs_human_review",
+    "not_applicable",
+]
+
+
+@dataclass
+class ReadinessCriterion:
+    """Reviewable evidence for one non-grading examiner-readiness criterion."""
+
+    criterion: str
+    status: ReadinessStatus
+    confidence: float
+    evidence: List[str]
+    source_sections: List[str]
+    reason: str
+    source: Literal["deterministic", "llm", "mixed", "system"]
+
+
+@dataclass
+class ExaminerReadinessAnalysis:
+    """Evidence-based readiness assistance for a human thesis assessment."""
+
+    notice: str
+    criteria: List[ReadinessCriterion]
+    criteria_by_status: Dict[ReadinessStatus, List[str]]
+    human_review_priorities: List[str]
+    red_flags: List[RedFlag]
+
+
 @dataclass
 class AssessmentReport:
     """Complete PhD quality assessment report."""
@@ -192,7 +238,8 @@ class AssessmentReport:
     doc_id: str
     assessed_at: datetime
     persona: str  # 'supervisor', 'assessor', 'researcher'
-    overall_score: float  # 0-1
+    overall_score: float  # 0-1 assessment signal, not an examination outcome
+    score_label: str
     structure_analysis: StructureAnalysis
     citation_analysis: CitationPatternAnalysis
     claim_analysis: ClaimAnalysis
@@ -203,6 +250,7 @@ class AssessmentReport:
     citation_misrepresentation: CitationMisrepresentation
     benchmarking: BenchmarkingResult
     argument_flow: ArgumentFlowGraph
+    examiner_readiness: ExaminerReadinessAnalysis
     critical_red_flags: List[RedFlag]
     summary: str
     next_steps: List[str]
@@ -228,6 +276,8 @@ class PhDQualityAssessor:
         llm_client=None,
         llm_flags: Optional[Dict[str, bool]] = None,
         citation_db_path: Optional[str] = None,
+        cultural_lens_profile: Optional[Dict[str, Any]] = None,
+        confirmed_research_inquiries: Optional[List[Dict[str, str]]] = None,
     ):
         """
         Initialise assessor.
@@ -237,10 +287,14 @@ class PhDQualityAssessor:
             llm_client: Optional LLM client for claim extraction (Phase 2)
             llm_flags: Dict to enable/disable specific LLM features
             citation_db_path: Path to citation graph SQLite database
+            cultural_lens_profile: Optional validated profile assigned to this thesis.
+            confirmed_research_inquiries: Optional reviewer-confirmed inquiry records.
         """
         self.chunk_collection = chunk_collection
         self.llm_client = llm_client
         self.llm_flags = llm_flags or {}
+        self.cultural_lens_profile = cultural_lens_profile
+        self.confirmed_research_inquiries = confirmed_research_inquiries
 
         # Citation database path
         if citation_db_path is None:
@@ -291,6 +345,7 @@ class PhDQualityAssessor:
         citation_misrepresentation = self.analyse_citation_misrepresentation(chunks_data)
         benchmarking = self.analyse_benchmarking(chunks_data)
         argument_flow = self.analyse_argument_flow_graph(chunks_data)
+        examiner_readiness = self.analyse_examiner_readiness(chunks_data)
 
         # Collect all red flags
         all_red_flags = (
@@ -335,9 +390,10 @@ class PhDQualityAssessor:
 
         return AssessmentReport(
             doc_id=doc_id,
-            assessed_at=datetime.utcnow(),
+            assessed_at=datetime.now(timezone.utc),
             persona=persona,
             overall_score=overall_score,
+            score_label="Assessment signal for human review; not a grade or examination outcome.",
             structure_analysis=structure_analysis,
             citation_analysis=citation_analysis,
             claim_analysis=claim_analysis,
@@ -348,10 +404,1591 @@ class PhDQualityAssessor:
             citation_misrepresentation=citation_misrepresentation,
             benchmarking=benchmarking,
             argument_flow=argument_flow,
+            examiner_readiness=examiner_readiness,
             critical_red_flags=critical_flags,
             summary=summary,
             next_steps=next_steps,
         )
+
+    def analyse_examiner_readiness(self, chunks_data: Dict[str, Any]) -> ExaminerReadinessAnalysis:
+        """Create a non-grading readiness assessment for human review.
+
+        The analysis records evidence for human review and deliberately does not
+        infer an examination outcome. Criterion-specific evidence extraction is
+        added incrementally by readiness assessment phases.
+
+        Args:
+            chunks_data: ChromaDB query result containing thesis chunks.
+
+        Returns:
+            Baseline readiness analysis with its human-review boundary.
+        """
+        publication_applicability = self._detect_thesis_by_publication(chunks_data)
+        practice_based_applicability = self._detect_practice_based_thesis(chunks_data)
+        criteria = [
+            ReadinessCriterion(
+                criterion="human_assessment_boundary",
+                status="evidence_present",
+                confidence=1.0,
+                evidence=[],
+                source_sections=[],
+                reason="Assessment results are screening evidence requiring human review.",
+                source="system",
+            ),
+            self._analyse_research_significance(chunks_data),
+            self._analyse_contribution_articulation(chunks_data),
+            self._analyse_conceptual_integration(chunks_data),
+            self._analyse_methodological_rigour(chunks_data),
+            self._analyse_findings_quality(chunks_data),
+            self._analyse_contribution_contextualisation(chunks_data),
+            publication_applicability,
+            self._analyse_publication_thesis_minimum_treatment(
+                chunks_data,
+                publication_applicability,
+            ),
+            practice_based_applicability,
+            self._analyse_practice_based_thesis_integration(
+                chunks_data,
+                practice_based_applicability,
+            ),
+            self._analyse_generative_ai_disclosure(chunks_data),
+        ]
+        if self.llm_client and self._llm_enabled("readiness_evidence"):
+            criteria = self._enrich_readiness_criteria_with_llm(criteria)
+
+        criteria_by_status = self._group_readiness_criteria_by_status(criteria)
+        human_review_priorities = sorted(
+            (
+                criterion.criterion
+                for criterion in criteria
+                if criterion.status == "needs_human_review"
+            ),
+            key=lambda criterion_name: next(
+                criterion.confidence
+                for criterion in criteria
+                if criterion.criterion == criterion_name
+            ),
+        )
+
+        return ExaminerReadinessAnalysis(
+            notice=(
+                "This readiness analysis supports human assessment only. It does not "
+                "prepare an examiner report or determine an examination outcome."
+            ),
+            criteria=criteria,
+            criteria_by_status=criteria_by_status,
+            human_review_priorities=human_review_priorities,
+            red_flags=[],
+        )
+
+    def _group_readiness_criteria_by_status(
+        self,
+        criteria: List[ReadinessCriterion],
+    ) -> Dict[ReadinessStatus, List[str]]:
+        """Group readiness criteria by evidence state for human-review presentation.
+
+        Args:
+            criteria: List of readiness criteria to group by status.
+
+        Returns:
+            Dictionary mapping readiness status to lists of criterion names.
+        """
+        grouped: Dict[ReadinessStatus, List[str]] = {
+            "evidence_present": [],
+            "evidence_incomplete": [],
+            "needs_human_review": [],
+            "not_applicable": [],
+        }
+        for criterion in criteria:
+            grouped[criterion.status].append(criterion.criterion)
+        return grouped
+
+    def _enrich_readiness_criteria_with_llm(
+        self,
+        criteria: List[ReadinessCriterion],
+    ) -> List[ReadinessCriterion]:
+        """Add source-grounded LLM evidence without changing readiness outcomes.
+
+        The deterministic status remains authoritative. LLM output may add a
+        reviewable excerpt and rationale only when the excerpt is verbatim from
+        the deterministic evidence supplied to the model.
+
+        Args:
+            criteria: List of deterministic readiness criteria.
+
+        Returns:
+            List of readiness criteria enriched with LLM evidence.
+        """
+        enriched_criteria: List[ReadinessCriterion] = []
+        for criterion in criteria:
+            if criterion.source == "system" or criterion.status == "not_applicable":
+                enriched_criteria.append(criterion)
+                continue
+
+            llm_evidence = self._extract_readiness_evidence_llm(criterion)
+            if llm_evidence is None:
+                enriched_criteria.append(criterion)
+                continue
+
+            evidence, source_section, reason, confidence = llm_evidence
+            criterion.evidence = list(dict.fromkeys(criterion.evidence + [evidence]))[:4]
+            criterion.source_sections = list(
+                dict.fromkeys(criterion.source_sections + [source_section])
+            )[:4]
+            criterion.reason = f"{criterion.reason} LLM review note: {reason}"
+            criterion.confidence = min(criterion.confidence, confidence)
+            criterion.source = "mixed"
+            enriched_criteria.append(criterion)
+
+        return enriched_criteria
+
+    def _extract_readiness_evidence_llm(
+        self,
+        criterion: ReadinessCriterion,
+    ) -> Optional[Tuple[str, str, str, float]]:
+        """Return one validated LLM evidence item for a readiness criterion.
+
+        Invalid JSON, ungrounded text, or low-confidence output is discarded so
+        it cannot change the deterministic screening result.
+
+        Args:
+            criterion: ReadinessCriterion to extract LLM evidence for.
+
+        Returns:
+            Tuple of (evidence, source_section, reason, confidence) if valid,
+            otherwise None.
+        """
+        if not criterion.evidence or not criterion.source_sections:
+            return None
+
+        evidence_text = "\n".join(
+            f"[{section}] {evidence}"
+            for section, evidence in zip(criterion.source_sections, criterion.evidence)
+        )
+        prompt = (
+            "You are assisting human academic assessment. Do not assign a grade, recommend an "
+            "examination outcome, or infer missing evidence. Return JSON only.\n"
+            "Select one verbatim supporting excerpt from the supplied evidence and explain why it "
+            "is relevant.\n"
+            'JSON format: {"evidence": "verbatim excerpt", "section": "source section", '
+            '"reason": "brief explanation", "confidence": 0.0}\n\n'
+            f"Criterion: {criterion.criterion}\n"
+            f"Evidence:\n{evidence_text}"
+        )
+        try:
+            response = self._llm_invoke(prompt)
+            data = extract_first_json_block(response) if response else None
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            return None
+
+        if not isinstance(data, dict):
+            return None
+        evidence = data.get("evidence")
+        source_section = data.get("section")
+        reason = data.get("reason")
+        confidence = data.get("confidence")
+        if not isinstance(evidence, str) or not isinstance(source_section, str):
+            return None
+        if not isinstance(reason, str) or not isinstance(confidence, (int, float)):
+            return None
+
+        evidence = " ".join(evidence.split()).strip()
+        source_section = source_section.strip()
+        reason = " ".join(reason.split()).strip()
+        if (
+            not evidence
+            or not source_section
+            or not reason
+            or not 0.6 <= float(confidence) <= 1.0
+            or source_section not in criterion.source_sections
+        ):
+            return None
+
+        normalised_source_text = " ".join(" ".join(criterion.evidence).split()).lower()
+        if evidence.lower() not in normalised_source_text:
+            return None
+
+        return evidence, source_section, reason, float(confidence)
+
+    def _analyse_research_significance(self, chunks_data: Dict[str, Any]) -> ReadinessCriterion:
+        """Identify evidence that research questions are framed as significant.
+
+        This is a deterministic screening check. It identifies explicit framing
+        evidence for a human reviewer; it does not judge the academic merit of
+        the research question.
+
+        Args:
+            chunks_data: ChromaDB query result containing thesis chunks.
+        Returns:
+            Criterion-specific readiness analysis for research significance.
+        """
+        scoped_chunks = self._get_readiness_section_chunks(
+            chunks_data,
+            [
+                "abstract",
+                "introduction",
+                "research significance",
+                "research question",
+                "research aim",
+                "research objective",
+            ],
+        )
+        if not scoped_chunks:
+            return ReadinessCriterion(
+                criterion="research_significance",
+                status="needs_human_review",
+                confidence=0.0,
+                evidence=[],
+                source_sections=[],
+                reason=(
+                    "No abstract, introduction, or research-question section could be located. "
+                    "A human reviewer should assess research-question significance directly."
+                ),
+                source="deterministic",
+            )
+
+        question_markers = [
+            "research question",
+            "research questions",
+            "research aim",
+            "research aims",
+            "research objective",
+            "research objectives",
+            "this study investigates",
+            "this research investigates",
+        ]
+        significance_markers = [
+            "significant",
+            "importance",
+            "important",
+            "research gap",
+            "gap in",
+            "challenge",
+            "need for",
+            "addresses",
+            "policy",
+            "professional practice",
+            "discipline",
+            "wider field",
+        ]
+
+        evidence: List[str] = []
+        source_sections: List[str] = []
+        has_question_framing = False
+        for section_label, text in scoped_chunks:
+            sentences = self._split_sentences(text)
+            has_question_framing = has_question_framing or self._contains_any(
+                text, question_markers
+            )
+            for sentence in sentences:
+                if self._contains_any(sentence, question_markers) and self._contains_any(
+                    sentence, significance_markers
+                ):
+                    evidence.append(sentence.strip()[:500])
+                    source_sections.append(section_label)
+
+        unique_evidence = list(dict.fromkeys(evidence))[:3]
+        unique_sections = list(dict.fromkeys(source_sections))[:3]
+        if unique_evidence:
+            return ReadinessCriterion(
+                criterion="research_significance",
+                status="evidence_present",
+                confidence=0.8,
+                evidence=unique_evidence,
+                source_sections=unique_sections,
+                reason=(
+                    "Located explicit research-question framing linked to significance, a gap, "
+                    "or wider context. Human review is required to evaluate its academic merit."
+                ),
+                source="deterministic",
+            )
+
+        if has_question_framing:
+            reason = (
+                "Located research-question framing but no explicit significance or wider-context "
+                "evidence in the scoped sections."
+            )
+        else:
+            reason = "No explicit research-question framing was located in the scoped sections."
+
+        return ReadinessCriterion(
+            criterion="research_significance",
+            status="needs_human_review",
+            confidence=0.5 if has_question_framing else 0.3,
+            evidence=[],
+            source_sections=[],
+            reason=f"{reason} A human reviewer should assess this criterion directly.",
+            source="deterministic",
+        )
+
+    def _analyse_contribution_articulation(self, chunks_data: Dict[str, Any]) -> ReadinessCriterion:
+        """Identify explicit statements of original, significant contribution.
+
+        This check identifies thesis statements for a human reviewer to assess.
+        It does not determine whether the claimed contribution is original or
+        significant in the relevant discipline.
+
+        Args:
+            chunks_data: ChromaDB query result containing thesis chunks.
+        Returns:
+            Criterion-specific readiness analysis for contribution articulation.
+        """
+        scoped_chunks = self._get_readiness_section_chunks(
+            chunks_data,
+            [
+                "abstract",
+                "introduction",
+                "contribution",
+                "contributions",
+                "discussion",
+                "conclusion",
+            ],
+        )
+        if not scoped_chunks:
+            return ReadinessCriterion(
+                criterion="contribution_articulation",
+                status="needs_human_review",
+                confidence=0.0,
+                evidence=[],
+                source_sections=[],
+                reason=(
+                    "No contribution-relevant sections could be located. A human reviewer should "
+                    "identify and assess the claimed contribution directly."
+                ),
+                source="deterministic",
+            )
+
+        contribution_markers = [
+            "contribution",
+            "contributions",
+            "this thesis contributes",
+            "this study contributes",
+            "this research contributes",
+            "the contribution of this thesis",
+        ]
+        originality_markers = [
+            "original",
+            "novel",
+            "new knowledge",
+            "advances knowledge",
+            "extends knowledge",
+            "significant",
+            "substantial",
+        ]
+
+        evidence: List[str] = []
+        source_sections: List[str] = []
+        has_contribution_statement = False
+        for section_label, text in scoped_chunks:
+            sentences = self._split_sentences(text)
+            has_contribution_statement = has_contribution_statement or self._contains_any(
+                text, contribution_markers
+            )
+            for sentence in sentences:
+                if self._contains_any(sentence, contribution_markers) and self._contains_any(
+                    sentence, originality_markers
+                ):
+                    evidence.append(sentence.strip()[:500])
+                    source_sections.append(section_label)
+
+        unique_evidence = list(dict.fromkeys(evidence))[:3]
+        unique_sections = list(dict.fromkeys(source_sections))[:3]
+        if unique_evidence:
+            return ReadinessCriterion(
+                criterion="contribution_articulation",
+                status="evidence_present",
+                confidence=0.8,
+                evidence=unique_evidence,
+                source_sections=unique_sections,
+                reason=(
+                    "Located explicit contribution statements with originality or significance framing. "
+                    "A human reviewer must assess the claimed contribution's nature and extent."
+                ),
+                source="deterministic",
+            )
+
+        if has_contribution_statement:
+            reason = (
+                "Located contribution statements but no explicit originality or significance framing "
+                "in the scoped sections."
+            )
+        else:
+            reason = "No explicit contribution statement was located in the scoped sections."
+
+        return ReadinessCriterion(
+            criterion="contribution_articulation",
+            status="needs_human_review",
+            confidence=0.5 if has_contribution_statement else 0.3,
+            evidence=[],
+            source_sections=[],
+            reason=f"{reason} A human reviewer should assess this criterion directly.",
+            source="deterministic",
+        )
+
+    def _analyse_conceptual_integration(self, chunks_data: Dict[str, Any]) -> ReadinessCriterion:
+        """Identify explicit links from framework or literature to research design.
+
+        This screening check locates statements that connect a conceptual or
+        theoretical framework, or literature analysis, to objectives or
+        hypotheses. It does not judge whether the selected framework is sound.
+
+        Args:
+            chunks_data: ChromaDB query result containing thesis chunks.
+        Returns:
+            Criterion-specific readiness analysis for conceptual integration.
+        """
+        scoped_chunks = self._get_readiness_section_chunks(
+            chunks_data,
+            [
+                "abstract",
+                "introduction",
+                "literature",
+                "conceptual framework",
+                "theoretical framework",
+                "research question",
+                "research objective",
+                "hypothesis",
+            ],
+        )
+        if not scoped_chunks:
+            return ReadinessCriterion(
+                criterion="conceptual_integration",
+                status="needs_human_review",
+                confidence=0.0,
+                evidence=[],
+                source_sections=[],
+                reason=(
+                    "No literature, framework, or research-design sections could be located. "
+                    "A human reviewer should assess conceptual integration directly."
+                ),
+                source="deterministic",
+            )
+
+        framework_markers = [
+            "conceptual framework",
+            "theoretical framework",
+            "theoretical construct",
+            "framework",
+            "theory",
+            "model",
+        ]
+        literature_markers = [
+            "literature review",
+            "prior literature",
+            "existing literature",
+            "scholarship",
+        ]
+        research_design_markers = [
+            "research objective",
+            "research objectives",
+            "research question",
+            "research questions",
+            "hypothesis",
+            "hypotheses",
+            "research aim",
+        ]
+        integration_markers = [
+            "guides",
+            "guided",
+            "informs",
+            "underpins",
+            "frames",
+            "situates",
+            "aligns",
+            "linked",
+            "connects",
+            "based on",
+        ]
+
+        evidence: List[str] = []
+        source_sections: List[str] = []
+        has_framework_or_literature = False
+        has_research_design = False
+        for section_label, text in scoped_chunks:
+            has_framework_or_literature = has_framework_or_literature or self._contains_any(
+                text, framework_markers + literature_markers
+            )
+            has_research_design = has_research_design or self._contains_any(
+                text, research_design_markers
+            )
+            for sentence in self._split_sentences(text):
+                has_framework = self._contains_any(sentence, framework_markers)
+                has_literature = self._contains_any(sentence, literature_markers)
+                has_design = self._contains_any(sentence, research_design_markers)
+                has_integration = self._contains_any(sentence, integration_markers)
+                if has_design and (
+                    (has_framework and has_integration) or (has_framework and has_literature)
+                ):
+                    evidence.append(sentence.strip()[:500])
+                    source_sections.append(section_label)
+
+        unique_evidence = list(dict.fromkeys(evidence))[:3]
+        unique_sections = list(dict.fromkeys(source_sections))[:3]
+        if unique_evidence:
+            return ReadinessCriterion(
+                criterion="conceptual_integration",
+                status="evidence_present",
+                confidence=0.8,
+                evidence=unique_evidence,
+                source_sections=unique_sections,
+                reason=(
+                    "Located an explicit link between the conceptual or theoretical framing and "
+                    "research objectives or hypotheses. Human review is required to assess its adequacy."
+                ),
+                source="deterministic",
+            )
+
+        if has_framework_or_literature and has_research_design:
+            reason = (
+                "Located framework or literature discussion and research-design terms, but no explicit "
+                "integration statement in the scoped sections."
+            )
+            confidence = 0.5
+        else:
+            reason = "Insufficient framework, literature, or research-design evidence was located."
+            confidence = 0.3
+
+        return ReadinessCriterion(
+            criterion="conceptual_integration",
+            status="needs_human_review",
+            confidence=confidence,
+            evidence=[],
+            source_sections=[],
+            reason=f"{reason} A human reviewer should assess this criterion directly.",
+            source="deterministic",
+        )
+
+    def _analyse_methodological_rigour(self, chunks_data: Dict[str, Any]) -> ReadinessCriterion:
+        """Identify reviewable methodology justification, detail, and rigour evidence.
+
+        This check screens for description of why an approach was used, how it
+        was applied, and how its quality or reproducibility was addressed. It
+        does not determine whether the methodology is appropriate or sufficient.
+
+        Args:
+            chunks_data: ChromaDB query result containing thesis chunks.
+        Returns:
+            Criterion-specific readiness analysis for methodological rigour.
+        """
+        scoped_chunks = self._get_readiness_section_chunks(
+            chunks_data,
+            [
+                "method",
+                "methodology",
+                "research design",
+                "methods",
+                "data collection",
+                "sampling",
+                "analysis",
+            ],
+        )
+        if not scoped_chunks:
+            return ReadinessCriterion(
+                criterion="methodological_rigour",
+                status="needs_human_review",
+                confidence=0.0,
+                evidence=[],
+                source_sections=[],
+                reason=(
+                    "No methodology-relevant sections could be located. A human reviewer should "
+                    "assess methodological rigour directly."
+                ),
+                source="deterministic",
+            )
+
+        signal_groups = {
+            "justification": [
+                "justified",
+                "rationale",
+                "appropriate",
+                "selected because",
+                "chosen because",
+                "suitable for",
+                "to address the research question",
+            ],
+            "procedural_detail": [
+                "procedure",
+                "protocol",
+                "step",
+                "data were collected",
+                "data was collected",
+                "participants were recruited",
+                "interviews were conducted",
+                "survey was administered",
+                "analysed using",
+                "analyzed using",
+                "analysis was conducted",
+            ],
+            "rigour_or_reproducibility": [
+                "validity",
+                "reliability",
+                "triangulation",
+                "audit trail",
+                "replicable",
+                "reproducible",
+                "inter-rater",
+                "member checking",
+                "robustness",
+                "sensitivity analysis",
+            ],
+        }
+
+        evidence_by_group: Dict[str, List[str]] = {group: [] for group in signal_groups}
+        sections_by_group: Dict[str, List[str]] = {group: [] for group in signal_groups}
+        for section_label, text in scoped_chunks:
+            for sentence in self._split_sentences(text):
+                for group, markers in signal_groups.items():
+                    if self._contains_any(sentence, markers):
+                        evidence_by_group[group].append(sentence.strip()[:500])
+                        sections_by_group[group].append(section_label)
+
+        evidenced_groups = [group for group, snippets in evidence_by_group.items() if snippets]
+        evidence = list(
+            dict.fromkeys(
+                snippet for group in evidenced_groups for snippet in evidence_by_group[group]
+            )
+        )[:3]
+        source_sections = list(
+            dict.fromkeys(
+                section for group in evidenced_groups for section in sections_by_group[group]
+            )
+        )[:3]
+
+        if len(evidenced_groups) >= 2:
+            displayed_groups = ", ".join(group.replace("_", " ") for group in evidenced_groups)
+            return ReadinessCriterion(
+                criterion="methodological_rigour",
+                status="evidence_present",
+                confidence=min(0.9, 0.55 + (0.15 * len(evidenced_groups))),
+                evidence=evidence,
+                source_sections=source_sections,
+                reason=(
+                    f"Located methodology evidence for {displayed_groups}. Human review is required "
+                    "to assess methodological appropriateness, sufficiency, and technical mastery."
+                ),
+                source="deterministic",
+            )
+
+        if evidenced_groups:
+            reason = (
+                "Located limited methodology evidence for "
+                f"{evidenced_groups[0].replace('_', ' ')}, but not enough evidence across other "
+                "rigour dimensions."
+            )
+        else:
+            reason = (
+                "No explicit methodology justification, detail, or rigour evidence was located."
+            )
+
+        return ReadinessCriterion(
+            criterion="methodological_rigour",
+            status="needs_human_review",
+            confidence=0.5 if evidenced_groups else 0.3,
+            evidence=evidence,
+            source_sections=source_sections,
+            reason=f"{reason} A human reviewer should assess this criterion directly.",
+            source="deterministic",
+        )
+
+    def _analyse_findings_quality(self, chunks_data: Dict[str, Any]) -> ReadinessCriterion:
+        """Identify evidence that findings are linked, presented, and interpreted.
+
+        The check looks for explicit links between findings and research
+        questions, alongside evidence of logical presentation or interpretation
+        through limitations or unexpected results. It does not judge the quality
+        or correctness of the findings.
+
+        Args:
+            chunks_data: ChromaDB query result containing thesis chunks.
+        Returns:
+            Criterion-specific readiness analysis for findings quality.
+        """
+        scoped_chunks = self._get_readiness_section_chunks(
+            chunks_data,
+            ["results", "findings", "analysis", "discussion", "conclusion"],
+        )
+        if not scoped_chunks:
+            return ReadinessCriterion(
+                criterion="findings_quality",
+                status="needs_human_review",
+                confidence=0.0,
+                evidence=[],
+                source_sections=[],
+                reason=(
+                    "No results, findings, analysis, discussion, or conclusion sections could be "
+                    "located. A human reviewer should assess findings quality directly."
+                ),
+                source="deterministic",
+            )
+
+        signal_groups = {
+            "research_question_linkage": [
+                "research question",
+                "research questions",
+                "research objective",
+                "research objectives",
+                "hypothesis",
+                "hypotheses",
+                "address",
+                "answer",
+                "respond",
+            ],
+            "logical_presentation": [
+                "results are presented",
+                "findings are presented",
+                "as shown in",
+                "table",
+                "figure",
+                "illustrat",
+                "summaris",
+            ],
+            "limitations_interpretation": [
+                "limitation",
+                "constraint",
+                "threat to validity",
+                "interpret",
+                "cautio",
+            ],
+            "unexpected_results": [
+                "unexpected",
+                "surprising",
+                "unanticipated",
+                "contrary to",
+                "did not support",
+                "explained by",
+            ],
+        }
+        linkage_action_markers = ["address", "answer", "respond", "test", "support", "refute"]
+
+        evidence_by_group: Dict[str, List[str]] = {group: [] for group in signal_groups}
+        sections_by_group: Dict[str, List[str]] = {group: [] for group in signal_groups}
+        for section_label, text in scoped_chunks:
+            for sentence in self._split_sentences(text):
+                for group, markers in signal_groups.items():
+                    has_signal = self._contains_any(sentence, markers)
+                    if group == "research_question_linkage":
+                        has_signal = has_signal and self._contains_any(
+                            sentence, linkage_action_markers
+                        )
+                    if has_signal:
+                        evidence_by_group[group].append(sentence.strip()[:500])
+                        sections_by_group[group].append(section_label)
+
+        evidenced_groups = [group for group, snippets in evidence_by_group.items() if snippets]
+        evidence = list(
+            dict.fromkeys(
+                snippet for group in evidenced_groups for snippet in evidence_by_group[group]
+            )
+        )[:3]
+        source_sections = list(
+            dict.fromkeys(
+                section for group in evidenced_groups for section in sections_by_group[group]
+            )
+        )[:3]
+        has_linkage = "research_question_linkage" in evidenced_groups
+        has_interpretation_or_presentation = any(
+            group in evidenced_groups
+            for group in (
+                "logical_presentation",
+                "limitations_interpretation",
+                "unexpected_results",
+            )
+        )
+
+        if has_linkage and has_interpretation_or_presentation:
+            displayed_groups = ", ".join(group.replace("_", " ") for group in evidenced_groups)
+            return ReadinessCriterion(
+                criterion="findings_quality",
+                status="evidence_present",
+                confidence=min(0.9, 0.55 + (0.1 * len(evidenced_groups))),
+                evidence=evidence,
+                source_sections=source_sections,
+                reason=(
+                    f"Located findings evidence for {displayed_groups}. Human review is required "
+                    "to assess the findings' logic, sufficiency, and interpretation."
+                ),
+                source="deterministic",
+            )
+
+        if evidenced_groups:
+            reason = (
+                "Located limited findings evidence for "
+                f"{', '.join(group.replace('_', ' ') for group in evidenced_groups)}, but no "
+                "explicit combination of research-question linkage and presentation or interpretation."
+            )
+        else:
+            reason = "No explicit findings linkage, presentation, or interpretation evidence was located."
+
+        return ReadinessCriterion(
+            criterion="findings_quality",
+            status="needs_human_review",
+            confidence=0.5 if evidenced_groups else 0.3,
+            evidence=evidence,
+            source_sections=source_sections,
+            reason=f"{reason} A human reviewer should assess this criterion directly.",
+            source="deterministic",
+        )
+
+    def _analyse_contribution_contextualisation(
+        self, chunks_data: Dict[str, Any]
+    ) -> ReadinessCriterion:
+        """Identify positioning of findings against prior work and future opportunities.
+
+        This check identifies statements a human reviewer can use to assess how
+        the thesis contextualises its contribution. It does not judge whether
+        the interpretation of prior work or proposed future research is valid.
+
+        Args:
+            chunks_data: ChromaDB query result containing thesis chunks.
+        Returns:
+            Criterion-specific readiness analysis for contribution contextualisation.
+        """
+        scoped_chunks = self._get_readiness_section_chunks(
+            chunks_data,
+            ["findings", "results", "discussion", "conclusion", "contribution"],
+        )
+        if not scoped_chunks:
+            return ReadinessCriterion(
+                criterion="contribution_contextualisation",
+                status="needs_human_review",
+                confidence=0.0,
+                evidence=[],
+                source_sections=[],
+                reason=(
+                    "No findings, discussion, conclusion, or contribution sections could be located. "
+                    "A human reviewer should assess contribution contextualisation directly."
+                ),
+                source="deterministic",
+            )
+
+        prior_work_markers = [
+            "prior research",
+            "previous research",
+            "existing literature",
+            "prior literature",
+            "earlier studies",
+            "previous studies",
+            "literature",
+        ]
+        positioning_markers = [
+            "support",
+            "extend",
+            "contradict",
+            "challenge",
+            "consistent with",
+            "in contrast to",
+            "builds on",
+            "differs from",
+        ]
+        future_research_markers = [
+            "future research",
+            "future work",
+            "further research",
+            "further work",
+            "avenue for research",
+            "opportunity for research",
+            "should investigate",
+        ]
+
+        evidence_by_group: Dict[str, List[str]] = {
+            "prior_work_positioning": [],
+            "future_research": [],
+        }
+        sections_by_group: Dict[str, List[str]] = {
+            "prior_work_positioning": [],
+            "future_research": [],
+        }
+        for section_label, text in scoped_chunks:
+            for sentence in self._split_sentences(text):
+                if self._contains_any(sentence, prior_work_markers) and self._contains_any(
+                    sentence, positioning_markers
+                ):
+                    evidence_by_group["prior_work_positioning"].append(sentence.strip()[:500])
+                    sections_by_group["prior_work_positioning"].append(section_label)
+                if self._contains_any(sentence, future_research_markers):
+                    evidence_by_group["future_research"].append(sentence.strip()[:500])
+                    sections_by_group["future_research"].append(section_label)
+
+        evidenced_groups = [group for group, snippets in evidence_by_group.items() if snippets]
+        evidence = list(
+            dict.fromkeys(
+                snippet for group in evidenced_groups for snippet in evidence_by_group[group]
+            )
+        )[:3]
+        source_sections = list(
+            dict.fromkeys(
+                section for group in evidenced_groups for section in sections_by_group[group]
+            )
+        )[:3]
+
+        if len(evidenced_groups) == len(evidence_by_group):
+            return ReadinessCriterion(
+                criterion="contribution_contextualisation",
+                status="evidence_present",
+                confidence=0.8,
+                evidence=evidence,
+                source_sections=source_sections,
+                reason=(
+                    "Located explicit positioning of findings against prior work and future-research "
+                    "opportunities. Human review is required to assess their academic validity."
+                ),
+                source="deterministic",
+            )
+
+        if evidenced_groups:
+            reason = (
+                "Located evidence for "
+                f"{evidenced_groups[0].replace('_', ' ')}, but not for the complementary "
+                "contribution-contextualisation dimension."
+            )
+        else:
+            reason = "No explicit prior-work positioning or future-research evidence was located."
+
+        return ReadinessCriterion(
+            criterion="contribution_contextualisation",
+            status="needs_human_review",
+            confidence=0.5 if evidenced_groups else 0.3,
+            evidence=evidence,
+            source_sections=source_sections,
+            reason=f"{reason} A human reviewer should assess this criterion directly.",
+            source="deterministic",
+        )
+
+    def _detect_thesis_by_publication(self, chunks_data: Dict[str, Any]) -> ReadinessCriterion:
+        """Detect a thesis-by-publication form using multiple independent signals.
+
+        Ordinary references to journal articles are not enough to trigger this
+        conditional assessment path. The thesis must identify its publication
+        form and include evidence of publication-derived content.
+
+        Args:
+            chunks_data: ChromaDB query result containing thesis chunks.
+        Returns:
+            Criterion-specific readiness analysis for thesis-by-publication applicability.
+        """
+        thesis_form_markers = [
+            "thesis by publication",
+            "thesis-by-publication",
+            "thesis comprises publications",
+            "thesis comprises published",
+            "thesis includes published",
+            "thesis consists of published",
+        ]
+        publication_content_markers = [
+            "included publication",
+            "included publications",
+            "published work",
+            "work in progress for publication",
+            "manuscript submitted",
+            "manuscript accepted",
+            "peer-reviewed publication",
+            "journal article",
+        ]
+
+        evidence_by_group: Dict[str, List[str]] = {
+            "thesis_form": [],
+            "publication_content": [],
+        }
+        sections_by_group: Dict[str, List[str]] = {
+            "thesis_form": [],
+            "publication_content": [],
+        }
+        documents = chunks_data.get("documents", [])
+        metadatas = chunks_data.get("metadatas", [])
+        for index, document in enumerate(documents):
+            if self._is_toc_chunk(document):
+                continue
+
+            metadata = metadatas[index] if index < len(metadatas) else {}
+            section_label = self._get_section_label(metadata, document)
+            for sentence in self._split_sentences(document):
+                if self._contains_any(sentence, thesis_form_markers):
+                    evidence_by_group["thesis_form"].append(sentence.strip()[:500])
+                    sections_by_group["thesis_form"].append(section_label)
+                if self._contains_any(sentence, publication_content_markers):
+                    evidence_by_group["publication_content"].append(sentence.strip()[:500])
+                    sections_by_group["publication_content"].append(section_label)
+
+        evidence = list(
+            dict.fromkeys(
+                snippet
+                for group in ("thesis_form", "publication_content")
+                for snippet in evidence_by_group[group]
+            )
+        )[:3]
+        source_sections = list(
+            dict.fromkeys(
+                section
+                for group in ("thesis_form", "publication_content")
+                for section in sections_by_group[group]
+            )
+        )[:3]
+
+        if all(evidence_by_group.values()):
+            return ReadinessCriterion(
+                criterion="thesis_by_publication_applicability",
+                status="evidence_present",
+                confidence=0.85,
+                evidence=evidence,
+                source_sections=source_sections,
+                reason=(
+                    "Detected explicit thesis-by-publication and publication-content evidence. "
+                    "Publication-based readiness criteria should be assessed by a human reviewer."
+                ),
+                source="deterministic",
+            )
+
+        return ReadinessCriterion(
+            criterion="thesis_by_publication_applicability",
+            status="not_applicable",
+            confidence=0.8,
+            evidence=evidence,
+            source_sections=source_sections,
+            reason=(
+                "No reliable combined evidence of a thesis-by-publication form was located. "
+                "Publication-based readiness criteria are not applied."
+            ),
+            source="deterministic",
+        )
+
+    def _analyse_publication_thesis_minimum_treatment(
+        self,
+        chunks_data: Dict[str, Any],
+        applicability: ReadinessCriterion,
+    ) -> ReadinessCriterion:
+        """Identify guide-aligned minimum-treatment evidence for publication theses.
+
+        The conditional check applies only when the thesis explicitly identifies
+        itself as publication-based. It records evidence for human assessment and
+        does not determine whether publication-derived material is compliant.
+
+        Args:
+            chunks_data: ChromaDB query result containing thesis chunks.
+            applicability: ReadinessCriterion indicating whether publication-based
+                minimum-treatment criteria should be applied.
+        Returns:
+            Criterion-specific readiness analysis for publication-thesis minimum treatment.
+        """
+        if applicability.status != "evidence_present":
+            return ReadinessCriterion(
+                criterion="publication_thesis_minimum_treatment",
+                status="not_applicable",
+                confidence=applicability.confidence,
+                evidence=[],
+                source_sections=[],
+                reason=(
+                    "Publication-based minimum-treatment criteria are not applied because the "
+                    "thesis-by-publication form was not reliably detected."
+                ),
+                source="deterministic",
+            )
+
+        required_elements = {
+            "original_introduction_or_literature_review": [
+                "independent and original review",
+                "original literature review",
+                "independent literature review",
+            ],
+            "framing_chapter": ["framing chapter", "framing framework", "frames the publications"],
+            "bridging_narrative": [
+                "bridging statement",
+                "bridging statements",
+                "link chapters",
+                "links the chapters",
+                "connect chapters",
+                "cohesive narrative",
+            ],
+            "independent_general_discussion": [
+                "independent general discussion",
+                "general discussion integrates",
+                "integrates the findings",
+                "integrate the findings",
+            ],
+        }
+        evidence_by_element: Dict[str, List[str]] = {element: [] for element in required_elements}
+        sections_by_element: Dict[str, List[str]] = {element: [] for element in required_elements}
+        documents = chunks_data.get("documents", [])
+        metadatas = chunks_data.get("metadatas", [])
+        for index, document in enumerate(documents):
+            if self._is_toc_chunk(document):
+                continue
+
+            metadata = metadatas[index] if index < len(metadatas) else {}
+            section_label = self._get_section_label(metadata, document)
+            section_text = " ".join(
+                str(metadata.get(field, ""))
+                for field in ("section_title", "parent_section", "heading_path", "chapter")
+            ).lower()
+            for element, markers in required_elements.items():
+                if self._contains_any(section_text, markers):
+                    evidence_by_element[element].append(section_label)
+                    sections_by_element[element].append(section_label)
+                for sentence in self._split_sentences(document):
+                    if self._contains_any(sentence, markers):
+                        evidence_by_element[element].append(sentence.strip()[:500])
+                        sections_by_element[element].append(section_label)
+
+        evidenced_elements = [
+            element for element, snippets in evidence_by_element.items() if snippets
+        ]
+        missing_elements = [
+            element.replace("_", " ")
+            for element in required_elements
+            if element not in evidenced_elements
+        ]
+        evidence = list(
+            dict.fromkeys(
+                snippet
+                for element in evidenced_elements
+                for snippet in evidence_by_element[element]
+            )
+        )[:4]
+        source_sections = list(
+            dict.fromkeys(
+                section
+                for element in evidenced_elements
+                for section in sections_by_element[element]
+            )
+        )[:4]
+
+        if len(evidenced_elements) == len(required_elements):
+            return ReadinessCriterion(
+                criterion="publication_thesis_minimum_treatment",
+                status="evidence_present",
+                confidence=0.85,
+                evidence=evidence,
+                source_sections=source_sections,
+                reason=(
+                    "Located evidence for the publication-based thesis minimum-treatment elements. "
+                    "A human reviewer must verify their adequacy and authorship."
+                ),
+                source="deterministic",
+            )
+
+        return ReadinessCriterion(
+            criterion="publication_thesis_minimum_treatment",
+            status="needs_human_review",
+            confidence=0.4 + (0.1 * len(evidenced_elements)),
+            evidence=evidence,
+            source_sections=source_sections,
+            reason=(
+                "Located incomplete publication-based minimum-treatment evidence. Missing evidence for: "
+                f"{', '.join(missing_elements)}. A human reviewer should assess this criterion directly."
+            ),
+            source="deterministic",
+        )
+
+    def _detect_practice_based_thesis(self, chunks_data: Dict[str, Any]) -> ReadinessCriterion:
+        """Detect a practice-based thesis or exegesis using independent signals.
+
+        The detector prevents conditional creative-work checks from applying to
+        conventional theses that only use general creative language.
+
+        Args:
+            chunks_data: ChromaDB query result containing thesis chunks.
+        Returns:
+            Criterion-specific readiness analysis for practice-based thesis applicability.
+        """
+        thesis_form_markers = [
+            "practice-based thesis",
+            "practice based thesis",
+            "practice-based research",
+            "practice based research",
+            "creative practice research",
+            "creative work and exegesis",
+            "exegesis",
+        ]
+        component_markers = [
+            "creative work",
+            "creative component",
+            "practice-based component",
+            "practice based component",
+            "performance",
+            "exhibition",
+            "portfolio",
+            "durable record",
+            "artefact",
+            "artifact",
+        ]
+
+        evidence_by_group: Dict[str, List[str]] = {
+            "thesis_form": [],
+            "practical_or_creative_component": [],
+        }
+        sections_by_group: Dict[str, List[str]] = {
+            "thesis_form": [],
+            "practical_or_creative_component": [],
+        }
+        documents = chunks_data.get("documents", [])
+        metadatas = chunks_data.get("metadatas", [])
+        for index, document in enumerate(documents):
+            if self._is_toc_chunk(document):
+                continue
+
+            metadata = metadatas[index] if index < len(metadatas) else {}
+            section_label = self._get_section_label(metadata, document)
+            for sentence in self._split_sentences(document):
+                if self._contains_any(sentence, thesis_form_markers):
+                    evidence_by_group["thesis_form"].append(sentence.strip()[:500])
+                    sections_by_group["thesis_form"].append(section_label)
+                if self._contains_any(sentence, component_markers):
+                    evidence_by_group["practical_or_creative_component"].append(
+                        sentence.strip()[:500]
+                    )
+                    sections_by_group["practical_or_creative_component"].append(section_label)
+
+        evidence = list(
+            dict.fromkeys(
+                snippet
+                for group in ("thesis_form", "practical_or_creative_component")
+                for snippet in evidence_by_group[group]
+            )
+        )[:3]
+        source_sections = list(
+            dict.fromkeys(
+                section
+                for group in ("thesis_form", "practical_or_creative_component")
+                for section in sections_by_group[group]
+            )
+        )[:3]
+
+        if all(evidence_by_group.values()):
+            return ReadinessCriterion(
+                criterion="practice_based_thesis_applicability",
+                status="evidence_present",
+                confidence=0.85,
+                evidence=evidence,
+                source_sections=source_sections,
+                reason=(
+                    "Detected practice-based or exegesis thesis form and a practical or creative "
+                    "component. Practice-based readiness criteria should be reviewed by a human."
+                ),
+                source="deterministic",
+            )
+
+        return ReadinessCriterion(
+            criterion="practice_based_thesis_applicability",
+            status="not_applicable",
+            confidence=0.8,
+            evidence=evidence,
+            source_sections=source_sections,
+            reason=(
+                "No reliable combined evidence of a practice-based thesis or exegesis was located. "
+                "Practice-based readiness criteria are not applied."
+            ),
+            source="deterministic",
+        )
+
+    def _analyse_practice_based_thesis_integration(
+        self,
+        chunks_data: Dict[str, Any],
+        applicability: ReadinessCriterion,
+    ) -> ReadinessCriterion:
+        """Identify explicit integration of an exegesis and practical work.
+
+        This conditional check records text that links an exegesis with the
+        practical or creative component. It does not evaluate the quality of
+        either component or attempt to assess creative work itself.
+
+        Args:
+            chunks_data: ChromaDB query result containing thesis chunks.
+            applicability: ReadinessCriterion indicating whether practice-based
+                integration criteria should be applied.
+        Returns:
+            Criterion-specific readiness analysis for practice-based thesis integration.
+        """
+        if applicability.status != "evidence_present":
+            return ReadinessCriterion(
+                criterion="practice_based_thesis_integration",
+                status="not_applicable",
+                confidence=applicability.confidence,
+                evidence=[],
+                source_sections=[],
+                reason=(
+                    "Practice-based integration criteria are not applied because a practice-based "
+                    "thesis or exegesis was not reliably detected."
+                ),
+                source="deterministic",
+            )
+
+        exegesis_markers = ["exegesis", "exegetical"]
+        component_markers = [
+            "creative work",
+            "creative component",
+            "practice-based component",
+            "practice based component",
+            "performance",
+            "exhibition",
+            "portfolio",
+            "artefact",
+            "artifact",
+        ]
+        integration_markers = [
+            "integrated",
+            "integration",
+            "integrated whole",
+            "considered together",
+            "examined together",
+            "relationship between",
+            "connects",
+            "links",
+        ]
+
+        evidence: List[str] = []
+        source_sections: List[str] = []
+        has_exegesis = False
+        has_component = False
+        documents = chunks_data.get("documents", [])
+        metadatas = chunks_data.get("metadatas", [])
+        for index, document in enumerate(documents):
+            if self._is_toc_chunk(document):
+                continue
+
+            metadata = metadatas[index] if index < len(metadatas) else {}
+            section_label = self._get_section_label(metadata, document)
+            has_exegesis = has_exegesis or self._contains_any(document, exegesis_markers)
+            has_component = has_component or self._contains_any(document, component_markers)
+            for sentence in self._split_sentences(document):
+                if (
+                    self._contains_any(sentence, exegesis_markers)
+                    and self._contains_any(sentence, component_markers)
+                    and self._contains_any(sentence, integration_markers)
+                ):
+                    evidence.append(sentence.strip()[:500])
+                    source_sections.append(section_label)
+
+        unique_evidence = list(dict.fromkeys(evidence))[:3]
+        unique_sections = list(dict.fromkeys(source_sections))[:3]
+        if unique_evidence:
+            return ReadinessCriterion(
+                criterion="practice_based_thesis_integration",
+                status="evidence_present",
+                confidence=0.8,
+                evidence=unique_evidence,
+                source_sections=unique_sections,
+                reason=(
+                    "Located explicit evidence that the exegesis and practical or creative component "
+                    "are integrated. Human review is required to assess that integration."
+                ),
+                source="deterministic",
+            )
+
+        if has_exegesis and has_component:
+            reason = (
+                "Located exegesis and practical or creative component evidence, but no explicit "
+                "integration statement."
+            )
+            confidence = 0.5
+        else:
+            reason = "Insufficient exegesis or practical-component evidence was located."
+            confidence = 0.3
+
+        return ReadinessCriterion(
+            criterion="practice_based_thesis_integration",
+            status="needs_human_review",
+            confidence=confidence,
+            evidence=[],
+            source_sections=[],
+            reason=f"{reason} A human reviewer should assess this criterion directly.",
+            source="deterministic",
+        )
+
+    def _analyse_generative_ai_disclosure(self, chunks_data: Dict[str, Any]) -> ReadinessCriterion:
+        """Identify declared generative-AI use and supporting disclosure evidence.
+
+        The check records disclosures for human review only. It does not infer
+        whether AI use was appropriate, permitted, or academically compliant.
+
+        Args:
+            chunks_data: ChromaDB query result containing thesis chunks.
+        Returns:
+            Criterion-specific readiness analysis for generative-AI disclosure.
+        """
+        ai_tool_markers = [
+            "generative ai",
+            "artificial intelligence",
+            "large language model",
+            "chatgpt",
+            "claude",
+            "copilot",
+            "gemini",
+            "grok",
+            "llm",
+            "openai",
+            "notebooklm",
+            "paperpal",
+            "jenni ai",
+            "julius ai",
+            "quillbot",
+        ]
+        use_markers = [
+            "used",
+            "use of",
+            "utilised",
+            "utilized",
+            "employed",
+            "assisted by",
+            "generated with",
+        ]
+        non_use_markers = [
+            "not used",
+            "no generative ai",
+            "no artificial intelligence",
+            "without using",
+            "did not use",
+        ]
+        disclosure_groups = {
+            "tool": ai_tool_markers,
+            "purpose": [
+                "purpose",
+                "used to",
+                "utilised to",
+                "utilized to",
+                "assisted with",
+                "for language editing",
+                "for proofreading",
+                "for coding",
+                "for translation",
+            ],
+            "extent": [
+                "extent of use",
+                "limited to",
+                "only used",
+                "used only",
+                "exclusively",
+                "throughout the thesis",
+                "in chapters",
+            ],
+            "prompts_or_disclosure": [
+                "prompt",
+                "prompt log",
+                "prompt history",
+                "ai disclosure",
+                "disclosure statement",
+                "acknowledgement of ai",
+                "declared ai use",
+            ],
+        }
+
+        evidence_by_group: Dict[str, List[str]] = {group: [] for group in disclosure_groups}
+        sections_by_group: Dict[str, List[str]] = {group: [] for group in disclosure_groups}
+        declaration_evidence: List[str] = []
+        declaration_sections: List[str] = []
+        documents = chunks_data.get("documents", [])
+        metadatas = chunks_data.get("metadatas", [])
+        for index, document in enumerate(documents):
+            if self._is_toc_chunk(document):
+                continue
+
+            metadata = metadatas[index] if index < len(metadatas) else {}
+            section_label = self._get_section_label(metadata, document)
+            for sentence in self._split_sentences(document):
+                sentence_lower = sentence.lower()
+                declares_use = self._contains_any(sentence, ai_tool_markers) and self._contains_any(
+                    sentence, use_markers
+                )
+                if declares_use and not self._contains_any(sentence_lower, non_use_markers):
+                    declaration_evidence.append(sentence.strip()[:500])
+                    declaration_sections.append(section_label)
+                for group, markers in disclosure_groups.items():
+                    if self._contains_any(sentence, markers):
+                        evidence_by_group[group].append(sentence.strip()[:500])
+                        sections_by_group[group].append(section_label)
+
+        if not declaration_evidence:
+            return ReadinessCriterion(
+                criterion="generative_ai_disclosure",
+                status="not_applicable",
+                confidence=0.8,
+                evidence=[],
+                source_sections=[],
+                reason=(
+                    "No declared generative-AI use was located. AI-use disclosure criteria are not applied."
+                ),
+                source="deterministic",
+            )
+
+        evidenced_groups = [group for group, snippets in evidence_by_group.items() if snippets]
+        evidence = list(
+            dict.fromkeys(
+                declaration_evidence
+                + [snippet for group in evidenced_groups for snippet in evidence_by_group[group]]
+            )
+        )[:4]
+        source_sections = list(
+            dict.fromkeys(
+                declaration_sections
+                + [section for group in evidenced_groups for section in sections_by_group[group]]
+            )
+        )[:4]
+        missing_groups = [
+            group.replace("_", " ") for group in disclosure_groups if group not in evidenced_groups
+        ]
+
+        if len(evidenced_groups) == len(disclosure_groups):
+            return ReadinessCriterion(
+                criterion="generative_ai_disclosure",
+                status="evidence_present",
+                confidence=0.8,
+                evidence=evidence,
+                source_sections=source_sections,
+                reason=(
+                    "Located a declared generative-AI use with tool, purpose, extent, and prompt or "
+                    "disclosure evidence. A human reviewer must verify the disclosure's completeness."
+                ),
+                source="deterministic",
+            )
+
+        return ReadinessCriterion(
+            criterion="generative_ai_disclosure",
+            status="needs_human_review",
+            confidence=0.4 + (0.1 * len(evidenced_groups)),
+            evidence=evidence,
+            source_sections=source_sections,
+            reason=(
+                "Located declared generative-AI use with incomplete disclosure evidence. Missing evidence for: "
+                f"{', '.join(missing_groups)}. A human reviewer should assess this criterion directly."
+            ),
+            source="deterministic",
+        )
+
+    def _get_readiness_section_chunks(
+        self,
+        chunks_data: Dict[str, Any],
+        section_keywords: List[str],
+    ) -> List[Tuple[str, str]]:
+        """Return non-ToC chunks from sections relevant to a readiness criterion.
+
+        Args:
+            chunks_data: ChromaDB query result with chunks, metadata, embeddings
+            section_keywords: List of keywords to identify relevant sections
+        Returns:
+            List of tuples (section_label, chunk_text) for relevant chunks
+        """
+        matched_chunks: List[Tuple[str, str]] = []
+        documents = chunks_data.get("documents", [])
+        metadatas = chunks_data.get("metadatas", [])
+
+        for index, document in enumerate(documents):
+            if self._is_toc_chunk(document):
+                continue
+
+            metadata = metadatas[index] if index < len(metadatas) else {}
+            section_label = self._get_section_label(metadata, document)
+            section_text = " ".join(
+                str(metadata.get(field, ""))
+                for field in ("section_title", "parent_section", "heading_path", "chapter")
+            ).lower()
+            # Older or child-only records may not carry structural metadata.
+            # The heading-derived fallback still lets readiness checks locate
+            # the relevant source section without treating the heading itself
+            # as substantive evidence.
+            if not section_text.strip() and section_label != "Unclassified":
+                section_text = section_label.lower()
+            if any(keyword in section_text for keyword in section_keywords):
+                matched_chunks.append((section_label, document))
+
+        return matched_chunks
 
     def analyse_structure(self, chunks_data: Dict) -> StructureAnalysis:
         """
@@ -373,6 +2010,7 @@ class PhDQualityAssessor:
         """
         # Extract chapter information
         all_chapters = self._extract_chapters(chunks_data)
+        chapter_order_issues = self._detect_chapter_order_issues(chunks_data, all_chapters)
 
         # Filter to only main-matter chapters for coherence analysis
         main_chapters = [ch for ch in all_chapters if ch.get("section_type") == "main-matter"]
@@ -419,6 +2057,20 @@ class PhDQualityAssessor:
                 )
             )
 
+        if chapter_order_issues:
+            red_flags.append(
+                RedFlag(
+                    severity="warning",
+                    category="structure",
+                    title="Chapter Source Order Requires Review",
+                    description="; ".join(chapter_order_issues),
+                    suggestion=(
+                        "Verify extracted chapter sequence metadata against the source document and "
+                        "correct any conflicting chapter order."
+                    ),
+                )
+            )
+
         # Abrupt transitions
         for chapter1, chapter2, sim in abrupt_transitions:
             red_flags.append(
@@ -444,10 +2096,73 @@ class PhDQualityAssessor:
                 )
             )
 
-        # Extract research questions and check alignment
-        research_questions = self._extract_research_questions(chunks_data)
+        # Extract questions unless a reviewer has confirmed a thesis-specific set.
+        if self.confirmed_research_inquiries is None:
+            section_types = {chapter["name"]: chapter["section_type"] for chapter in all_chapters}
+            research_questions = self._extract_research_questions(chunks_data, section_types)
+            research_inquiry_sources = self._locate_research_inquiry_sources(
+                chunks_data, research_questions
+            )
+            research_inquiry_types = self._classify_research_inquiries(
+                research_questions, research_inquiry_sources
+            )
+            rejected_inquiries = {
+                inquiry
+                for inquiry, inquiry_type in research_inquiry_types.items()
+                if inquiry_type == "not_rq"
+            }
+            if rejected_inquiries:
+                research_questions = [
+                    inquiry for inquiry in research_questions if inquiry not in rejected_inquiries
+                ]
+                research_inquiry_types = {
+                    inquiry: inquiry_type
+                    for inquiry, inquiry_type in research_inquiry_types.items()
+                    if inquiry not in rejected_inquiries
+                }
+                research_inquiry_sources = {
+                    inquiry: sources
+                    for inquiry, sources in research_inquiry_sources.items()
+                    if inquiry not in rejected_inquiries
+                }
+            (
+                research_questions,
+                research_inquiry_types,
+                research_inquiry_sources,
+                research_inquiry_aliases,
+            ) = self._reconcile_research_inquiries(
+                research_questions,
+                research_inquiry_types,
+                research_inquiry_sources,
+            )
+            research_inquiry_ids, research_inquiry_parent_ids = (
+                self._assign_research_inquiry_identifiers(
+                    research_questions, research_inquiry_sources
+                )
+            )
+        else:
+            confirmed = self.confirmed_research_inquiries
+            research_questions = [str(item["text"]) for item in confirmed]
+            research_inquiry_types = {
+                str(item["text"]): str(item.get("type") or "research_question")
+                for item in confirmed
+            }
+            research_inquiry_sources = self._locate_research_inquiry_sources(
+                chunks_data, research_questions
+            )
+            research_inquiry_aliases = {}
+            research_inquiry_ids = {str(item["text"]): str(item["id"]) for item in confirmed}
+            research_inquiry_parent_ids = {
+                str(item["text"]): str(item["parent_id"])
+                for item in confirmed
+                if item.get("parent_id")
+            }
+
+        for question, parent_id in research_inquiry_parent_ids.items():
+            if parent_id and research_inquiry_types.get(question) == "research_question":
+                research_inquiry_types[question] = "sub_question"
         rq_alignment_score, unaddressed_rqs = self._compute_rq_alignment(
-            research_questions, chunks_data
+            research_questions, chunks_data, research_inquiry_aliases
         )
 
         if unaddressed_rqs:
@@ -461,8 +2176,11 @@ class PhDQualityAssessor:
                 )
             )
 
-        # Track concept progression (using all chapters for concept tracking)
-        key_concepts, orphaned_concepts = self._track_concept_progression(chunks_data, all_chapters)
+        # Concept coverage is meaningful only across the assessed thesis chapters,
+        # not front matter, title pages, references, or appendices.
+        key_concepts, orphaned_concepts = self._track_concept_progression(
+            chunks_data, main_chapters
+        )
 
         if orphaned_concepts:
             red_flags.append(
@@ -481,14 +2199,20 @@ class PhDQualityAssessor:
             chapter_transition_labels=chapter_transition_labels,
             abrupt_transitions=abrupt_transitions,
             missing_sections=missing_sections,
-            avg_coherence=avg_coherence,
+            avg_coherence=float(avg_coherence),
             chapter_order=[chapter["name"] for chapter in all_chapters],
+            chapter_order_issues=chapter_order_issues,
             research_questions=research_questions,
             rq_alignment_score=rq_alignment_score,
             unaddressed_rqs=unaddressed_rqs,
             key_concepts=key_concepts,
             orphaned_concepts=orphaned_concepts,
             red_flags=red_flags,
+            research_inquiry_types=research_inquiry_types,
+            research_inquiry_sources=research_inquiry_sources,
+            research_inquiry_aliases=research_inquiry_aliases,
+            research_inquiry_ids=research_inquiry_ids,
+            research_inquiry_parent_ids=research_inquiry_parent_ids,
         )
 
     def analyse_citation_patterns(self, chunks_data: Dict) -> CitationPatternAnalysis:
@@ -506,6 +2230,10 @@ class PhDQualityAssessor:
         Returns:
             CitationPatternAnalysis with findings
         """
+        # An unavailable citation store cannot be treated as evidence that the
+        # thesis has no citations.
+        citation_evidence_available = Path(self.citation_db_path).is_file()
+
         # Extract citation metadata from SQLite database
         citations = self._extract_citations(chunks_data)
 
@@ -527,15 +2255,30 @@ class PhDQualityAssessor:
         # Generate red flags
         red_flags = []
 
-        # No citations found
-        if len(citations) == 0:
+        # Citation evidence unavailable
+        if not citation_evidence_available:
             red_flags.append(
                 RedFlag(
-                    severity="critical",
+                    severity="warning",
                     category="citations",
-                    title="No Citations Found",
-                    description="Citation graph database returned no citations for this document.",
-                    suggestion="Ensure citations have been extracted during ingestion.",
+                    title="Citation Evidence Unavailable",
+                    description=(
+                        "Citation evidence could not be loaded, so citation quality is excluded "
+                        "from the assessment signal."
+                    ),
+                    suggestion="Verify citation extraction and the citation graph database before review.",
+                )
+            )
+
+        # No citations found in an available citation store
+        elif len(citations) == 0:
+            red_flags.append(
+                RedFlag(
+                    severity="warning",
+                    category="citations",
+                    title="No Citation Evidence Found",
+                    description="The available citation graph contains no citations for this document.",
+                    suggestion="A human reviewer should verify citations in the thesis and ingestion data.",
                 )
             )
 
@@ -566,6 +2309,7 @@ class PhDQualityAssessor:
                 )
 
         return CitationPatternAnalysis(
+            citation_evidence_available=citation_evidence_available,
             total_citations=len(citations),
             unique_citations=unique_citations,
             citation_recency_score=recency_score,
@@ -810,8 +2554,8 @@ class PhDQualityAssessor:
         for item, keywords in keyword_map.items():
             pattern = re.compile("|".join(re.escape(k) for k in keywords), re.IGNORECASE)
             count = 0
-            snippets = []
-            location_counts = {}
+            snippets: List[Dict[str, Any]] = []
+            location_counts: Dict[str, int] = {}
             doc_snippet_added: set[int] = set()
 
             for i in scope_indices:
@@ -820,14 +2564,18 @@ class PhDQualityAssessor:
                 doc = documents[i]
                 if self._is_toc_chunk(doc):
                     continue
-                section_label = section_labels_by_index.get(i)
-                if not section_label:
+                matched_section_label = section_labels_by_index.get(i)
+                if not matched_section_label:
                     continue
-                location_counts[section_label] = location_counts.get(section_label, 0) + 0
+                location_counts[matched_section_label] = (
+                    location_counts.get(matched_section_label, 0) + 0
+                )
 
                 for match in pattern.finditer(doc):
                     count += 1
-                    location_counts[section_label] = location_counts.get(section_label, 0) + 1
+                    location_counts[matched_section_label] = (
+                        location_counts.get(matched_section_label, 0) + 1
+                    )
                     if len(snippets) < 3 and i not in doc_snippet_added:
                         start = match.start() - 140
                         end = match.end() + 140
@@ -1308,10 +3056,34 @@ class PhDQualityAssessor:
         if parent_indices:
             if any(self._has_section_metadata(metadatas[idx]) for idx in parent_indices):
                 return parent_indices
-            # Fall back to non-ToC chunks if parent metadata is missing section labels
-            return non_toc_indices
+            # Parent and child chunks have independent sequence ranges. When
+            # parent structure metadata is absent, mixing the two levels
+            # corrupts source order, so derive structure from child chunks.
+            child_indices = [
+                idx for idx in non_toc_indices if metadatas[idx].get("chunk_type") == "child"
+            ]
+            if child_indices:
+                return child_indices
+            return parent_indices
 
         return non_toc_indices
+
+    def _source_ordered_structural_indices(self, chunks_data: Dict[str, Any]) -> List[int]:
+        """Return structural chunk indices ordered by source sequence metadata.
+
+        Chunks without numeric sequence metadata retain their original relative
+        order after all source-sequenced chunks. This is used by all section and
+        chapter views that need a consistent source-order contract.
+        """
+        metadatas = chunks_data.get("metadatas", [])
+
+        def _order_key(index: int) -> Tuple[int, float, int]:
+            sequence = metadatas[index].get("sequence_number")
+            if isinstance(sequence, (int, float)):
+                return (0, float(sequence), index)
+            return (1, float("inf"), index)
+
+        return sorted(self._select_structural_indices(chunks_data), key=_order_key)
 
     def _get_chapter_label(self, meta: Dict, fallback_text: str) -> str:
         """Derive a chapter label using metadata, then fallback text.
@@ -1475,15 +3247,31 @@ class PhDQualityAssessor:
             # Try to find a section heading in the text
             import re
 
+            markdown_heading = re.search(r"^#{1,6}\s+(.+?)\s*#*\s*$", fallback_text, re.MULTILINE)
+            if markdown_heading:
+                heading = markdown_heading.group(1).strip()
+                if heading:
+                    return heading[:100]
+
             for section_name in [
                 "Introduction",
+                "Acknowledgements",
                 "Methodology",
                 "Results",
+                "Findings",
+                "Analysis",
                 "Discussion",
                 "Conclusion",
                 "References",
                 "Appendix",
                 "Abstract",
+                "Research Significance",
+                "Original Contribution",
+                "Conceptual Integration",
+                "Methodological Rigour",
+                "Findings Quality",
+                "Contribution Contextualisation",
+                "Literature Review",
             ]:
                 if re.search(rf"\b{section_name}\b", fallback_text, re.IGNORECASE):
                     return section_name
@@ -1775,12 +3563,12 @@ class PhDQualityAssessor:
         Returns:
             List of chapters with name, chunk count, embedding mean, section type, and sequence number
         """
-        chapters_dict = defaultdict(
+        chapters_dict: Dict[str, Dict[str, Any]] = defaultdict(
             lambda: {"chunks": [], "embeddings": [], "sequence_number": float("inf")}
         )
         ordered_labels: List[str] = []
 
-        indices = self._select_structural_indices(chunks_data)
+        indices = self._source_ordered_structural_indices(chunks_data)
         documents = chunks_data.get("documents", [])
         metadatas = chunks_data.get("metadatas", [])
 
@@ -1788,14 +3576,25 @@ class PhDQualityAssessor:
 
         # First pass: extract all chapters and identify numbered chapter boundaries
         # Track original insertion order for stable sorting when sequence numbers are identical
-        insertion_order = {}
+        insertion_order: Dict[str, int] = {}
+        active_chapter_name: Optional[str] = None
         for i in indices:
             if i >= len(metadatas) or i >= len(documents):
                 continue
             meta = metadatas[i]
             doc = documents[i]
 
-            chapter_name = self._get_chapter_label(meta, doc)
+            if self._has_section_metadata(meta):
+                chapter_name = self._get_chapter_label(meta, doc)
+                active_chapter_name = chapter_name
+            else:
+                heading_match = re.match(r"^\s*#{1,6}\s+(.+?)\s*#*\s*$", doc)
+                if heading_match:
+                    chapter_name = self._get_chapter_label({}, heading_match.group(1))
+                    if chapter_name != "Unknown":
+                        active_chapter_name = chapter_name
+                else:
+                    chapter_name = active_chapter_name or "Unknown"
             toc_match = self._match_toc_label(chapter_name, toc_order)
             canonical_name = toc_match or chapter_name
             if (
@@ -1825,15 +3624,38 @@ class PhDQualityAssessor:
 
             chapters_dict[canonical_name]["chunks"].append(doc)
             if chunks_data.get("embeddings") is not None and i < len(chunks_data["embeddings"]):
-                chapters_dict[canonical_name]["embeddings"].append(chunks_data["embeddings"][i])
+                embedding = chunks_data["embeddings"][i]
+                if embedding is not None and np.linalg.norm(embedding) > 0:
+                    chapters_dict[canonical_name]["embeddings"].append(embedding)
 
-        # Assign effective sequence numbers (use ToC order as fallback for missing sequence numbers)
+        # Parent chunks define the structural outline but are intentionally stored
+        # with zero placeholder embeddings. Backfill chapter coherence from child
+        # chunks, which retain the real semantic vectors used for retrieval.
+        if chunks_data.get("embeddings") is not None:
+            for i, meta in enumerate(metadatas):
+                if (
+                    i >= len(documents)
+                    or i >= len(chunks_data["embeddings"])
+                    or meta.get("chunk_type") != "child"
+                    or self._is_toc_chunk(documents[i])
+                ):
+                    continue
+                embedding = chunks_data["embeddings"][i]
+                if embedding is None or np.linalg.norm(embedding) == 0:
+                    continue
+                chapter_name = self._get_chapter_label(meta, documents[i])
+                canonical_name = self._match_toc_label(chapter_name, toc_order) or chapter_name
+                if canonical_name in chapters_dict:
+                    chapters_dict[canonical_name]["embeddings"].append(embedding)
+
+        # Assign effective sequence numbers. Source extraction order is canonical;
+        # table-of-contents order is a fallback only when sequence metadata is absent.
         for label in ordered_labels:
             seq_num = chapters_dict[label]["sequence_number"]
-            if toc_order and label in toc_order:
-                chapters_dict[label]["effective_sequence"] = toc_order[label]
-            elif seq_num != float("inf"):
+            if seq_num != float("inf"):
                 chapters_dict[label]["effective_sequence"] = seq_num
+            elif toc_order and label in toc_order:
+                chapters_dict[label]["effective_sequence"] = toc_order[label]
             else:
                 chapters_dict[label]["effective_sequence"] = float("inf")
 
@@ -1855,20 +3677,20 @@ class PhDQualityAssessor:
                         first_chapter_seq = min(first_chapter_seq, eff_seq)
                         last_chapter_seq = max(last_chapter_seq, eff_seq)
 
-        # Sort chapters by effective sequence number (with ToC fallback)
-        # Use insertion order as secondary key for stable sorting when sequence numbers are identical
+        # Sequence metadata is the source-order contract. Chapter numbers are
+        # useful for validation, but must not reorder unnumbered sections.
         def _chapter_sort_key(label: str) -> Tuple[int, float, int]:
-            if toc_order and label in toc_order:
-                return (0, float(toc_order[label]), insertion_order.get(label, 0))
             seq_value = chapters_dict[label]["sequence_number"]
             if isinstance(seq_value, (int, float)) and seq_value != float("inf"):
-                return (1, float(seq_value), insertion_order.get(label, 0))
+                return (0, float(seq_value), insertion_order.get(label, 0))
+            if toc_order and label in toc_order:
+                return (1, float(toc_order[label]), insertion_order.get(label, 0))
             return (2, float("inf"), insertion_order.get(label, 0))
 
         ordered_labels_sorted = sorted(ordered_labels, key=_chapter_sort_key)
 
         # Second pass: classify and build final chapter list
-        chapters = []
+        chapters: List[Dict[str, Any]] = []
         for name in ordered_labels_sorted:
             data = chapters_dict[name]
             # Use effective sequence for classification (may be ToC-based)
@@ -1899,6 +3721,66 @@ class PhDQualityAssessor:
             )
 
         return chapters
+
+    def _detect_chapter_order_issues(
+        self,
+        chunks_data: Dict[str, Any],
+        chapters: List[Dict[str, Any]],
+    ) -> List[str]:
+        """Identify source-order metadata that should be verified by a human.
+
+        The method does not reorder chapters. It makes malformed, duplicate, or
+        numerically inconsistent sequence metadata visible to the assessment
+        reviewer while preserving the source-derived canonical order.
+
+        Args:
+            chunks_data: ChromaDB query result with documents and metadatas
+            chapters: List of chapter dicts extracted from chunks_data
+        Returns:
+            List of issue strings describing potential chapter order problems.
+        """
+        issues: List[str] = []
+        labels_by_sequence: Dict[float, set[str]] = defaultdict(set)
+        documents = chunks_data.get("documents", [])
+        metadatas = chunks_data.get("metadatas", [])
+
+        for index in self._select_structural_indices(chunks_data):
+            if index >= len(metadatas) or index >= len(documents):
+                continue
+            metadata = metadatas[index]
+            raw_sequence = metadata.get("sequence_number")
+            if raw_sequence is None:
+                continue
+            if not isinstance(raw_sequence, (int, float)):
+                issues.append(
+                    f"Malformed sequence metadata '{raw_sequence}' for "
+                    f"{self._get_chapter_label(metadata, documents[index])}."
+                )
+                continue
+            labels_by_sequence[float(raw_sequence)].add(
+                self._get_chapter_label(metadata, documents[index])
+            )
+
+        for sequence, labels in labels_by_sequence.items():
+            if len(labels) > 1:
+                issues.append(
+                    f"Duplicate sequence {sequence:g} is assigned to: {', '.join(sorted(labels))}."
+                )
+
+        previous_number: Optional[int] = None
+        for chapter in chapters:
+            match = re.match(r"^chapter\s+(\d+)\b", str(chapter["name"]), re.IGNORECASE)
+            if not match:
+                continue
+            chapter_number = int(match.group(1))
+            if previous_number is not None and chapter_number < previous_number:
+                issues.append(
+                    "Source sequence orders numbered chapters as "
+                    f"Chapter {previous_number} before Chapter {chapter_number}."
+                )
+            previous_number = chapter_number
+
+        return list(dict.fromkeys(issues))
 
     def _detect_missing_sections(self, chunks_data: Dict) -> List[str]:
         """Detect missing required sections by parsing chunk text content.
@@ -1970,7 +3852,7 @@ class PhDQualityAssessor:
         import sqlite3
         from pathlib import Path
 
-        citations = []
+        citations: List[Dict[str, Any]] = []
 
         # Get doc_id and source_category from chunks_data
         if not chunks_data.get("metadatas"):
@@ -2095,7 +3977,7 @@ class PhDQualityAssessor:
         """
         from collections import defaultdict
 
-        venue_counts = defaultdict(int)
+        venue_counts: Dict[str, int] = defaultdict(int)
 
         for citation in citations:
             # Group by source or reference_type
@@ -2158,13 +4040,13 @@ class PhDQualityAssessor:
                 continue
 
             # Check if chunk contains claim language
-            if claim_re.search(doc):
+            claim_match = claim_re.search(doc)
+            if claim_match:
                 # Check if it also contains citations
                 if not citation_re.search(doc):
                     # Extract snippet around claim
-                    match = claim_re.search(doc)
-                    start = match.start() - 140
-                    end = match.end() + 140
+                    start = claim_match.start() - 140
+                    end = claim_match.end() + 140
                     snippet = _make_snippet(doc, start, end)
                     if not snippet:
                         continue
@@ -2210,7 +4092,7 @@ class PhDQualityAssessor:
         Returns:
             Dict mapping chapter names to total word count in that chapter
         """
-        chapter_sizes = defaultdict(int)
+        chapter_sizes: Dict[str, int] = defaultdict(int)
 
         for i, meta in enumerate(chunks_data["metadatas"]):
             chapter = meta.get("chapter", meta.get("section_title", "Unknown"))
@@ -2441,7 +4323,7 @@ class PhDQualityAssessor:
             List of detected contradictions with claim pairs and overlap score (up to 20)
 
         """
-        contradictions = []
+        contradictions: List[Dict[str, Any]] = []
         if len(claims) < 2:
             return contradictions
         negations = {"not", "no", "never", "none", "cannot", "failed", "fails"}
@@ -2525,10 +4407,18 @@ class PhDQualityAssessor:
 
         """
         if callable(self.llm_client):
-            return str(self.llm_client(prompt))
-        if hasattr(self.llm_client, "invoke"):
-            return str(self.llm_client.invoke(prompt))
-        return ""
+            client = self.llm_client
+        elif hasattr(self.llm_client, "invoke"):
+            client = self.llm_client
+        else:
+            return ""
+
+        return invoke_with_usage(
+            client,
+            prompt,
+            operation="phd_assessor.llm_invoke",
+            component="phd_assessment",
+        )
 
     def _llm_enabled(self, key: str) -> bool:
         """Check if a given LLM feature is enabled via flags.
@@ -2659,7 +4549,7 @@ class PhDQualityAssessor:
         tokens = [t for t in self._tokenise_words(text) if t not in _STOPWORDS and len(t) > 3]
         if not tokens:
             return []
-        freqs = defaultdict(int)
+        freqs: Dict[str, int] = defaultdict(int)
         for tok in tokens:
             freqs[tok] += 1
         sorted_tokens = sorted(freqs.items(), key=lambda x: (-x[1], x[0]))
@@ -2711,7 +4601,7 @@ class PhDQualityAssessor:
         section_map: Dict[str, Dict[str, Any]] = {}
         unknown_counter = 0
 
-        indices = self._select_structural_indices(chunks_data)
+        indices = self._source_ordered_structural_indices(chunks_data)
         metadatas = chunks_data.get("metadatas", [])
         documents = chunks_data.get("documents", [])
 
@@ -2751,7 +4641,7 @@ class PhDQualityAssessor:
             Dict mapping section labels to concatenated text from chunks in that section, preserving the order of first occurrence of each section label in the metadata. Sections with "Unknown" label are renamed to "Section N" based on first-seen order to ensure consistent grouping.
         """
         section_text: Dict[str, List[str]] = defaultdict(list)
-        indices = self._select_structural_indices(chunks_data)
+        indices = self._source_ordered_structural_indices(chunks_data)
         documents = chunks_data.get("documents", [])
         metadatas = chunks_data.get("metadatas", [])
         unknown_counter = 0
@@ -2815,7 +4705,10 @@ class PhDQualityAssessor:
             # This ensures text_map keys match chapters list names
             chapter_text[canonical_label].append(documents[i])
 
-        return {label: "\n".join(texts) for label, texts in chapter_text.items()}
+        canonical_order = [chapter["name"] for chapter in self._extract_chapters(chunks_data)]
+        ordered_labels = [label for label in canonical_order if label in chapter_text]
+        ordered_labels.extend(label for label in chapter_text if label not in canonical_order)
+        return {label: "\n".join(chapter_text[label]) for label in ordered_labels}
 
     def _detect_data_conclusion_mismatch_llm(
         self, results_text: str, conclusion_text: str
@@ -2904,7 +4797,7 @@ class PhDQualityAssessor:
         persona: str,
     ) -> float:
         """
-        Compute weighted overall quality score.
+        Compute a weighted assessment signal for human review.
 
         Persona weights:
         - supervisor: structure (0.6), citations (0.4)
@@ -2921,7 +4814,7 @@ class PhDQualityAssessor:
             persona: Persona type to determine weighting (e.g., 'supervisor', 'assessor', 'researcher')
 
         Returns:
-            Overall quality score (0 to 1) based on weighted combination of components
+            Assessment signal (0 to 1), not an examination outcome.
         """
         weights = {
             "supervisor": {
@@ -2956,7 +4849,8 @@ class PhDQualityAssessor:
         if structure.orphaned_concepts:
             structure_score *= 0.95  # Minor penalty for undeveloped concepts
 
-        # Citation score
+        # Citation score. Unavailable citation evidence is excluded rather than
+        # treated as a thesis defect, and remaining weights are re-normalised.
         citation_score = (citations.citation_recency_score + citations.geographic_diversity) / 2
         if citations.orphaned_claims:
             citation_score *= 0.8  # Penalty for unsupported claims
@@ -2971,18 +4865,78 @@ class PhDQualityAssessor:
         # Alignment score
         alignment_score = alignment.overlap_score
 
-        overall = (
-            w["structure"] * structure_score
-            + w["citations"] * citation_score
-            + w["methodology"] * methodology_score
-            + w["writing"] * writing_score
-            + w["alignment"] * alignment_score
+        scored_components = {
+            "structure": structure_score,
+            "methodology": methodology_score,
+            "writing": writing_score,
+            "alignment": alignment_score,
+        }
+        if citations.citation_evidence_available:
+            scored_components["citations"] = citation_score
+
+        active_weight = sum(w[name] for name in scored_components)
+        return sum(w[name] * score for name, score in scored_components.items()) / active_weight
+
+    def _collect_research_inquiry_text(
+        self,
+        chunks_data: Dict,
+        section_types: Optional[Dict[str, str]] = None,
+    ) -> str:
+        """Collect pre-matter and main-matter text while excluding instruments.
+
+        Args:
+            chunks_data: ChromaDB query result with metadatas and documents
+            section_types: Optional F1 section identity map keyed by canonical section name.
+
+        Returns:
+            A string containing the concatenated text of included sections.
+        """
+        documents = chunks_data.get("documents", [])
+        metadatas = chunks_data.get("metadatas", [])
+        if not metadatas:
+            return ""
+
+        included = []
+        excluded_keywords = (
+            "appendix",
+            "interview guide",
+            "interview schedule",
+            "interview protocol",
+            "survey instrument",
+            "questionnaire",
         )
+        if section_types is None:
+            section_types = {
+                chapter["name"]: chapter["section_type"]
+                for chapter in self._extract_chapters(chunks_data)
+            }
+        toc_order = self._build_toc_order(chunks_data)
 
-        return overall
+        for index, document in enumerate(documents):
+            metadata = metadatas[index] if index < len(metadatas) else {}
+            section_text = " ".join(
+                str(metadata.get(field) or "")
+                for field in ("section_title", "parent_section", "heading_path", "chapter")
+            ).casefold()
+            document_start = str(document[:200]).casefold()
+            if any(
+                keyword in section_text or keyword in document_start
+                for keyword in excluded_keywords
+            ):
+                continue
+            section_label = self._get_chapter_label(metadata, str(document))
+            section_label = self._match_toc_label(section_label, toc_order) or section_label
+            section_type = section_types.get(section_label)
+            if section_type in {"pre-matter", "main-matter"}:
+                included.append(document)
+        return "\n".join(included)
 
-    def _extract_research_questions(self, chunks_data: Dict) -> List[str]:
-        """Extract research questions from introduction/abstract sections.
+    def _extract_research_questions(
+        self,
+        chunks_data: Dict,
+        section_types: Optional[Dict[str, str]] = None,
+    ) -> List[str]:
+        """Extract explicit questions, aims and objectives from thesis narrative sections.
 
         Args:
             chunks_data: ChromaDB query result with metadatas and documents
@@ -2992,17 +4946,56 @@ class PhDQualityAssessor:
         """
         import re
 
-        text = self._collect_text_by_section(
-            chunks_data,
-            include_sections=["abstract", "introduction", "research questions"],
-        )
+        text = self._collect_research_inquiry_text(chunks_data, section_types)
 
         research_questions = []
+
+        statement_patterns = [
+            r"\b(?:the\s+)?(?:primary\s+|main\s+)?aim\s+of\s+(?:this|the)\s+"
+            r"(?:study|research|thesis)\s+(?:is|was)\s+[^.!?\n]+[.!?]",
+            r"\b(?:the\s+)?(?:primary\s+|specific\s+)?research\s+aims?\s+"
+            r"(?:are|is|were|was|include|includes)\s+[^.!?\n]+[.!?]",
+            r"\b(?:the\s+)?(?:research\s+)?objectives?\s+"
+            r"(?:are|is|were|was|include|includes)\s+[^.!?\n]+[.!?]",
+            r"\bthe\s+purpose\s+of\s+(?:this|the)\s+(?:study|research|thesis)\s+"
+            r"(?:is|was)\s+[^.!?\n]+[.!?]",
+        ]
+        for pattern in statement_patterns:
+            for match in re.finditer(pattern, text, re.IGNORECASE):
+                candidate = " ".join(match.group(0).split()).strip()
+                if len(candidate) >= 25:
+                    research_questions.append(candidate)
+
+        allowed_inquiry_types = {
+            "research_question",
+            "sub_question",
+            "aim",
+            "objective",
+            "hypothesis",
+            "guiding_question",
+        }
+        profile_framings = (self.cultural_lens_profile or {}).get("research_question_framings", [])
+        for framing in profile_framings:
+            if framing.get("classify_as") not in allowed_inquiry_types:
+                continue
+            indicators = [
+                str(indicator).casefold()
+                for indicator in framing.get("indicators", [])
+                if indicator
+            ]
+            if not indicators:
+                continue
+            for sentence in self._split_sentences(text):
+                if any(_contains_whole_phrase(sentence, indicator) for indicator in indicators):
+                    candidate = " ".join(sentence.split()).strip()
+                    if 20 <= len(candidate) <= 500:
+                        research_questions.append(candidate)
 
         # Pattern 1: "RQ1:", "RQ 1:", "Research Question(s) 1:", "Question(s) 1:" followed by actual question text
         # Handles singular/plural and optional numbering
         pattern1 = (
-            r"(?:RQ\s*\d+|Research\s+Questions?\s*\d*|Questions?\s*\d+)\s*[:.]?\s*([^?.!\n]+[?.!])"
+            r"(?:RQ\s*\d+(?:[a-z]|\.\d+)*|Research\s+Questions?\s*\d*(?:[a-z]|\.\d+)*|"
+            r"Questions?\s*\d+(?:[a-z]|\.\d+)*)\s*[:.)-]?\s*([^?.!\n]+[?.!])"
         )
         matches = re.findall(pattern1, text, re.IGNORECASE)
         for match in matches:
@@ -3101,8 +5094,23 @@ class PhDQualityAssessor:
 
             research_questions.append(sentence)
 
-        # Deduplicate and limit
-        unique_rqs = list(dict.fromkeys(research_questions))[:15]  # Increased to 15 to capture more
+        # Deduplicate by phrase while ignoring only leading question/list labels.
+        unique_rqs = []
+        seen_inquiry_keys = set()
+        for inquiry in research_questions:
+            deduplication_text = re.sub(
+                r"^\s*(?:(?:rq|research\s+questions?|questions?)\s*\d+|\d+|"
+                r"(?:research\s+questions?|questions?))\s*[:.)-]\s*",
+                "",
+                inquiry,
+                flags=re.IGNORECASE,
+            )
+            deduplication_key = " ".join(deduplication_text.casefold().split()).strip(
+                " \t\r\n.,;:!?"
+            )
+            if deduplication_key and deduplication_key not in seen_inquiry_keys:
+                unique_rqs.append(inquiry)
+                seen_inquiry_keys.add(deduplication_key)
 
         # Final cleanup: remove any that are just fragments
         cleaned_rqs = []
@@ -3114,14 +5122,459 @@ class PhDQualityAssessor:
 
         return cleaned_rqs[:10]  # Return top 10 after cleanup
 
+    def _classify_research_inquiries(
+        self,
+        inquiries: List[str],
+        sources_by_inquiry: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    ) -> Dict[str, str]:
+        """Assign conservative inquiry types, optionally using the local LLM.
+
+        Args:
+            inquiries: List of research inquiries to classify
+
+        Returns:
+            Dictionary mapping each inquiry to its classified type
+        """
+        allowed_types = {
+            "research_question",
+            "sub_question",
+            "aim",
+            "objective",
+            "hypothesis",
+            "guiding_question",
+            "not_rq",
+        }
+        profile_framings = (self.cultural_lens_profile or {}).get("research_question_framings", [])
+        classification: Dict[str, str] = {}
+        for inquiry in inquiries:
+            inquiry_lower = inquiry.casefold()
+            profile_type = next(
+                (
+                    framing.get("classify_as")
+                    for framing in profile_framings
+                    if framing.get("classify_as")
+                    and any(
+                        _contains_whole_phrase(inquiry, str(indicator))
+                        for indicator in framing.get("indicators", [])
+                        if indicator
+                    )
+                ),
+                None,
+            )
+            if profile_type:
+                classification[inquiry] = profile_type
+            elif re.search(r"\b(objective|objectives)\b", inquiry_lower):
+                classification[inquiry] = "objective"
+            elif re.search(r"\b(aim|aims|purpose)\b", inquiry_lower):
+                classification[inquiry] = "aim"
+            elif re.search(r"\bhypothesis|hypotheses\b", inquiry_lower):
+                classification[inquiry] = "hypothesis"
+            else:
+                classification[inquiry] = "research_question"
+
+        if (
+            not inquiries
+            or not self.llm_client
+            or not self._llm_enabled("research_inquiry_classification")
+        ):
+            return classification
+
+        candidates = [
+            {
+                "index": index,
+                "text": inquiry,
+                "sections": [
+                    source.get("section", "")
+                    for source in (sources_by_inquiry or {}).get(inquiry, [])
+                ],
+                "heuristic_type": classification[inquiry],
+            }
+            for index, inquiry in enumerate(inquiries)
+        ]
+        prompt = (
+            "Classify each thesis inquiry candidate. Allowed types: "
+            "research_question, sub_question, aim, objective, hypothesis, guiding_question, not_rq. "
+            "Classify the candidate's role in the thesis, not only its sentence form. Use not_rq "
+            "for rhetorical questions, interview/survey prompts, quoted questions, or other text "
+            "that does not express the thesis's own research purpose. Preserve the candidate text; return only JSON in the "
+            'shape {"classifications": [{"index": 0, "type": "research_question"}]}. '
+            "Include one entry per candidate and do not invent indexes.\n\n"
+            f"Candidates:\n{json.dumps(candidates, ensure_ascii=False)}"
+        )
+        try:
+            response = self._llm_invoke(prompt)
+            payload = extract_first_json_block(response) if response else None
+        except Exception:
+            payload = None
+        if not isinstance(payload, dict) or not isinstance(payload.get("classifications"), list):
+            return classification
+
+        for item in payload["classifications"]:
+            if not isinstance(item, dict):
+                continue
+            index = item.get("index")
+            inquiry_type = item.get("type")
+            if type(index) is int and 0 <= index < len(inquiries) and inquiry_type in allowed_types:
+                classification[inquiries[index]] = inquiry_type
+        return classification
+
+    def _reconcile_research_inquiries(
+        self,
+        inquiries: List[str],
+        inquiry_types: Dict[str, str],
+        sources_by_inquiry: Dict[str, List[Dict[str, Any]]],
+    ) -> Tuple[
+        List[str],
+        Dict[str, str],
+        Dict[str, List[Dict[str, Any]]],
+        Dict[str, List[str]],
+    ]:
+        """Conservatively merge local-LLM-confirmed introduction/conclusion restatements.
+
+        Args:
+            inquiries: List of research inquiries
+            inquiry_types: Dictionary mapping each inquiry to its classified type
+            sources_by_inquiry: Dictionary mapping each inquiry to its source sections
+
+        Returns:
+            A tuple containing:
+                - List of reconciled inquiries
+                - Updated dictionary of inquiry types
+                - Updated dictionary of sources by inquiry
+                - Dictionary of aliases for merged inquiries
+        """
+        aliases: Dict[str, List[str]] = {}
+        explicit_groups: Dict[Tuple[str, str], List[int]] = {}
+        for index, inquiry in enumerate(inquiries):
+            inquiry_type = inquiry_types.get(inquiry, "research_question")
+            for source in sources_by_inquiry.get(inquiry, []):
+                explicit_id = str(source.get("inquiry_id") or "").strip().upper()
+                if explicit_id:
+                    explicit_groups.setdefault((inquiry_type, explicit_id), []).append(index)
+                    break
+
+        explicit_canonical_by_member: Dict[int, int] = {}
+        for members in explicit_groups.values():
+            members = sorted(set(members))
+            if len(members) < 2:
+                continue
+            introduction_members = [
+                index
+                for index in members
+                if any(
+                    "introduction" in str(source.get("section", "")).casefold()
+                    for source in sources_by_inquiry.get(inquiries[index], [])
+                )
+            ]
+            canonical_index = min(introduction_members or members)
+            explicit_canonical_by_member.update({index: canonical_index for index in members})
+
+        if explicit_canonical_by_member:
+            consolidated_inquiries: List[str] = []
+            consolidated_types: Dict[str, str] = {}
+            consolidated_sources: Dict[str, List[Dict[str, Any]]] = {}
+            for index, inquiry in enumerate(inquiries):
+                canonical_index = explicit_canonical_by_member.get(index, index)
+                if canonical_index != index:
+                    continue
+                canonical = inquiries[canonical_index]
+                consolidated_inquiries.append(canonical)
+                consolidated_types[canonical] = inquiry_types.get(canonical, "research_question")
+                members = [
+                    member_index
+                    for member_index, member_canonical in explicit_canonical_by_member.items()
+                    if member_canonical == canonical_index
+                ] or [canonical_index]
+                consolidated_sources[canonical] = []
+                for member_index in members:
+                    member_text = inquiries[member_index]
+                    if member_index != canonical_index:
+                        aliases.setdefault(canonical, []).append(member_text)
+                    for source in sources_by_inquiry.get(member_text, []):
+                        combined_source = dict(source)
+                        if member_index != canonical_index:
+                            combined_source["restatement"] = member_text
+                        consolidated_sources[canonical].append(combined_source)
+            inquiries = consolidated_inquiries
+            inquiry_types = consolidated_types
+            sources_by_inquiry = consolidated_sources
+
+        if (
+            len(inquiries) < 2
+            or not self.llm_client
+            or not self._llm_enabled("research_inquiry_reconciliation")
+        ):
+            return inquiries, inquiry_types, sources_by_inquiry, aliases
+
+        prompt_items = [
+            {
+                "index": index,
+                "type": inquiry_types.get(inquiry, "research_question"),
+                "sections": [
+                    source.get("section", "") for source in sources_by_inquiry.get(inquiry, [])
+                ],
+                "text": inquiry,
+            }
+            for index, inquiry in enumerate(inquiries)
+        ]
+        prompt = (
+            "Identify only clearly equivalent restatements of the same research inquiry. "
+            "Do not merge inquiries merely because they discuss the same topic. Do not merge "
+            "different inquiry types or sub-questions. A merge is valid only when the group "
+            "has evidence from both an Introduction and a Conclusion section. Return JSON only "
+            'with shape {"groups": [[0, 2]]}; list zero-based indices for groups of equivalent inquiries. '
+            "Omit singleton groups and return an empty groups list when uncertain.\n\n"
+            f"Inquiries:\n{json.dumps(prompt_items, ensure_ascii=False)}"
+        )
+
+        try:
+            response = self._llm_invoke(prompt)
+            payload = extract_first_json_block(response) if response else None
+        except Exception:
+            payload = None
+        if not isinstance(payload, dict) or not isinstance(payload.get("groups"), list):
+            return inquiries, inquiry_types, sources_by_inquiry, aliases
+
+        accepted_groups: List[List[int]] = []
+        assigned_indices: set[int] = set()
+        for raw_group in payload["groups"]:
+            if not isinstance(raw_group, list) or len(raw_group) < 2:
+                continue
+            if any(
+                type(index) is not int or not 0 <= index < len(inquiries) for index in raw_group
+            ):
+                continue
+            group = sorted(set(raw_group))
+            if len(group) < 2 or assigned_indices.intersection(group):
+                continue
+            if (
+                len({inquiry_types.get(inquiries[index], "research_question") for index in group})
+                != 1
+            ):
+                continue
+
+            sections = [
+                str(source.get("section", "")).casefold()
+                for index in group
+                for source in sources_by_inquiry.get(inquiries[index], [])
+            ]
+            has_introduction = any("introduction" in section for section in sections)
+            has_conclusion = any("conclusion" in section for section in sections)
+            if not (has_introduction and has_conclusion):
+                continue
+
+            accepted_groups.append(group)
+            assigned_indices.update(group)
+
+        if not accepted_groups:
+            return inquiries, inquiry_types, sources_by_inquiry, aliases
+
+        canonical_index_by_member: Dict[int, int] = {}
+        for group in accepted_groups:
+            if any(
+                source.get("parent_inquiry_id")
+                for index in group
+                for source in sources_by_inquiry.get(inquiries[index], [])
+            ):
+                continue
+            introduction_indices = [
+                index
+                for index in group
+                if any(
+                    "introduction" in str(source.get("section", "")).casefold()
+                    for source in sources_by_inquiry.get(inquiries[index], [])
+                )
+            ]
+            canonical_index = min(introduction_indices or group)
+            canonical_index_by_member.update({index: canonical_index for index in group})
+
+        canonical_inquiries: List[str] = []
+        canonical_types: Dict[str, str] = {}
+        canonical_sources: Dict[str, List[Dict[str, Any]]] = {}
+        for index, inquiry in enumerate(inquiries):
+            canonical_index = canonical_index_by_member.get(index, index)
+            if canonical_index != index:
+                continue
+
+            canonical = inquiries[canonical_index]
+            canonical_inquiries.append(canonical)
+            canonical_types[canonical] = inquiry_types.get(canonical, "research_question")
+            group = next(
+                (group for group in accepted_groups if canonical_index in group), [canonical_index]
+            )
+            canonical_sources[canonical] = []
+            for member_index in group:
+                member_text = inquiries[member_index]
+                if member_index != canonical_index:
+                    aliases.setdefault(canonical, []).append(member_text)
+                for source in sources_by_inquiry.get(member_text, []):
+                    combined_source = dict(source)
+                    if member_index != canonical_index:
+                        combined_source["restatement"] = member_text
+                    canonical_sources[canonical].append(combined_source)
+
+        return canonical_inquiries, canonical_types, canonical_sources, aliases
+
+    def _assign_research_inquiry_identifiers(
+        self,
+        inquiries: List[str],
+        sources_by_inquiry: Dict[str, List[Dict[str, Any]]],
+    ) -> Tuple[Dict[str, str], Dict[str, str]]:
+        """Assign explicit RQ labels or stable source-order IDs to inquiries.
+        Args:
+            inquiries (List[str]): The list of inquiry phrases to assign identifiers to.
+            sources_by_inquiry (Dict[str, List[Dict[str, Any]]]): A mapping from each inquiry phrase to its associated sources.
+
+        Returns:
+            Tuple[Dict[str, str], Dict[str, str]]: A tuple containing two dictionaries:
+                - The first dictionary maps each inquiry to its assigned explicit or generated ID.
+                - The second dictionary maps each inquiry to its parent inquiry ID, if available.
+        """
+        explicit_ids: Dict[str, str] = {}
+        parent_ids: Dict[str, str] = {}
+        label_pattern = re.compile(
+            r"(?:\bRQ\s*|\bresearch\s+questions?\s*|\bquestions?\s*)"
+            r"(\d+(?:[a-z]|\.\d+)*)\s*[:.)-]?\s*$",
+            re.IGNORECASE,
+        )
+
+        for inquiry in inquiries:
+            for source in sources_by_inquiry.get(inquiry, []):
+                inquiry_id = source.get("inquiry_id")
+                if inquiry_id:
+                    explicit_ids[inquiry] = str(inquiry_id)
+                    parent_id = source.get("parent_inquiry_id")
+                    if parent_id:
+                        parent_ids[inquiry] = str(parent_id)
+                    break
+
+        reserved_ids = set(explicit_ids.values())
+        used_ids: set[str] = set()
+        inquiry_ids: Dict[str, str] = {}
+        next_number = 1
+        for inquiry in inquiries:
+            explicit_id = explicit_ids.get(inquiry)
+            if explicit_id and explicit_id not in used_ids:
+                inquiry_ids[inquiry] = explicit_id
+                used_ids.add(explicit_id)
+                continue
+
+            while f"RQ{next_number}" in reserved_ids or f"RQ{next_number}" in used_ids:
+                next_number += 1
+            generated_id = f"RQ{next_number}"
+            inquiry_ids[inquiry] = generated_id
+            used_ids.add(generated_id)
+            next_number += 1
+
+        return inquiry_ids, parent_ids
+
+    def _locate_research_inquiry_sources(
+        self,
+        chunks_data: Dict[str, Any],
+        inquiries: List[str],
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Map extracted inquiry phrases to exact local and absolute source spans.
+
+        Args:
+            chunks_data (Dict[str, Any]): The chunked document data containing texts, metadatas, and ids.
+            inquiries (List[str]): The list of inquiry phrases to locate within the documents.
+
+        Returns:
+            Dict[str, List[Dict[str, Any]]]: A mapping from each inquiry phrase to a list of source spans,
+            each containing local and absolute start and end positions along with any relevant metadata.
+        """
+        sources_by_inquiry: Dict[str, List[Dict[str, Any]]] = {}
+        documents = chunks_data.get("documents", [])
+        metadatas = chunks_data.get("metadatas", [])
+        chunk_ids = chunks_data.get("ids", [])
+        if "metadatas" in chunks_data and len(metadatas) != len(documents):
+            raise ValueError("metadata and document lengths must match for inquiry source mapping")
+        if "ids" in chunks_data and len(chunk_ids) != len(documents):
+            raise ValueError("chunk ID and document lengths must match for inquiry source mapping")
+        for inquiry in inquiries:
+            normalised_inquiry = " ".join(inquiry.casefold().split())
+            matches = []
+            for index, document in enumerate(documents):
+                document_text = str(document)
+                normalised_characters: List[str] = []
+                source_indices: List[int] = []
+                for source_index, character in enumerate(document_text):
+                    if character.isspace():
+                        if normalised_characters and normalised_characters[-1] != " ":
+                            normalised_characters.append(" ")
+                            source_indices.append(source_index)
+                    else:
+                        for folded_character in character.casefold():
+                            normalised_characters.append(folded_character)
+                            source_indices.append(source_index)
+                if normalised_characters and normalised_characters[-1] == " ":
+                    normalised_characters.pop()
+                    source_indices.pop()
+                normalised_document = "".join(normalised_characters)
+                match_start = normalised_document.find(normalised_inquiry)
+                if not normalised_inquiry or match_start < 0:
+                    continue
+                match_end = match_start + len(normalised_inquiry)
+                local_start = source_indices[match_start]
+                local_end = source_indices[match_end - 1] + 1
+                metadata = metadatas[index] if index < len(metadatas) else {}
+                chunk_source_start = metadata.get("source_start")
+                chunk_source_end = metadata.get("source_end")
+                absolute_start = (
+                    chunk_source_start + local_start
+                    if isinstance(chunk_source_start, int)
+                    else None
+                )
+                absolute_end = (
+                    chunk_source_start + local_end if isinstance(chunk_source_start, int) else None
+                )
+                prefix = document_text[max(0, local_start - 80) : local_start]
+                label_match = re.search(
+                    r"(?:\bRQ\s*|\bresearch\s+questions?\s*|\bquestions?\s*)"
+                    r"(\d+(?:[a-z]|\.\d+)*)\s*[:.)-]?\s*$",
+                    prefix,
+                    re.IGNORECASE,
+                )
+                inquiry_id = None
+                parent_inquiry_id = None
+                if label_match:
+                    number = label_match.group(1).casefold()
+                    inquiry_id = f"RQ{number}"
+                    subquestion_match = re.fullmatch(r"(\d+)(?:[a-z]|\.\d+)", number)
+                    if subquestion_match:
+                        parent_inquiry_id = f"RQ{subquestion_match.group(1)}"
+                matches.append(
+                    {
+                        "chunk_id": chunk_ids[index] if index < len(chunk_ids) else None,
+                        "section": metadata.get("heading_path")
+                        or metadata.get("section_title")
+                        or metadata.get("chapter")
+                        or "Unclassified",
+                        "source_start": absolute_start,
+                        "source_end": absolute_end,
+                        "chunk_local_start": local_start,
+                        "chunk_local_end": local_end,
+                        "chunk_source_start": chunk_source_start,
+                        "chunk_source_end": chunk_source_end,
+                        "inquiry_id": inquiry_id,
+                        "parent_inquiry_id": parent_inquiry_id,
+                    }
+                )
+            sources_by_inquiry[inquiry] = matches
+        return sources_by_inquiry
+
     def _compute_rq_alignment(
-        self, research_questions: List[str], chunks_data: Dict
+        self,
+        research_questions: List[str],
+        chunks_data: Dict,
+        aliases: Optional[Dict[str, List[str]]] = None,
     ) -> Tuple[float, List[str]]:
         """Check if research questions are addressed in findings/conclusion.
 
         Args:
             research_questions: List of extracted research questions
             chunks_data: ChromaDB query result with metadatas and documents to check for alignment
+            aliases: Optional dictionary mapping research questions to lists of synonymous terms
 
         Returns:
             Tuple of (alignment_score, unaddressed_rqs) where alignment_score is the proportion of RQs that are addressed in the findings/conclusion sections, and unaddressed_rqs is a list of RQs that were not sufficiently addressed (truncated for display)
@@ -3140,12 +5593,17 @@ class PhDQualityAssessor:
 
         for rq in research_questions:
             # Extract key terms from RQ (nouns, verbs)
-            key_terms = [
-                word.lower()
-                for word in self._tokenise_words(rq)
-                if len(word) > 4
-                and word.lower() not in {"research", "question", "hypothesis", "study", "thesis"}
-            ]
+            related_inquiries = [rq, *((aliases or {}).get(rq, []))]
+            key_terms = list(
+                dict.fromkeys(
+                    word.lower()
+                    for related_inquiry in related_inquiries
+                    for word in self._tokenise_words(related_inquiry)
+                    if len(word) > 4
+                    and word.lower()
+                    not in {"research", "question", "hypothesis", "study", "thesis"}
+                )
+            )
 
             # Check if at least 40% of key terms appear in findings
             if key_terms:
@@ -3185,7 +5643,7 @@ class PhDQualityAssessor:
         )
 
         # Get top concepts (using NLTK + domain stopwords from terminology module)
-        stem_freq = Counter()
+        stem_freq: Counter[str] = Counter()
         variant_counts: Dict[str, Counter] = defaultdict(Counter)
         for word, count in word_freq.items():
             # Use NLTK Porter stemmer for robust concept normalisation

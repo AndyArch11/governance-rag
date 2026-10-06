@@ -123,6 +123,48 @@ class TestStructureExtraction:
         assert any("Results" in name for name in section_names)
         assert any("Discussion" in name for name in section_names)
 
+    def test_markdown_front_and_post_matter_establishes_standalone_scope(self):
+        """Standalone thesis sections do not inherit the preceding numbered chapter."""
+        text = """## Abstract
+
+Abstract text.
+
+## Acknowledgements
+
+Acknowledgements text.
+
+## Chapter 1: Introduction
+
+Introduction text.
+
+## References
+
+Reference list.
+
+## Appendix A: Supplementary Materials
+
+Appendix text.
+"""
+
+        structure = extract_structure_from_text(text)
+        expected_chapters = {
+            "Abstract",
+            "Acknowledgements",
+            "Chapter 1",
+            "References",
+            "Appendix A: Supplementary Materials",
+        }
+
+        assert expected_chapters <= {section["chapter"] for section in structure}
+        for heading, expected_chapter in [
+            ("Acknowledgements text.", "Acknowledgements"),
+            ("Reference list.", "References"),
+            ("Appendix text.", "Appendix A: Supplementary Materials"),
+        ]:
+            start = text.index(heading)
+            mapping = map_text_to_structure(text, structure, start, start + len(heading))
+            assert mapping["chapter"] == expected_chapter
+
     def test_extract_subsections(self):
         """Test extraction of numbered subsections."""
         text = """

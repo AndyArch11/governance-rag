@@ -7,7 +7,9 @@ Tests the academic references dashboard module functionality including:
 - Error handling
 """
 
+import importlib
 import sqlite3
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Dict
@@ -15,8 +17,19 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from scripts.ui.academic import academic_references as academic_references_module
+
 # Note: dash and plotly are mocked in conftest.py before any imports
-from scripts.ui.academic.academic_references import AcademicReferences
+from scripts.ui.academic.academic_references import (
+    AcademicReferences,
+    _normalise_doc_filter,
+    _set_global_module,
+    _update_term_relationships,
+    _update_term_selector,
+    _update_terms_table,
+    _update_top_terms_chart,
+    create_academic_references_layout,
+)
 
 
 class TestIsSubterm:
@@ -324,6 +337,99 @@ class TestAcademicReferencesModule:
         result = module.get_doc_ids_for_domain("test_domain")
 
         assert result == [], "Should return empty list when no database"
+
+    def test_database_helpers_return_statistics_documents_and_relationships(self):
+        """Database helpers provide stable values for the dashboard controls."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test_terminology.db"
+            conn = sqlite3.connect(str(db_path))
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE domain_terms (
+                    id INTEGER PRIMARY KEY, term TEXT, domain TEXT, frequency INTEGER,
+                    domain_relevance_score REAL, term_type TEXT, doc_ids TEXT
+                )
+                """)
+            cursor.execute(
+                "CREATE TABLE term_relationships (source_term TEXT, target_term TEXT, relationship_type TEXT)"
+            )
+            cursor.executemany(
+                "INSERT INTO domain_terms (term, domain, frequency, domain_relevance_score, term_type, doc_ids) VALUES (?, ?, ?, ?, ?, ?)",
+                [
+                    ("research method", "phd", 8, 0.9, "concept", "thesis_v1, appendix_v1"),
+                    ("qualitative analysis", "phd", 4, 0.7, "method", "thesis_v1"),
+                    ("governance", "policy", 3, 0.6, "concept", "policy_v2"),
+                ],
+            )
+            cursor.execute(
+                "INSERT INTO term_relationships VALUES (?, ?, ?)",
+                ("research method", "qualitative analysis", "related"),
+            )
+            conn.commit()
+            conn.close()
+
+            module = AcademicReferences(terminology_db=db_path)
+            assert module.get_doc_ids_for_domain("phd") == ["appendix_v1", "thesis_v1"]
+            assert module.get_term_relationships("research method") == [
+                ("qualitative analysis", "related")
+            ]
+            assert module.get_reference_statistics() == {
+                "total_terms": 3,
+                "domains": ["phd", "policy"],
+                "total_frequency": 15,
+                "domain_count": 2,
+            }
+            module.close()
+
+    def test_layout_and_callbacks_render_populated_reference_data(self, monkeypatch):
+        """Layout callbacks render figures, tables, selectors, and relationships."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test_terminology.db"
+            conn = sqlite3.connect(str(db_path))
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE domain_terms (
+                    id INTEGER PRIMARY KEY, term TEXT, domain TEXT, frequency INTEGER,
+                    domain_relevance_score REAL, term_type TEXT, doc_ids TEXT
+                )
+                """)
+            cursor.execute(
+                "CREATE TABLE term_relationships (source_term TEXT, target_term TEXT, relationship_type TEXT)"
+            )
+            cursor.execute(
+                "INSERT INTO domain_terms (term, domain, frequency, domain_relevance_score, term_type, doc_ids) VALUES (?, ?, ?, ?, ?, ?)",
+                ("research method", "phd", 8, 0.9, "concept", "thesis_v1"),
+            )
+            cursor.execute(
+                "INSERT INTO term_relationships VALUES (?, ?, ?)",
+                ("research method", "qualitative analysis", "related"),
+            )
+            conn.commit()
+            conn.close()
+
+            monkeypatch.setattr(
+                sys.modules["dash"],
+                "callback",
+                lambda *args, **kwargs: lambda callback_function: callback_function,
+            )
+            module_api = importlib.reload(academic_references_module)
+            layout, module = module_api.create_academic_references_layout(db_path)
+            assert layout is not None
+            figure = module_api._update_top_terms_chart("phd", "thesis_v1")
+            assert figure is not None
+            assert module_api._update_terms_table("phd", "thesis_v1") is not None
+            assert module_api._update_term_selector("phd", "thesis_v1") == [
+                {"label": "research method", "value": "research method"}
+            ]
+            assert module_api._update_term_relationships("research method") is not None
+            module.close()
+            module_api._set_global_module(module_api.AcademicReferences())
+
+    def test_normalise_doc_filter(self):
+        """Versioned and empty document filter values are normalised for queries."""
+        assert _normalise_doc_filter(None) is None
+        assert _normalise_doc_filter("__all__") is None
+        assert _normalise_doc_filter("thesis_v2") == "thesis"
 
 
 class TestSubtermFilteringScenarios:

@@ -81,8 +81,9 @@ def vectors_module(monkeypatch):
     dummy_langchain = types.ModuleType("langchain_ollama")
 
     class DummyOllamaLLM:  # noqa: D401
-        def __init__(self, model=None):
+        def __init__(self, model=None, num_ctx=None, **kwargs):
             self.model = model
+            self.num_ctx = num_ctx
 
         def invoke(self, prompt: str):
             return ""
@@ -121,6 +122,34 @@ def test_validate_chunk_success_and_failure(vectors_module):
 
     with pytest.raises(Exception):
         vectors.validate_chunk("doc-2", "too short", "doc")
+
+
+def test_generate_chunk_embeddings_audits_estimated_input_tokens(vectors_module, monkeypatch):
+    vectors, _ = vectors_module
+    events = []
+    monkeypatch.setattr(vectors, "audit", lambda event, data: events.append((event, data)))
+    monkeypatch.setattr(
+        vectors,
+        "config",
+        types.SimpleNamespace(enable_adaptive_rate_limiting=False),
+    )
+    monkeypatch.setattr(
+        vectors,
+        "_embed_documents_with_fallback",
+        lambda _model, texts: [[0.1] * vectors.EXPECTED_EMBEDDING_DIM for _ in texts],
+    )
+    monkeypatch.setattr(vectors, "_create_embed_model", lambda: object())
+    text = "reference text " * 8
+
+    vectors.generate_chunk_embeddings_batch([text], batch_size=1)
+
+    usage_events = [data for event, data in events if event == "llm_usage"]
+    assert len(usage_events) == 1
+    assert usage_events[0]["operation"] == "embedding.chunk_batch"
+    assert usage_events[0]["input_tokens"] == len(text) // 4
+    assert usage_events[0]["output_tokens"] == 0
+    assert usage_events[0]["token_source"] == "estimated"
+    assert usage_events[0]["success"] is True
 
 
 def test_validate_chunk_semantics(vectors_module, monkeypatch):
@@ -162,6 +191,17 @@ def test_process_and_validate_chunks_repair_flow(vectors_module, monkeypatch):
     assert valid_count == 0
     assert repaired_count == 1
     assert failed_count == 0
+
+
+def test_process_and_validate_chunks_logs_reference_validation_start(vectors_module):
+    vectors, logger = vectors_module
+
+    vectors.process_and_validate_chunks([], "reference-1", "academic_reference")
+
+    assert any(
+        level == "info" and "Starting validation for reference" in args[0]
+        for level, args, _ in logger.messages
+    )
 
 
 def test_process_and_validate_chunks_table_guardrail_skips_llm(vectors_module, monkeypatch):
@@ -284,6 +324,8 @@ def test_detect_semantic_drift(vectors_module, monkeypatch):
 def test_store_chunks_with_source_category(vectors_module, monkeypatch):
     """Test that source_category is included in stored metadata."""
     vectors, _ = vectors_module
+    events = []
+    monkeypatch.setattr(vectors, "audit", lambda event, data: events.append((event, data)))
 
     # Mock dependencies
     chunk_collection = DummyCollection()
@@ -310,6 +352,7 @@ def test_store_chunks_with_source_category(vectors_module, monkeypatch):
         "summary": "A test summary for governance documentation.",
         "summary_scores": {"relevance": 8, "clarity": 9, "completeness": 7, "overall": 8},
         "source_category": "Governance",
+        "ref_id": "cache-ref-1",
     }
 
     chunks = [
@@ -335,13 +378,95 @@ def test_store_chunks_with_source_category(vectors_module, monkeypatch):
     assert chunk_collection.add_calls
     chunk_metadata = chunk_collection.add_calls[0]["metadatas"][0]
     assert chunk_metadata["source_category"] == "Governance"
+    assert chunk_metadata["ref_id"] == "cache-ref-1"
     assert chunk_metadata["embedding_model"] == vectors.EMBEDDING_MODEL_NAME
 
     # Verify doc metadata includes source_category
     assert doc_collection.add_calls
     doc_metadata = doc_collection.add_calls[0]["metadatas"][0]
     assert doc_metadata["source_category"] == "Governance"
+    assert doc_metadata["ref_id"] == "cache-ref-1"
     assert doc_metadata["embedding_model"] == vectors.EMBEDDING_MODEL_NAME
+    embedding_operations = {data["operation"] for event, data in events if event == "llm_usage"}
+    assert "embedding.chunk_batch" in embedding_operations
+    assert "embedding.document_summary" in embedding_operations
+
+
+def test_store_child_chunks_audits_embedding_tokens(vectors_module, monkeypatch):
+    vectors, _ = vectors_module
+    events = []
+    monkeypatch.setattr(vectors, "audit", lambda event, data: events.append((event, data)))
+    monkeypatch.setattr(
+        vectors,
+        "_create_embed_model",
+        lambda: types.SimpleNamespace(
+            embed_documents=lambda texts: [[0.1] * vectors.EXPECTED_EMBEDDING_DIM for _ in texts]
+        ),
+    )
+    monkeypatch.setattr(vectors, "_add_to_collection_in_batches", lambda **kwargs: None)
+
+    text = "reference evidence " * 8
+    vectors.store_child_chunks(
+        "reference-1",
+        [{"id": "child-1", "parent_id": "parent-1", "text": text}],
+        DummyCollection(),
+        {"doc_type": "academic_reference"},
+        doc_type="academic_reference",
+    )
+
+    usage_events = [data for event, data in events if event == "llm_usage"]
+    assert len(usage_events) == 1
+    assert usage_events[0]["operation"] == "embedding.child_chunks"
+    assert usage_events[0]["input_tokens"] == len(text) // 4
+    assert usage_events[0]["output_tokens"] == 0
+    assert usage_events[0]["token_source"] == "estimated"
+
+
+def test_store_chunks_logs_reference_embedding_start(vectors_module, monkeypatch):
+    vectors, logger = vectors_module
+    monkeypatch.setattr(
+        vectors,
+        "process_and_validate_chunks",
+        lambda *args, **kwargs: ([("reference-1-chunk-0", "Reference text")], 1, 0, 0),
+    )
+    monkeypatch.setattr(vectors, "compute_document_health", lambda **kwargs: {})
+    monkeypatch.setattr(
+        vectors,
+        "generate_chunk_embeddings_batch",
+        lambda docs, **kwargs: [[0.1] * 1024 for _ in docs],
+    )
+    monkeypatch.setattr(
+        vectors,
+        "_create_embed_model",
+        lambda: type(
+            "EmbedModel",
+            (),
+            {"embed_documents": lambda self, texts: [[0.1] * 1024 for _ in texts]},
+        )(),
+    )
+
+    vectors.store_chunks_in_chroma(
+        doc_id="reference-1",
+        file_hash="hash",
+        source_path="reference.pdf",
+        version=1,
+        chunks=["Reference text"],
+        metadata={
+            "doc_type": "academic_reference",
+            "summary": "Reference summary",
+            "summary_scores": {"overall": 0},
+            "key_topics": [],
+        },
+        chunk_collection=DummyCollection(),
+        doc_collection=DummyCollection(),
+        preprocess_duration=0.0,
+        ingest_duration=0.0,
+    )
+
+    assert any(
+        level == "info" and "Starting embedding for reference chunks" in args[0]
+        for level, args, _ in logger.messages
+    )
 
 
 def test_store_chunks_empty_source_category(vectors_module, monkeypatch):

@@ -165,6 +165,35 @@ class TestChapterOrdering:
             chapter_numbers
         ), f"Chapters not in order: {chapter_numbers}"
 
+    def test_source_sequence_preserves_numbered_and_unnumbered_order(self, assessor):
+        chunks_data = {
+            "documents": [
+                "Chapter 4 content",
+                "Chapter 1 content",
+                "Methodology",
+                "Chapter 2 content",
+            ],
+            "metadatas": [
+                {"chapter": "Chapter 4: Methodology", "sequence_number": 2},
+                {"chapter": "Chapter 1: Introduction", "sequence_number": 95},
+                {"chapter": "Methodology", "sequence_number": 96},
+                {"chapter": "Chapter 2: Literature Review", "sequence_number": 97},
+            ],
+            "embeddings": [[0.1] * 768, [0.2] * 768, [0.3] * 768, [0.4] * 768],
+        }
+
+        assessor._select_structural_indices = Mock(return_value=[0, 1, 2, 3])
+        assessor._has_section_metadata = Mock(return_value=True)
+
+        chapters = assessor._extract_chapters(chunks_data)
+
+        assert [chapter["name"] for chapter in chapters] == [
+            "Chapter 4: Methodology",
+            "Chapter 1: Introduction",
+            "Methodology",
+            "Chapter 2: Literature Review",
+        ]
+
     def test_numbered_chapters_filter_bare_headers(self, assessor):
         """Test that bare section headers are filtered when numbered chapters exist."""
         chunks_data = {

@@ -12,7 +12,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from threading import Lock
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from urllib.parse import urljoin
 
 import requests
@@ -234,7 +235,18 @@ class DomainVocabulary:
             source_url=data.get("source_url"),
         )
 
-        for term_data in data.get("terms", {}).values():
+        terms_data = data.get("terms") or {}
+        term_entries: Iterable[Any]
+        if isinstance(terms_data, dict):
+            term_entries = terms_data.values()
+        elif isinstance(terms_data, list):
+            term_entries = terms_data
+        else:
+            raise ValueError("Vocabulary terms must be a mapping or a list of term objects")
+
+        for term_data in term_entries:
+            if not isinstance(term_data, dict):
+                raise ValueError("Each vocabulary term must be a JSON object")
             term = DomainTerm.from_dict(term_data)
             vocab.add_term(term)
 
@@ -385,6 +397,8 @@ class DomainTermManager:
             config = RAGConfig()
             config_path = Path(config.rag_data_path) / "domain_terms"
 
+        if config_path is None:
+            raise ValueError("Domain vocabulary configuration path is required")
         self.config_path = Path(config_path)
         self.config_path.mkdir(parents=True, exist_ok=True)
         self.logger = get_logger()
@@ -697,14 +711,17 @@ class DomainTermManager:
         Returns:
             Tuple of (expanded_terms, weights)
         """
-        terms = []
-        weights = []
+        terms: List[str] = []
+        weights: List[float] = []
 
         query_lower = query.lower()
 
         # Check all vocabularies (or specific domain)
-        vocabs = [self.get_vocabulary(domain)] if domain else list(self.vocabularies.values())
-        vocabs = [v for v in vocabs if v is not None]
+        if domain is not None:
+            vocabulary = self.get_vocabulary(domain)
+            vocabs: List[DomainVocabulary] = [vocabulary] if vocabulary is not None else []
+        else:
+            vocabs = list(self.vocabularies.values())
 
         for vocab in vocabs:
             for term_str, domain_term in vocab.terms.items():
@@ -1068,11 +1085,13 @@ class DomainTermManager:
 
 # Global instance
 _domain_manager: Optional[DomainTermManager] = None
+_domain_manager_lock = Lock()
 
 
 def get_domain_term_manager(config_path: Optional[Path] = None) -> DomainTermManager:
-    """Get or create global domain term manager instance."""
+    """Get or create the process-wide domain term manager safely across threads."""
     global _domain_manager
-    if _domain_manager is None:
-        _domain_manager = DomainTermManager(config_path)
-    return _domain_manager
+    with _domain_manager_lock:
+        if _domain_manager is None:
+            _domain_manager = DomainTermManager(config_path)
+        return _domain_manager

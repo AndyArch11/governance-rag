@@ -263,6 +263,214 @@ class TestExtractChaptersSequenceBased:
         chapter_names = [ch["name"] for ch in chapters]
         assert chapter_names == ["Chapter 1", "Chapter 2", "Chapter 3"]
 
+    def test_extract_chapters_prefers_source_sequence_over_conflicting_toc(self, assessor):
+        """Source sequence metadata remains canonical when the ToC is inconsistent."""
+        chunks_data = {
+            "ids": ["toc", "1", "2"],
+            "documents": [
+                (
+                    "Table of Contents\n\nChapter 2: Methods ................... 1\n"
+                    "Chapter 1: Introduction ............... 20"
+                ),
+                "Chapter 1: Introduction content",
+                "Chapter 2: Methods content",
+            ],
+            "metadatas": [
+                {
+                    "chunk_type": "parent",
+                    "section_title": "Table of Contents",
+                    "sequence_number": 0,
+                },
+                {"chunk_type": "parent", "chapter": "Chapter 1", "sequence_number": 100},
+                {"chunk_type": "parent", "chapter": "Chapter 2", "sequence_number": 200},
+            ],
+            "embeddings": [np.random.rand(1024) for _ in range(3)],
+        }
+
+        chapters = assessor._extract_chapters(chunks_data)
+
+        assert [chapter["name"] for chapter in chapters] == [
+            "Chapter 1: Introduction",
+            "Chapter 2: Methods",
+        ]
+
+    def test_section_embeddings_follow_source_sequence(self, assessor):
+        """Argument-flow sections follow source sequence rather than collection order."""
+        chunks_data = {
+            "ids": ["1", "2", "3"],
+            "documents": ["Results", "Introduction", "Methods"],
+            "metadatas": [
+                {"chunk_type": "parent", "section_title": "Results", "sequence_number": 300},
+                {"chunk_type": "parent", "section_title": "Introduction", "sequence_number": 100},
+                {"chunk_type": "parent", "section_title": "Methods", "sequence_number": 200},
+            ],
+            "embeddings": [np.random.rand(1024) for _ in range(3)],
+        }
+
+        sections = assessor._extract_section_embeddings(chunks_data)
+
+        assert [section["name"] for section in sections] == ["Introduction", "Methods", "Results"]
+
+    def test_extract_chapters_orders_double_digit_chapters_by_source_sequence(self, assessor):
+        """Chapters 1, 2, 3, and 10 retain numeric source order rather than lexical order."""
+        chapters = ["Chapter 10", "Chapter 3", "Chapter 1", "Chapter 2"]
+        chunks_data = {
+            "ids": [str(index) for index in range(4)],
+            "documents": [f"{chapter} content" for chapter in chapters],
+            "metadatas": [
+                {"chunk_type": "parent", "chapter": chapter, "sequence_number": sequence}
+                for chapter, sequence in zip(chapters, [1000, 300, 100, 200])
+            ],
+            "embeddings": [np.random.rand(1024) for _ in chapters],
+        }
+
+        extracted_chapters = assessor._extract_chapters(chunks_data)
+
+        assert [chapter["name"] for chapter in extracted_chapters] == [
+            "Chapter 1",
+            "Chapter 2",
+            "Chapter 3",
+            "Chapter 10",
+        ]
+
+    def test_extract_chapters_preserves_full_document_source_order(self, assessor):
+        """Front matter, chapters, and post matter retain the source document sequence."""
+        source_items = [
+            ("Abstract", 10),
+            ("Acknowledgements", 20),
+            ("Chapter 1", 100),
+            ("Chapter 2", 200),
+            ("Chapter 3", 300),
+            ("Chapter 10", 1000),
+            ("References", 1100),
+            ("Appendix A", 1200),
+        ]
+        collection_items = [source_items[index] for index in [6, 3, 0, 7, 4, 1, 5, 2]]
+        chunks_data = {
+            "ids": [str(index) for index in range(len(collection_items))],
+            "documents": [f"{label} content" for label, _ in collection_items],
+            "metadatas": [
+                {"chunk_type": "parent", "chapter": label, "sequence_number": sequence}
+                for label, sequence in collection_items
+            ],
+            "embeddings": [np.random.rand(1024) for _ in collection_items],
+        }
+
+        extracted_chapters = assessor._extract_chapters(chunks_data)
+        chapter_text = assessor._group_text_by_chapter(chunks_data)
+
+        expected_order = [label for label, _ in source_items]
+        assert [chapter["name"] for chapter in extracted_chapters] == expected_order
+        assert list(chapter_text) == expected_order
+        assert [chapter["section_type"] for chapter in extracted_chapters] == [
+            "pre-matter",
+            "pre-matter",
+            "main-matter",
+            "main-matter",
+            "main-matter",
+            "main-matter",
+            "post-matter",
+            "post-matter",
+        ]
+
+    def test_extract_chapters_uses_leading_headings_when_metadata_is_missing(self, assessor):
+        """Heading boundaries prevent body references from being treated as chapters."""
+        chunks_data = {
+            "ids": ["1", "2", "3", "4", "5", "6"],
+            "documents": [
+                "## Abstract",
+                "This thesis refers to Chapter 4 when outlining its later methodology.",
+                "## Acknowledgements",
+                "Thanks to the supervisors and participants who supported this thesis.",
+                "## Chapter 1: Introduction",
+                "This chapter establishes the research context.",
+            ],
+            "metadatas": [{"chunk_type": "child", "sequence_number": index} for index in range(6)],
+            "embeddings": [np.random.rand(1024) for _ in range(6)],
+        }
+
+        chapters = assessor._extract_chapters(chunks_data)
+
+        assert [chapter["name"] for chapter in chapters] == [
+            "Abstract",
+            "Acknowledgements",
+            "Chapter 1",
+        ]
+
+    def test_extract_chapters_uses_children_when_parent_metadata_is_missing(self, assessor):
+        """Unlabelled parent chunks do not interleave with child source sequence."""
+        chunks_data = {
+            "ids": ["parent-0", "parent-1", "child-0", "child-1", "child-2", "child-3"],
+            "documents": [
+                "Parent text mentioning Chapter 2.",
+                "Parent text mentioning Chapter 1.",
+                "## Abstract",
+                "Abstract text.",
+                "## Chapter 1: Introduction",
+                "Introduction text.",
+            ],
+            "metadatas": [
+                {"chunk_type": "parent", "sequence_number": 0},
+                {"chunk_type": "parent", "sequence_number": 1},
+                {"chunk_type": "child", "sequence_number": 0},
+                {"chunk_type": "child", "sequence_number": 1},
+                {"chunk_type": "child", "sequence_number": 2},
+                {"chunk_type": "child", "sequence_number": 3},
+            ],
+            "embeddings": [np.random.rand(1024) for _ in range(6)],
+        }
+
+        chapters = assessor._extract_chapters(chunks_data)
+
+        assert [chapter["name"] for chapter in chapters] == ["Abstract", "Chapter 1"]
+
+    def test_structure_reports_conflicting_chapter_source_order(self, assessor):
+        """Numbered chapters with contradictory source sequence are visible for review."""
+        chunks_data = {
+            "ids": ["1", "2"],
+            "documents": ["Chapter 2: Methods content", "Chapter 1: Introduction content"],
+            "metadatas": [
+                {"chunk_type": "parent", "chapter": "Chapter 2", "sequence_number": 100},
+                {"chunk_type": "parent", "chapter": "Chapter 1", "sequence_number": 200},
+            ],
+            "embeddings": [np.random.rand(1024), np.random.rand(1024)],
+        }
+
+        structure = assessor.analyse_structure(chunks_data)
+
+        assert structure.chapter_order == ["Chapter 2", "Chapter 1"]
+        assert structure.chapter_order_issues == [
+            "Source sequence orders numbered chapters as Chapter 2 before Chapter 1."
+        ]
+        assert any(
+            flag.title == "Chapter Source Order Requires Review" for flag in structure.red_flags
+        )
+
+    def test_structure_reports_malformed_and_duplicate_sequence_metadata(self, assessor):
+        """Malformed and duplicate chapter sequence values are retained as review issues."""
+        chunks_data = {
+            "ids": ["1", "2", "3"],
+            "documents": [
+                "Chapter 1: Introduction content",
+                "Chapter 2: Methods content",
+                "Chapter 3: Results content",
+            ],
+            "metadatas": [
+                {"chunk_type": "parent", "chapter": "Chapter 1", "sequence_number": "first"},
+                {"chunk_type": "parent", "chapter": "Chapter 2", "sequence_number": 100},
+                {"chunk_type": "parent", "chapter": "Chapter 3", "sequence_number": 100},
+            ],
+            "embeddings": [np.random.rand(1024) for _ in range(3)],
+        }
+
+        structure = assessor.analyse_structure(chunks_data)
+
+        assert any(
+            "Malformed sequence metadata 'first'" in issue
+            for issue in structure.chapter_order_issues
+        )
+        assert any("Duplicate sequence 100" in issue for issue in structure.chapter_order_issues)
+
     def test_extract_chapters_filters_unknown_sections(self, assessor):
         """Sections classified as 'unknown' are filtered out."""
         chunks_data = {

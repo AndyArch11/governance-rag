@@ -1,6 +1,6 @@
 """Query Templates for RAG Dashboard.
 
-Provides reusable query templates for common governance, architecture, and code analysis questions.
+Provides reusable query templates for governance, architecture, operations and academic questions.
 Templates are stored in SQLite and can be saved/loaded from the dashboard.
 """
 
@@ -37,7 +37,6 @@ class QueryTemplateManager:
                     template_text TEXT NOT NULL,
                     k_results INTEGER DEFAULT 5,
                     temperature REAL DEFAULT 0.3,
-                    code_aware BOOLEAN DEFAULT 1,
                     persona TEXT DEFAULT NULL,
                     tags TEXT,
                     usage_count INTEGER DEFAULT 0,
@@ -87,24 +86,6 @@ class QueryTemplateManager:
                 "tags": "architecture,design",
             },
             {
-                "name": "API endpoints",
-                "category": "code",
-                "description": "Find API endpoints and services",
-                "template_text": "Show me the API endpoints and services for {} with their methods and parameters",
-                "k_results": 10,
-                "code_aware": True,
-                "tags": "api,code,services",
-            },
-            {
-                "name": "Database schema",
-                "category": "code",
-                "description": "Find database schema and models",
-                "template_text": "Show the database schema and data models for the {} service",
-                "k_results": 8,
-                "code_aware": True,
-                "tags": "database,schema,models",
-            },
-            {
                 "name": "Authentication flow",
                 "category": "security",
                 "description": "Explain authentication and authorisation",
@@ -120,15 +101,6 @@ class QueryTemplateManager:
                 "k_results": 5,
                 "tags": "deployment,operations,release",
             },
-            {
-                "name": "Error handling",
-                "category": "code",
-                "description": "Find error handling patterns",
-                "template_text": "How are errors and exceptions handled in {} module?",
-                "k_results": 6,
-                "code_aware": True,
-                "tags": "error,handling,exceptions",
-            },
             # Academic templates
             {
                 "name": "Find high-quality references",
@@ -137,7 +109,6 @@ class QueryTemplateManager:
                 "template_text": "Find high-quality academic references about {}",
                 "k_results": 8,
                 "temperature": 0.2,
-                "code_aware": False,
                 "persona": "supervisor",
                 "tags": "academic,references,quality",
             },
@@ -148,7 +119,6 @@ class QueryTemplateManager:
                 "template_text": "What are the recent research papers on {}?",
                 "k_results": 15,
                 "temperature": 0.5,
-                "code_aware": False,
                 "persona": "researcher",
                 "tags": "academic,research,recent",
             },
@@ -159,7 +129,6 @@ class QueryTemplateManager:
                 "template_text": "Provide a literature review on {} including key theories and findings",
                 "k_results": 10,
                 "temperature": 0.3,
-                "code_aware": False,
                 "persona": "assessor",
                 "tags": "academic,literature,review",
             },
@@ -170,7 +139,6 @@ class QueryTemplateManager:
                 "template_text": "What research methodologies have been used to study {}?",
                 "k_results": 15,
                 "temperature": 0.5,
-                "code_aware": False,
                 "persona": "researcher",
                 "tags": "academic,methodology,research",
             },
@@ -181,7 +149,6 @@ class QueryTemplateManager:
                 "template_text": "What are the most cited works on {} and their key contributions?",
                 "k_results": 8,
                 "temperature": 0.2,
-                "code_aware": False,
                 "persona": "supervisor",
                 "tags": "academic,citations,analysis",
             },
@@ -193,8 +160,8 @@ class QueryTemplateManager:
                 cursor.execute(
                     """
                     INSERT OR IGNORE INTO query_templates
-                    (name, category, description, template_text, k_results, temperature, code_aware, persona, tags)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (name, category, description, template_text, k_results, temperature, persona, tags)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                     (
                         template["name"],
@@ -203,7 +170,6 @@ class QueryTemplateManager:
                         template["template_text"],
                         template.get("k_results", 5),
                         template.get("temperature", 0.3),
-                        template.get("code_aware", False),
                         template.get("persona"),
                         template.get("tags", ""),
                     ),
@@ -219,7 +185,6 @@ class QueryTemplateManager:
         description: str = "",
         k_results: int = 5,
         temperature: float = 0.3,
-        code_aware: bool = False,
         tags: str = "",
     ) -> bool:
         """Save a new query template.
@@ -231,19 +196,21 @@ class QueryTemplateManager:
             description: Template description
             k_results: Default k value
             temperature: Default temperature
-            code_aware: Enable code-aware context
             tags: Comma-separated tags
 
         Returns:
             True if saved successfully
         """
+        if category.strip().lower() == "code":
+            return False
+
         try:
             with closing(sqlite3.connect(str(self.db_path))) as conn:
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO query_templates
-                    (name, category, description, template_text, k_results, temperature, code_aware, tags, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (name, category, description, template_text, k_results, temperature, tags, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                     (
                         name,
@@ -252,7 +219,6 @@ class QueryTemplateManager:
                         template_text,
                         k_results,
                         temperature,
-                        code_aware,
                         tags,
                         datetime.now(timezone.utc).isoformat(),
                     ),
@@ -283,7 +249,7 @@ class QueryTemplateManager:
             )
             row = cursor.fetchone()
 
-            if row:
+            if row and str(row["category"]).strip().lower() != "code":
                 # Increment usage count
                 cursor.execute(
                     """
@@ -306,6 +272,9 @@ class QueryTemplateManager:
         Returns:
             List of template dicts
         """
+        if category.lower() == "code":
+            return []
+
         with closing(sqlite3.connect(str(self.db_path))) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
@@ -330,6 +299,7 @@ class QueryTemplateManager:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT DISTINCT category FROM query_templates
+                WHERE LOWER(category) != 'code'
                 ORDER BY category
             """)
             return [row[0] for row in cursor.fetchall()]
@@ -351,9 +321,10 @@ class QueryTemplateManager:
                 """
                 SELECT name, description, category, template_text, k_results, temperature
                 FROM query_templates
-                WHERE LOWER(name) LIKE ?
-                   OR LOWER(description) LIKE ?
-                   OR LOWER(tags) LIKE ?
+                    WHERE LOWER(category) != 'code'
+                        AND (LOWER(name) LIKE ?
+                         OR LOWER(description) LIKE ?
+                         OR LOWER(tags) LIKE ?)
                 ORDER BY usage_count DESC, name ASC
             """,
                 (search_term, search_term, search_term),
@@ -393,7 +364,7 @@ class QueryTemplateManager:
                 """
                 SELECT name, description, category, template_text, k_results, temperature
                 FROM query_templates
-                WHERE last_used IS NOT NULL
+                WHERE last_used IS NOT NULL AND LOWER(category) != 'code'
                 ORDER BY last_used DESC
                 LIMIT ?
             """,
@@ -417,7 +388,7 @@ class QueryTemplateManager:
                 """
                 SELECT name, description, category, template_text, k_results, temperature, usage_count
                 FROM query_templates
-                WHERE usage_count > 0
+                WHERE usage_count > 0 AND LOWER(category) != 'code'
                 ORDER BY usage_count DESC
                 LIMIT ?
             """,

@@ -14,6 +14,7 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
+from unittest.mock import Mock
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -44,6 +45,21 @@ def test_schema_creation():
 
         expected = ["clusters", "edges", "metadata", "node_clusters", "nodes"]
         assert table_names == expected, f"Expected {expected}, got {table_names}"
+
+        node_columns = {row[1] for row in cursor.execute("PRAGMA table_info(nodes)").fetchall()}
+        code_columns = {
+            "language",
+            "service_name",
+            "service_type",
+            "dependencies",
+            "internal_calls",
+            "endpoints",
+            "db",
+            "queue",
+            "exports",
+            "repository",
+        }
+        assert node_columns.isdisjoint(code_columns)
 
         # Verify view exists
         views = cursor.execute("SELECT name FROM sqlite_master WHERE type='view'").fetchall()
@@ -287,6 +303,49 @@ def test_edge_canonicalisation():
         print("No DB file to remove")
 
     print("✓ Edge canonicalisation completed\n")
+
+
+def test_graph_store_lazy_document_and_subgraph_paths(tmp_path):
+    """Graph store returns decoded analytics, connected subgraphs, and parent text."""
+    db_path = tmp_path / "graph.sqlite"
+    with SQLiteGraphWriter(db_path, replace=True) as writer:
+        writer.insert_nodes_batch(
+            {
+                "doc1_v1": {
+                    "doc_id": "doc1",
+                    "version": 1,
+                    "doc_type": "policy",
+                },
+                "doc2_v1": {"doc_id": "doc2", "version": 1, "doc_type": "standard"},
+            }
+        )
+        writer.insert_edge("doc1_v1", "doc2_v1", 0.8, 0.9, 0.5, "conflict")
+        writer.set_build_metadata("analytics", json.dumps({"topology": {"density": 1.0}}))
+
+    store = SQLiteGraphStore(str(db_path))
+    assert store.load_metadata()
+    assert store.get_analytics() == {"topology": {"density": 1.0}}
+    assert store.get_node("missing") is None
+
+    subgraph = store.to_networkx_subgraph({"doc1_v1", "doc2_v1"})
+    assert subgraph.number_of_nodes() == 2
+    assert subgraph.number_of_edges() == 1
+    assert "dependencies" not in subgraph.nodes["doc1_v1"]
+    assert store.to_networkx_subgraph(set()).number_of_nodes() == 0
+
+    collection = Mock()
+    collection.get.return_value = {
+        "documents": ["Parent chunk text"],
+        "metadatas": [{"doc_id": "doc1", "version": 1, "is_parent": True}],
+    }
+    store.set_collection(collection)
+    assert store.get_doc("doc1_v1") == (
+        "Parent chunk text",
+        {"doc_id": "doc1", "version": 1, "is_parent": True},
+    )
+    assert store.get_doc("doc1_v1")[0] == "Parent chunk text"
+    assert collection.get.call_count == 1
+    store.close()
 
 
 if __name__ == "__main__":

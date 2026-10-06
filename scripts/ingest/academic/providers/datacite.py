@@ -113,13 +113,13 @@ class DataCiteProvider(BaseProvider):
         creators: Optional[List[str]] = None,
     ) -> Reference:
         """Resolve via DataCite search."""
+        query = f'titles.title:"{title}"'
+        if year:
+            query += f" AND publicationYear:{year}"
         params = {
-            "query": f'titles.title:"{title}"',
+            "query": query,
             "page[size]": 10,
         }
-
-        if year:
-            params["query"] += f" AND publicationYear:{year}"
 
         url = f"{self.BASE_URL}/dois"
 

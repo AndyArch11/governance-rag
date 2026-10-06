@@ -84,16 +84,11 @@ BM25 indexing happens automatically when enabled:
 # HTML document ingestion
 python3 scripts/ingest/ingest.py
 
-# Git code ingestion
-python3 scripts/ingest/ingest_git.py --provider bitbucket --host https://bitbucket.org --project PROJ --repo my-repo
-
 # Academic ingestion
 python3 scripts/ingest/ingest_academic.py --papers-dir data_raw/academic_papers
 
 # Reset and rebuild all indexes
 python3 scripts/ingest/ingest.py --reset
-
-python3 scripts/ingest/ingest_git.py --provider bitbucket --host https://bitbucket.org --project PROJ --repo my-repo --reset
 
 python3 scripts/ingest/ingest_academic.py --papers-dir data_raw/academic_papers --reset
 

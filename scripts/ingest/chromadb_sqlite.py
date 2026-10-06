@@ -5,7 +5,7 @@ Provides efficient vector similarity search and metadata filtering
 while reducing memory footprint from 450MB (ChromaDB) to ~50-100MB (SQLite).
 
 Architecture:
-- Chunks table: Code and document fragments with embeddings
+- Chunks table: Document fragments with embeddings
 - Documents table: Full versioned documents
 - Embeddings: Stored as normalised binary (fast similarity search)
 - Metadata: JSON columns for rich, searchable attributes
@@ -29,7 +29,7 @@ Usage:
     results = collection.query(
         query_embeddings=[[0.1, 0.2, ...]],
         n_results=10,
-        where={"source_category": "code"},
+        where={"source_kind": "thesis_document"},
     )
 
     # Get by ID
@@ -40,6 +40,7 @@ Usage:
 """
 
 import json
+import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -54,7 +55,7 @@ class ChromaSQLiteCollection:
     def __init__(self, db_path: str, collection_name: str):
         self.db_path = db_path
         self.collection_name = collection_name
-        self.conn = None
+        self.conn: Optional[sqlite3.Connection] = None
         self._init_db()
 
     def _get_connection(self):
@@ -113,7 +114,7 @@ class ChromaSQLiteCollection:
         cursor = conn.cursor()
 
         if embeddings is None:
-            embeddings = [None] * len(ids)
+            raise ValueError("SQLite-backed collections require embeddings")
         if metadatas is None:
             metadatas = [{}] * len(ids)
         if documents is None:
@@ -148,7 +149,7 @@ class ChromaSQLiteCollection:
         where: Optional[Dict[str, Any]] = None,
         limit: int = 100,
         offset: int = 0,
-        include: List[str] = None,
+        include: Optional[List[str]] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """Get documents from collection with optional filtering.
@@ -179,9 +180,9 @@ class ChromaSQLiteCollection:
             params.extend(ids)
 
         if where:
-            for key, value in where.items():
-                where_clauses.append(self._build_where_clause(key, value))
-                params.append(value)
+            metadata_clause, metadata_params = self._compile_where_clause(where)
+            where_clauses.append(metadata_clause)
+            params.extend(metadata_params)
 
         where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
 
@@ -199,7 +200,7 @@ class ChromaSQLiteCollection:
         rows = cursor.fetchall()
 
         # Format response
-        response = {
+        response: Dict[str, Any] = {
             "ids": [],
             "documents": [] if "documents" in include else None,
             "metadatas": [] if "metadatas" in include else None,
@@ -227,7 +228,7 @@ class ChromaSQLiteCollection:
         query_embeddings: List[List[float]],
         n_results: int = 10,
         where: Optional[Dict[str, Any]] = None,
-        include: List[str] = None,
+        include: Optional[List[str]] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """Query with semantic similarity search.
@@ -252,9 +253,9 @@ class ChromaSQLiteCollection:
         params = []
 
         if where:
-            for key, value in where.items():
-                where_clauses.append(self._build_where_clause(key, value))
-                params.append(value)
+            metadata_clause, metadata_params = self._compile_where_clause(where)
+            where_clauses.append(metadata_clause)
+            params.extend(metadata_params)
 
         where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
 
@@ -301,7 +302,7 @@ class ChromaSQLiteCollection:
             results_by_query.append(similarities)
 
         # Format response
-        response = {
+        response: Dict[str, Any] = {
             "ids": [[] for _ in query_embeddings],
             "documents": [[] for _ in query_embeddings] if "documents" in include else None,
             "metadatas": [[] for _ in query_embeddings] if "metadatas" in include else None,
@@ -356,9 +357,9 @@ class ChromaSQLiteCollection:
             params.extend(ids)
 
         if where:
-            for key, value in where.items():
-                where_clauses.append(self._build_where_clause(key, value))
-                params.append(value)
+            metadata_clause, metadata_params = self._compile_where_clause(where)
+            where_clauses.append(metadata_clause)
+            params.extend(metadata_params)
 
         if not where_clauses:
             raise ValueError("Must specify ids or where clause for delete")
@@ -420,20 +421,46 @@ class ChromaSQLiteCollection:
         cursor.execute(f"SELECT COUNT(*) FROM {self.collection_name}_chunks")
         return cursor.fetchone()[0]
 
+    def _compile_where_clause(self, where: Dict[str, Any]) -> Tuple[str, List[Any]]:
+        """Compile supported Chroma-style metadata filters to parameterised SQL."""
+        if "$and" in where:
+            conditions = where["$and"]
+            if not isinstance(conditions, list) or not conditions:
+                raise ValueError("$and requires a non-empty list of filter conditions")
+            compiled = [self._compile_where_clause(condition) for condition in conditions]
+            return (
+                "(" + " AND ".join(condition for condition, _ in compiled) + ")",
+                [parameter for _, parameters in compiled for parameter in parameters],
+            )
+
+        if len(where) != 1:
+            compiled = [self._compile_where_clause({key: value}) for key, value in where.items()]
+            return (
+                "(" + " AND ".join(condition for condition, _ in compiled) + ")",
+                [parameter for _, parameters in compiled for parameter in parameters],
+            )
+
+        key, value = next(iter(where.items()))
+        if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            raise ValueError(f"Unsupported metadata filter key: {key!r}")
+
+        json_path = f"$.{key}"
+        if isinstance(value, dict):
+            if set(value) != {"$ne"}:
+                raise ValueError(f"Unsupported metadata operator for key: {key}")
+            return f"json_extract(metadata, '{json_path}') != ?", [value["$ne"]]
+
+        return f"json_extract(metadata, '{json_path}') = ?", [value]
+
     def _build_where_clause(self, key: str, value: Any) -> str:
-        """Build WHERE clause for metadata filtering.
+        """Build a parameterised equality predicate for legacy callers.
 
-        Args:
-            key: Metadata key to filter on.
-            value: Value to match for the given key.
-
-        Returns:
-            SQL WHERE clause string for the given key-value pair.
-
+        Values are deliberately omitted because callers must bind them as SQL
+        parameters; this wrapper exists for compatibility with the former
+        single-field helper.
         """
-        # For now, support simple equality checks
-        # Metadata is stored as JSON, so we check if key:value exists in JSON
-        return f"json_extract(metadata, '$.{key}') = ?"
+        clause, _ = self._compile_where_clause({key: value})
+        return clause
 
     def close(self):
         """Close database connection.
@@ -468,14 +495,14 @@ class ChromaSQLiteCollection:
 class ChromaSQLiteClient:
     """SQLite-based ChromaDB client with compatible API."""
 
-    def __init__(self, db_path: str = None):
+    def __init__(self, db_path: Optional[str] = None):
         """Initialise SQLite ChromaDB client."""
         if db_path is None:
             project_root = Path(__file__).resolve().parents[2]
             db_path = str(project_root / "rag_data" / "chromadb.db")
 
         self.db_path = db_path
-        self.collections = {}
+        self.collections: Dict[str, ChromaSQLiteCollection] = {}
 
         # Ensure directory exists
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)

@@ -8,7 +8,7 @@ and shared across ingestion runs.
 import json
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from scripts.utils.adaptive_cache_tuning import get_adaptive_cache_tuner
 from scripts.utils.db_factory import get_cache_client
@@ -52,7 +52,7 @@ class LLMCache:
 
         self.enabled = enabled
         self.max_age_days = max_age_days
-        self.entry_timestamps = {}  # Track timestamps for TTL
+        self.entry_timestamps: Dict[str, float] = {}  # Track timestamps for TTL
 
         # Initialise adaptive cache tuner
         self.tuner = get_adaptive_cache_tuner("llm_result")

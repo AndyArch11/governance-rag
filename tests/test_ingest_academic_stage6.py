@@ -30,3 +30,23 @@ def test_add_references_to_graph_creates_edges():
     add_references_to_graph(graph, "doc1", refs)
     assert "doc1" in graph.nodes
     assert len(graph.edges) == 2
+
+
+def test_add_references_to_graph_preserves_primary_document_metadata():
+    graph = CitationGraph()
+    add_references_to_graph(
+        graph,
+        "thesis-doc",
+        [],
+        doc_metadata={
+            "title": "A PhD thesis",
+            "authors": "O. Meyers",
+            "year": 2026,
+            "source": "document",
+        },
+    )
+
+    document = graph.nodes["thesis-doc"]
+    assert document.title == "A PhD thesis"
+    assert document.authors == ["O. Meyers"]
+    assert document.year == 2026

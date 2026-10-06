@@ -236,7 +236,7 @@ grep "retry_" logs/[module]_audit.jsonl | jq -r '.event' | sort | uniq -c
 ## Rollback Plan
 
 If issues arise:
-1. Remove import statements from `preprocess.py`, `vectors.py`, `ingest.py`, `ingest_git.py`
+1. Remove import statements from `preprocess.py`, `vectors.py`, and `ingest.py`
 2. Remove @retry decorator wrappers (operations will execute without retry)
 3. System returns to immediate-failure behaviour
 4. All tests should still pass with retry logic disabled
@@ -245,5 +245,5 @@ If issues arise:
 
 - Implementation: `scripts/utils/retry_utils.py`
 - Tests: `tests/test_retry_utils.py`
-- Utilised in modules: `ingest.py`, `pdfparser.py`, `htmlparser.py`, `bitbuck_connector.py`, `github_connector.py`, `preprocess.py`, `vectors.py`, `query.py`, `retrieve.py`, `generate.py`
+- Utilised in modules: `ingest.py`, `pdfparser.py`, `htmlparser.py`, `preprocess.py`, `vectors.py`, `query.py`, `retrieve.py`, `generate.py`
 - Audit events: `logs/[module]_audit.jsonl` (when running)

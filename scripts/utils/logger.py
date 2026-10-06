@@ -23,6 +23,7 @@ Usage:
 
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -142,6 +143,9 @@ def audit(module_name: str, event_type: str, data: Dict[str, Any]) -> None:
     """
     audit_log = LOGS_DIR / f"{module_name}_audit.jsonl"
     entry = {"timestamp": datetime.now(timezone.utc).isoformat(), "event": event_type, **data}
+    run_id = os.getenv("LLM_RUN_ID")
+    if run_id:
+        entry.setdefault("run_id", run_id)
     with open(audit_log, "a") as f:
         f.write(json.dumps(entry) + "\n")
 

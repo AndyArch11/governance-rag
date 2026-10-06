@@ -18,6 +18,7 @@ from scripts.utils.clear_databases import (
     clear_cache_database,
     clear_chromadb,
     clear_citation_graph_database,
+    clear_for_ingestion,
     clear_graph_database,
     clear_legacy_artifacts,
     clear_reference_cache,
@@ -437,6 +438,60 @@ class TestClearCitationGraphDatabase:
             assert "DRY RUN" in captured.out
 
 
+class TestClearForIngestion:
+    def test_academic_config_provides_cache_path_for_shared_reset(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Academic configuration supplies the cache contract used by shared reset utilities."""
+        from scripts.ingest.academic.config import get_academic_config
+        from scripts.utils.config import BaseConfig
+
+        monkeypatch.setattr(BaseConfig, "_overrides", {})
+
+        config = get_academic_config(
+            overrides={"RAG_DATA_PATH": str(tmp_path / "academic-rag-data")},
+            reset=True,
+        )
+
+        assert config.cache_path == tmp_path / "academic-rag-data" / "cache.db"
+
+    def test_uses_explicit_config_for_citation_graph_cleanup(self, monkeypatch, tmp_path) -> None:
+        """Academic reset clears the citation graph under its active rag_data_path."""
+        config = MockConfig(str(tmp_path / "academic-rag-data"))
+        citation_path = Path(config.rag_data_path) / "academic_citation_graph.db"
+        citation_path.parent.mkdir(parents=True)
+        citation_path.write_text("previous thesis graph")
+
+        monkeypatch.setattr(
+            "scripts.utils.clear_databases.clear_chromadb", lambda *args, **kwargs: None
+        )
+        monkeypatch.setattr(
+            "scripts.utils.clear_databases.clear_cache_database", lambda *args, **kwargs: None
+        )
+        monkeypatch.setattr(
+            "scripts.utils.clear_databases.clear_bm25_cache", lambda *args, **kwargs: None
+        )
+        monkeypatch.setattr(
+            "scripts.utils.clear_databases.clear_reference_cache", lambda *args, **kwargs: None
+        )
+        monkeypatch.setattr(
+            "scripts.utils.clear_databases.clear_terminology_database", lambda *args, **kwargs: None
+        )
+        monkeypatch.setattr(
+            "scripts.utils.clear_databases.clear_semantic_clustering_cache",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "scripts.utils.clear_databases.clear_academic_pdf_cache", lambda *args, **kwargs: None
+        )
+        monkeypatch.setattr(
+            "scripts.utils.clear_databases.clear_legacy_artifacts", lambda *args, **kwargs: None
+        )
+
+        assert clear_for_ingestion(config=config)
+        assert not citation_path.exists()
+
+
 class TestClearAcademicPdfCache:
     """Test clearing academic PDF cache functionality."""
 
@@ -655,8 +710,6 @@ class TestIntegration:
             assert tmpdir in config.rag_data_path
             assert tmpdir in config.cache_path
             assert tmpdir in config.output_sqlite
-
-
 
 
 # =============================================================================

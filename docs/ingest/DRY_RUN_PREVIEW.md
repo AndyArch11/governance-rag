@@ -4,30 +4,28 @@
 
 Reporting for the `--dry-run` CLI argument that shows detected documents, estimated chunks, LLM operations, embedding calls, cost estimates, and processing time before actual ingestion.
 
-All three ingestion scripts support `--dry-run`:
+Both ingestion scripts support `--dry-run`:
 - `scripts/ingest/ingest.py` - Generic documents (PDF, HTML, text)
-- `scripts/ingest/ingest_git.py` - Code repositories (Bitbucket, GitHub, GitLab, Azure DevOps)
 - `scripts/ingest/ingest_academic.py` - Academic papers and references
 
 ## Quick Reference: Dry-Run Operations
 
-| Operation | ingest.py | ingest_git.py | ingest_academic.py |
-|-----------|-----------|---------------|-------------------|
-| **Document/file discovery** | ✅ Performed | ✅ Performed | ✅ Performed |
-| **Text extraction** | ✅ Performed | ✅ Performed | ✅ Performed |
-| **LLM preprocessing** | ✅ Performed | ✅ Performed | ✅ Performed |
-| **Code parsing (AST)** | N/A | ✅ Performed | N/A |
-| **Citation extraction** | N/A | N/A | ✅ Performed |
-| **Provider API calls** | N/A | N/A | ❌ **Skipped** |
-| **Reference downloads** | N/A | N/A | ❌ **Skipped** |
-| **Chunking pipeline** | ✅ Performed | ✅ Performed | ✅ Performed |
-| **Chunk validation** | ✅ Performed | ✅ Performed | ✅ Performed |
-| **Embedding generation** | ✅ Performed | ✅ Performed | ✅ Performed |
-| **ChromaDB writes** | ❌ **Skipped** | ❌ **Skipped** | ❌ **Skipped** |
-| **BM25 indexing** | ❌ **Skipped** | ❌ **Skipped** | ❌ **Skipped** |
-| **Cache persistence** | ❌ **Skipped** | ❌ **Skipped** | ❌ **Skipped** |
-| **Citation graph write** | N/A | N/A | ❌ **Skipped** |
-| **Terminology DB write** | N/A | N/A | ❌ **Skipped** |
+| Operation | ingest.py | ingest_academic.py |
+|-----------|-----------|---------------------|
+| **Document discovery** | ✅ Performed | ✅ Performed |
+| **Text extraction** | ✅ Performed | ✅ Performed |
+| **LLM preprocessing** | ✅ Performed | ✅ Performed |
+| **Citation extraction** | N/A | ✅ Performed |
+| **Provider API calls** | N/A | ❌ **Skipped** |
+| **Reference downloads** | N/A | ❌ **Skipped** |
+| **Chunking pipeline** | ✅ Performed | ✅ Performed |
+| **Chunk validation** | ✅ Performed | ✅ Performed |
+| **Embedding generation** | ✅ Performed | ✅ Performed |
+| **ChromaDB writes** | ❌ **Skipped** | ❌ **Skipped** |
+| **BM25 indexing** | ❌ **Skipped** | ❌ **Skipped** |
+| **Cache persistence** | ❌ **Skipped** | ❌ **Skipped** |
+| **Citation graph write** | N/A | ❌ **Skipped** |
+| **Terminology DB write** | N/A | ❌ **Skipped** |
 
 **Key Benefits:**
 - **Accurate estimation:** Processes documents fully for realistic time/cost projections
@@ -44,7 +42,7 @@ All three ingestion scripts support `--dry-run`:
 
 **Purpose:** Thread-safe statistics collector for dry-run preview metrics.
 
-**N.B.:** This class and formatted preview report are currently only implemented in `ingest.py`. The `ingest_git.py` and `ingest_academic.py` scripts support `--dry-run` mode and skip persistence operations, but emit log messages instead of a formatted report.
+**N.B.:** This class and formatted preview report are currently only implemented in `ingest.py`. The academic ingestion script supports `--dry-run` mode and skips persistence operations, but emits log messages instead of a formatted report.
 
 **Tracked Metrics:**
 - **Documents:** New, updated, and skipped counts
@@ -139,39 +137,6 @@ python3 scripts/ingest/ingest.py --dry-run --reset
 python3 scripts/ingest/ingest.py --dry-run --workers 8
 ```
 
-### ingest_git.py (Code Repositories)
-
-#### Basic Dry-Run (Bitbucket)
-```bash
-python3 scripts/ingest/ingest_git.py --dry-run \
-  --provider bitbucket \
-  --host https://bitbucket.org/workspace/repo \
-  --username user \
-  --password token
-```
-
-#### Dry-Run with GitHub
-```bash
-python3 scripts/ingest/ingest_git.py --dry-run \
-  --provider github \
-  --host https://github.com/owner/repo \
-  --token ghp_xxxx
-```
-
-#### Dry-Run with File Type Filter
-```bash
-python3 scripts/ingest/ingest_git.py --dry-run \
-  --provider bitbucket \
-  --file-types ".py,.js,.ts" \
-  --username user --password token
-```
-
-#### Dry-Run with Repo Reset
-```bash
-python3 scripts/ingest/ingest_git.py --dry-run --reset-repo \
-  --provider gitlab --host https://gitlab.com/group/repo
-```
-
 ### ingest_academic.py (Academic References)
 
 #### Basic Dry-Run (Single Paper)
@@ -232,46 +197,6 @@ python3 scripts/ingest/ingest_academic.py --dry-run \
 - Real processing time measured for accuracy
 
 **N.B.:** Dry-run still consumes LLM/embedding resources for accurate estimation.
-
----
-
-### ingest_git.py (Code Repositories)
-
-**Purpose:** Preview ingestion of source code from Git repositories (Bitbucket, GitHub, GitLab, Azure DevOps).
-
-**Operations Performed:**
-- Repository cloning or pulling (unless `--no-refresh`)
-- File discovery with extension filtering
-- Encoding detection and file content reading
-- Code parsing (TreeSitter AST analysis)
-- Function/class extraction and documentation parsing
-- Code summary generation (if enabled with `--generate-summaries`)
-- Chunk creation (parent-child or regular)
-- Document ID and hash computation
-
-**Operations Skipped:**
-- ChromaDB writes (chunks, documents)
-- BM25 keyword indexing
-- Cache updates (LLM, embedding)
-- Drift detection hash storage
-
-**Output:**
-- Log messages: `[DRY-RUN] Would process <file_path> (doc_id=<id>)`
-- Log messages: `[DRY-RUN] Would store <n> chunks for <doc_id>`
-- Log messages: `[DRY-RUN] Would store <n> child chunks for <doc_id>`
-- Log messages: `[DRY-RUN] Would store <n> parent chunks for <doc_id>`
-- Audit events still emitted for file processing stages
-
-**Configuration:**
-- CLI flag: `--dry-run`
-- Environment variable: `GIT_DRY_RUN=true`
-- Precedence: CLI overrides environment
-
-**Use Cases:**
-- Preview file counts and language distribution before full ingestion
-- Verify file type filtering (`--file-types`)
-- Test repository connection and authentication
-- Estimate chunk counts for capacity planning
 
 ---
 
@@ -425,5 +350,4 @@ Check `logs/ingest_audit.jsonl` for dry-run preview events
 **Performance Impact:** Negligible (statistics collection overhead < 1ms/doc)  
 **Supported Scripts:**
 - `scripts/ingest/ingest.py` - Generic document ingestion (PDF, HTML, text)
-- `scripts/ingest/ingest_git.py` - Code repository ingestion (Bitbucket, GitHub, GitLab, Azure DevOps)
 - `scripts/ingest/ingest_academic.py` - Academic paper and reference ingestion

@@ -102,13 +102,13 @@ class BaseProvider(ABC):
 
     name: str
     base_url: str
-    rate_limit: int  # requests per second
-    timeout: int  # seconds
+    rate_limit: float  # requests per second
+    timeout: float  # seconds
 
     def __init__(self):
         """Initialise provider."""
         self.session = requests.Session()
-        self.last_request_time = 0
+        self.last_request_time: float = 0.0
         # Get provider logger but ensure it propagates to parent "academic_ingest" logger
         provider_logger = logging.getLogger(f"academic.providers.{self.name}")
         provider_logger.propagate = True  # Propagate to parent loggers for file/console handling
@@ -116,8 +116,13 @@ class BaseProvider(ABC):
 
     @abstractmethod
     def resolve(
-        self, citation_text: str, year: Optional[int] = None, doi: Optional[str] = None, logger=None
-    ) -> Reference:
+        self,
+        citation_text: str,
+        year: Optional[int] = None,
+        doi: Optional[str] = None,
+        authors: Optional[List[str]] = None,
+        logger=None,
+    ) -> Optional[Reference]:
         """
         Resolve a citation through this provider.
 
@@ -125,6 +130,7 @@ class BaseProvider(ABC):
             citation_text: Raw citation text or title
             year: Publication year (optional)
             doi: DOI if available (optional)
+            authors: Author list (optional)
             logger: Optional logger instance for status messages
 
         Returns:
@@ -134,7 +140,7 @@ class BaseProvider(ABC):
             RecoverableError: Temporary failure, try next provider
             FatalError: Permanent failure, skip provider
         """
-        pass
+        return None
 
     def _request_with_retry(
         self, method: str, url: str, max_retries: int = 2, backoff_factor: float = 1.0, **kwargs
@@ -205,6 +211,8 @@ class BaseProvider(ABC):
                     continue
                 else:
                     raise RecoverableError(f"Connection error after {max_retries} retries: {e}")
+
+        raise RecoverableError(f"Request failed after {max_retries} retries")
 
     def _rate_limit(self):
         """Enforce rate limiting (requests per second)."""

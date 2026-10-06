@@ -1,7 +1,6 @@
 """Tests for context caching module."""
 
 import json
-import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -45,8 +44,10 @@ def test_cache_miss(cache):
     assert result is None
 
 
-def test_cache_expiration(cache):
+def test_cache_expiration(cache, monkeypatch):
     """Test TTL expiration."""
+    current_time = [1000.0]
+    monkeypatch.setattr("scripts.rag.context_cache.time.time", lambda: current_time[0])
     cache.put(
         entity="expiring_entity",
         context="Will expire soon",
@@ -57,8 +58,8 @@ def test_cache_expiration(cache):
     # Should hit immediately
     assert cache.get("expiring_entity") == "Will expire soon"
 
-    # Wait for expiration
-    time.sleep(1.5)
+    # Advance beyond the one-second TTL without depending on wall-clock scheduling.
+    current_time[0] += 2
 
     # Should miss after expiration
     assert cache.get("expiring_entity") is None

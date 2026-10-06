@@ -1,7 +1,6 @@
-.PHONY: help install install-dev clean test test-cov lint format check-format type-check quality \
+.PHONY: help install install-academic install-dev clean test test-cov lint format check-format type-check quality \
         ingest ingest-reset ingest-dry-run ingest-profile ingest-purge \
-        ingest-bitbucket ingest-bitbucket-dry-run \
-        query query-purge graph graph-rebuild graph-purge dashboard reset-db setup-dirs
+	query query-purge graph graph-rebuild graph-purge thesis-graph dashboard reset-db setup-dirs
 
 # Default target
 .DEFAULT_GOAL := help
@@ -31,8 +30,12 @@ install: ## Install production dependencies
 	$(PIP) install --upgrade pip
 	$(PIP) install -r requirements.txt
 
-install-dev: install ## Install development dependencies (includes testing tools)
-	$(PIP) install -e ".[dev]"
+install-academic: ## Install runtime dependencies plus Docling academic PDF support
+	$(PIP) install -r requirements-academic.txt
+
+install-dev: ## Install runtime and development dependencies
+	$(PIP) install -r requirements-dev.txt
+	$(PIP) install -e .
 
 setup-dirs: ## Create required project directories
 	@mkdir -p $(DATA_RAW)/downloads
@@ -74,12 +77,12 @@ type-check: ## Run mypy type checking
 	$(PYTHON) -m mypy $(SCRIPTS_DIR) --ignore-missing-imports
 
 format: ## Format code with black and isort
-	$(PYTHON) -m black $(SCRIPTS_DIR) $(TEST_DIR) --line-length 100
 	$(PYTHON) -m isort $(SCRIPTS_DIR) $(TEST_DIR) --line-length 100
+	$(PYTHON) -m black $(SCRIPTS_DIR) $(TEST_DIR) --line-length 100
 
 check-format: ## Check code formatting without modifying
-	$(PYTHON) -m black --check $(SCRIPTS_DIR) $(TEST_DIR) --line-length 100
 	$(PYTHON) -m isort --check $(SCRIPTS_DIR) $(TEST_DIR) --line-length 100
+	$(PYTHON) -m black --check $(SCRIPTS_DIR) $(TEST_DIR) --line-length 100
 
 quality: format lint type-check test ## Run all quality checks (format, lint, type-check, test)
 	@echo "✓ All quality checks passed"
@@ -102,33 +105,6 @@ ingest-profile: ## Quick validation run with detailed timing analysis
 
 ingest-purge: ## Run ingestion with log purge (Dev/Test only)
 	cd $(SCRIPTS_DIR)/ingest && $(PYTHON) ingest.py --purge-logs
-
-ingest-bitbucket: ## Ingest BitBucket repository (pass HOST, PROJECT, REPO, [USERNAME], [PASSWORD])
-	@if [ -z "$(HOST)" ] || [ -z "$(PROJECT)" ] || [ -z "$(REPO)" ]; then \
-		echo "Usage: make ingest-bitbucket HOST=<url> PROJECT=<key> REPO=<slug> [USERNAME=<user>] [PASSWORD=<pass>] [WORKERS=<n>] [LIMIT=<n>]"; \
-		exit 1; \
-	fi
-	cd $(SCRIPTS_DIR)/ingest && $(PYTHON) ingest_bitbucket.py \
-		--host $(HOST) \
-		--project $(PROJECT) \
-		--repo $(REPO) \
-		$(if $(USERNAME),--username $(USERNAME)) \
-		$(if $(PASSWORD),--password $(PASSWORD)) \
-		$(if $(WORKERS),--workers $(WORKERS)) \
-		$(if $(LIMIT),--limit $(LIMIT))
-
-ingest-bitbucket-dry-run: ## Preview BitBucket ingestion (pass HOST, PROJECT, REPO, [USERNAME], [PASSWORD])
-	@if [ -z "$(HOST)" ] || [ -z "$(PROJECT)" ] || [ -z "$(REPO)" ]; then \
-		echo "Usage: make ingest-bitbucket-dry-run HOST=<url> PROJECT=<key> REPO=<slug> [USERNAME=<user>] [PASSWORD=<pass>]"; \
-		exit 1; \
-	fi
-	cd $(SCRIPTS_DIR)/ingest && $(PYTHON) ingest_bitbucket.py \
-		--host $(HOST) \
-		--project $(PROJECT) \
-		--repo $(REPO) \
-		$(if $(USERNAME),--username $(USERNAME)) \
-		$(if $(PASSWORD),--password $(PASSWORD)) \
-		--dry-run --verbose
 
 query: ## Run RAG query (pass QUERY="..." on command line)
 	@if [ -z "$(QUERY)" ]; then \
@@ -153,8 +129,15 @@ graph-rebuild: ## Rebuild consistency graph with reset
 graph-purge: ## Build consistency graph with log purge (Dev/Test only)
 	cd $(SCRIPTS_DIR)/consistency_graph && $(PYTHON) build_consistency_graph.py --purge-logs
 
+thesis-graph: ## Build thesis evidence graph (pass THESIS_ID="...")
+	@if [ -z "$(THESIS_ID)" ]; then \
+		echo "Usage: make thesis-graph THESIS_ID=\"O. Meyers - PhD thesis\""; \
+		exit 1; \
+	fi
+	$(PYTHON) -m scripts.thesis_graph.build_thesis_evidence_graph "$(THESIS_ID)"
+
 dashboard: ## Launch Plotly Dash dashboard
-	cd $(SCRIPTS_DIR)/ui && $(PYTHON) -m scripts.ui.dashboard
+	$(PYTHON) -m scripts.ui.dashboard
 
 # ─────────────────────────────────────────────────────────────
 # Database and Cache Management

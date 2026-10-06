@@ -429,7 +429,7 @@ class BenchmarkManager:
                 ),
             )
 
-            record_id = cursor.lastrowid
+            record_id = cursor.lastrowid if cursor.lastrowid is not None else -1
             conn.commit()
         except Exception as e:
             print(f"Database Error: {e}")
@@ -500,7 +500,7 @@ class BenchmarkManager:
             cursor = conn.cursor()
 
             where_clauses = ["relevancy_rating IS NOT NULL"]
-            params = []
+            params: List[Any] = []
 
             if time_range_hours:
                 cutoff = datetime.now() - timedelta(hours=time_range_hours)
@@ -576,7 +576,7 @@ class BenchmarkManager:
             cursor = conn.cursor()
 
             where_clauses = ["relevancy_rating IS NOT NULL"]
-            params = []
+            params: List[Any] = []
 
             if min_rating is not None:
                 where_clauses.append("relevancy_rating >= ?")
@@ -922,7 +922,6 @@ class BenchmarkManager:
         lines.append(f"- **Min Time:** {stats['min_time']:.2f}s")
         lines.append(f"- **Max Time:** {stats['max_time']:.2f}s")
         lines.append(f"- **Cache Hit Rate:** {stats['cache_hit_rate']:.1f}%")
-        lines.append(f"- **Code Query Rate:** {stats['code_query_rate']:.1f}%")
         lines.append(f"- **Avg Response Length:** {stats['avg_response_length']:.0f} chars")
         lines.append("")
 

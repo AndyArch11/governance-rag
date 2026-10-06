@@ -259,6 +259,11 @@ class TestCollectionAdd:
         assert result["ids"] == ["doc1"]
         assert result["documents"][0] == sample_documents[0]
 
+    def test_add_without_embeddings_fails_clearly(self, collection):
+        """SQLite-backed collections reject missing embeddings before database insertion."""
+        with pytest.raises(ValueError, match="require embeddings"):
+            collection.add(ids=["doc1"], documents=["Document without an embedding"])
+
     def test_add_with_metadata_only(self, collection):
         """add() with only metadata requires embedding."""
         collection.add(
@@ -414,6 +419,24 @@ class TestCollectionGet:
         result = collection.get(limit=100)
         assert len(result["ids"]) == 3
 
+    def test_get_supports_chroma_and_and_not_equal_filters(
+        self, collection, sample_embeddings, sample_documents, sample_metadatas
+    ):
+        """SQLite filtering accepts the combined filter shape emitted by RAG retrieval."""
+        collection.add(
+            ids=["doc1", "doc2", "doc3"],
+            embeddings=sample_embeddings,
+            documents=sample_documents,
+            metadatas=sample_metadatas,
+        )
+
+        result = collection.get(
+            where={"$and": [{"source": "bitbucket"}, {"language": {"$ne": "go"}}]},
+            include=["metadatas"],
+        )
+
+        assert result["ids"] == ["doc1"]
+
 
 # ============================================================================
 # Test ChromaSQLiteCollection - Query (Similarity Search)
@@ -467,6 +490,24 @@ class TestCollectionQuery:
         # Only bitbucket results should be returned
         assert len(result["ids"][0]) <= 2  # Only 2 bitbucket docs
         assert all(m["source"] == "bitbucket" for m in result["metadatas"][0])
+
+    def test_query_supports_chroma_and_filters(
+        self, collection, sample_embeddings, sample_metadatas
+    ):
+        """Vector queries retain Chroma-style combined metadata filters."""
+        collection.add(
+            ids=["doc1", "doc2", "doc3"],
+            embeddings=sample_embeddings,
+            metadatas=sample_metadatas,
+            documents=["a", "b", "c"],
+        )
+
+        result = collection.query(
+            query_embeddings=[sample_embeddings[0]],
+            where={"$and": [{"source": "bitbucket"}, {"language": {"$ne": "go"}}]},
+        )
+
+        assert result["ids"] == [["doc1"]]
 
     def test_query_includes_distances(self, collection, sample_embeddings):
         """query() includes distance scores."""
